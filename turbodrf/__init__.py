@@ -39,11 +39,28 @@ __author__ = "Alexander Collins"
 __email__ = "your.email@example.com"
 __license__ = "MIT"
 
-from .mixins import TurboDRFMixin
-from .permissions import TurboDRFPermission
-from .router import TurboDRFRouter
-from .serializers import TurboDRFSerializer, TurboDRFSerializerFactory
-from .views import TurboDRFViewSet
+# Lazy imports to avoid Django configuration issues during package installation
+def __getattr__(name):
+    """Lazy import for Django-dependent modules."""
+    if name == "TurboDRFMixin":
+        from .mixins import TurboDRFMixin
+        return TurboDRFMixin
+    elif name == "TurboDRFPermission":
+        from .permissions import TurboDRFPermission
+        return TurboDRFPermission
+    elif name == "TurboDRFRouter":
+        from .router import TurboDRFRouter
+        return TurboDRFRouter
+    elif name == "TurboDRFSerializer":
+        from .serializers import TurboDRFSerializer
+        return TurboDRFSerializer
+    elif name == "TurboDRFSerializerFactory":
+        from .serializers import TurboDRFSerializerFactory
+        return TurboDRFSerializerFactory
+    elif name == "TurboDRFViewSet":
+        from .views import TurboDRFViewSet
+        return TurboDRFViewSet
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 __all__ = [
     "TurboDRFMixin",

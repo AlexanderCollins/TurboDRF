@@ -417,9 +417,9 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
 
             # Check field class name for special handling
             field_class_name = field.__class__.__name__
-            
+
             # Skip fields that django-filter doesn't support or that don't make sense to filter
-            if field_class_name in ['JSONField', 'BinaryField']:
+            if field_class_name in ["JSONField", "BinaryField"]:
                 continue
 
             # Define lookups based on field type
