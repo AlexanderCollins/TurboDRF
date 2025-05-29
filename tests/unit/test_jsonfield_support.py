@@ -1,10 +1,12 @@
 """Test JSONField support in TurboDRF."""
 
 import json
+
 from django.db import models
 from django.test import TestCase
-from rest_framework.test import APIRequestFactory
 from rest_framework import status
+from rest_framework.test import APIRequestFactory
+
 from turbodrf.views import TurboDRFViewSet
 
 
