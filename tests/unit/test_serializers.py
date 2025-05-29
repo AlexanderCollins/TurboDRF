@@ -5,12 +5,12 @@ Tests the dynamic serializer generation and nested field handling.
 """
 
 from decimal import Decimal
-from django.test import TestCase
-from django.contrib.auth import get_user_model
-from rest_framework.test import APIRequestFactory
-from turbodrf.serializers import TurboDRFSerializer, TurboDRFSerializerFactory
-from tests.test_app.models import SampleModel, RelatedModel
 
+from django.contrib.auth import get_user_model
+from django.test import TestCase
+
+from tests.test_app.models import RelatedModel, SampleModel
+from turbodrf.serializers import TurboDRFSerializer, TurboDRFSerializerFactory
 
 User = get_user_model()
 

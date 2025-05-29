@@ -116,10 +116,11 @@ class TurboDRFPermission(BasePermission):
             the union of all permissions defined for both roles.
         """
         from django.conf import settings
+
         from .settings import TURBODRF_ROLES as default_roles
 
         # Use Django settings if available, otherwise fall back to defaults
-        TURBODRF_ROLES = getattr(settings, 'TURBODRF_ROLES', default_roles)
+        TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", default_roles)
 
         permissions = set()
         for role in user.roles:

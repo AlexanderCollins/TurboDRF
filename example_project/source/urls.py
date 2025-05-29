@@ -20,7 +20,6 @@ from django.urls import path, include
 from django.conf import settings
 from turbodrf.router import TurboDRFRouter
 from turbodrf.documentation import get_turbodrf_schema_view
-from turbodrf.swagger_ui import role_selector_view, set_api_role
 
 # Create the TurboDRF router
 router = TurboDRFRouter()
@@ -39,8 +38,6 @@ urlpatterns = [
 if schema_view:  # Will be None if docs are disabled
     urlpatterns += [
         # API Documentation
-        path('api/docs/', role_selector_view, name='turbodrf-docs'),
-        path('api/set-role/', set_api_role, name='turbodrf-set-role'),
         path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
         path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
     ]

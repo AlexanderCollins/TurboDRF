@@ -84,6 +84,7 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
             # Filter paths based on role permissions
             filtered_paths = {}
             from .settings import TURBODRF_ROLES
+
             permissions = set(TURBODRF_ROLES.get(self.current_role, []))
 
             for path, methods in schema["paths"].items():
@@ -97,16 +98,10 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
                     ):
                         # Filter response schema fields
                         if "responses" in operation:
-                            for status_code, response in operation[
-                                "responses"
-                            ].items():
+                            for status_code, response in operation["responses"].items():
                                 if "schema" in response:
-                                    response["schema"] = (
-                                        self._filter_schema_fields(
-                                            response["schema"],
-                                            model_info,
-                                            permissions
-                                        )
+                                    response["schema"] = self._filter_schema_fields(
+                                        response["schema"], model_info, permissions
                                     )
 
                         filtered_methods[method] = operation
@@ -253,7 +248,8 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
             }
 
         Example:
-            # Role has permissions: ['myapp.article.id.read', 'myapp.article.title.read']
+            # Role has permissions:
+            # ['myapp.article.id.read', 'myapp.article.title.read']
             # Input schema has fields: id, title, secret_field
             # Output schema will only include: id, title
         """

@@ -1,9 +1,10 @@
-from rest_framework import viewsets
-from rest_framework.pagination import PageNumberPagination
-from rest_framework.filters import SearchFilter, OrderingFilter
-from django_filters.rest_framework import DjangoFilterBackend
 from django.conf import settings
-from .permissions import TurboDRFPermission, DefaultDjangoPermission
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import viewsets
+from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.pagination import PageNumberPagination
+
+from .permissions import DefaultDjangoPermission, TurboDRFPermission
 from .serializers import TurboDRFSerializer
 
 
@@ -220,9 +221,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
         # Only use permission-based field filtering for read operations
         # For write operations, include all configured fields and let
         # validation handle permissions
-        use_default_perms = getattr(
-            settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False
-        )
+        use_default_perms = getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False)
 
         if (
             not use_default_perms
@@ -240,9 +239,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
 
         # Create serializer class dynamically with unique name per action
         action = self.action or "default"
-        serializer_name = (
-            f"{self.model.__name__}{action.capitalize()}Serializer"
-        )
+        serializer_name = f"{self.model.__name__}{action.capitalize()}Serializer"
 
         # Create unique ref_name for swagger
         if hasattr(self.model, "_meta"):
@@ -265,8 +262,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
                         "model": self.model,
                         "fields": fields_to_use,
                         "_nested_fields": (
-                            nested_fields if isinstance(fields_to_use, list)
-                            else {}
+                            nested_fields if isinstance(fields_to_use, list) else {}
                         ),
                         "ref_name": ref_name,  # Unique reference name
                     },
@@ -416,13 +412,10 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
 
             # Define lookups based on field type
             if isinstance(
-                field,
-                (models.IntegerField, models.DecimalField, models.FloatField)
+                field, (models.IntegerField, models.DecimalField, models.FloatField)
             ):
                 # Numeric fields get comparison lookups
-                filterset_fields[field_name] = [
-                    "exact", "gte", "lte", "gt", "lt"
-                ]
+                filterset_fields[field_name] = ["exact", "gte", "lte", "gt", "lt"]
             elif isinstance(field, (models.DateField, models.DateTimeField)):
                 # Date fields get date lookups
                 filterset_fields[field_name] = [

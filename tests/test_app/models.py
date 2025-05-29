@@ -3,6 +3,7 @@ Test models for TurboDRF tests.
 """
 
 from django.db import models
+
 from turbodrf.mixins import TurboDRFMixin
 
 

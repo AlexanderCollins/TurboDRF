@@ -5,13 +5,13 @@ Tests that TurboDRF can use Django's built-in permissions
 instead of the role-based system.
 """
 
-from django.test import TestCase, override_settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
+from django.test import TestCase, override_settings
 from rest_framework.test import APIRequestFactory
-from turbodrf.permissions import DefaultDjangoPermission
-from tests.test_app.models import SampleModel
 
+from tests.test_app.models import SampleModel
+from turbodrf.permissions import DefaultDjangoPermission
 
 User = get_user_model()
 
@@ -140,9 +140,12 @@ class TestDefaultPermissionsIntegration(TestCase):
         """Test that viewset uses default permissions when configured."""
         # Check that the setting is correctly applied
         from django.conf import settings
+
         self.assertTrue(settings.TURBODRF_USE_DEFAULT_PERMISSIONS)
-        
+
         # TODO: This integration test needs further debugging
         # The permission class is correctly configured but the viewset
         # integration with Django's permission system needs more work
-        self.skipTest("Integration test needs debugging - permissions work in unit tests")
+        self.skipTest(
+            "Integration test needs debugging - permissions work in unit tests"
+        )

@@ -5,15 +5,16 @@ Tests the ViewSet functionality and dynamic serializer generation.
 """
 
 from decimal import Decimal
-from django.test import TestCase
-from django.contrib.auth import get_user_model
-from rest_framework.test import APIRequestFactory
-from turbodrf.views import TurboDRFViewSet, TurboDRFPagination
-from turbodrf.permissions import TurboDRFPermission
-from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.filters import SearchFilter, OrderingFilter
-from tests.test_app.models import SampleModel, RelatedModel
 
+from django.contrib.auth import get_user_model
+from django.test import TestCase
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.test import APIRequestFactory
+
+from tests.test_app.models import RelatedModel, SampleModel
+from turbodrf.permissions import TurboDRFPermission
+from turbodrf.views import TurboDRFPagination, TurboDRFViewSet
 
 User = get_user_model()
 

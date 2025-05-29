@@ -1,5 +1,5 @@
-from rest_framework import serializers
 from django.db import models
+from rest_framework import serializers
 
 
 class TurboDRFSerializer(serializers.ModelSerializer):
@@ -89,7 +89,8 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         if request and hasattr(request.user, "roles"):
             # Check field write permissions
             from django.conf import settings
-            TURBODRF_ROLES = getattr(settings, 'TURBODRF_ROLES', {})
+
+            TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
             user_permissions = set()
             for role in request.user.roles:
                 user_permissions.update(TURBODRF_ROLES.get(role, []))
@@ -138,7 +139,8 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         if request and hasattr(request.user, "roles"):
             # Check field write permissions
             from django.conf import settings
-            TURBODRF_ROLES = getattr(settings, 'TURBODRF_ROLES', {})
+
+            TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
             user_permissions = set()
             for role in request.user.roles:
                 user_permissions.update(TURBODRF_ROLES.get(role, []))
@@ -348,10 +350,12 @@ class TurboDRFSerializerFactory:
         Example:
             # User with permissions: ['myapp.article.title.read', 'myapp.article.read']
             # Input fields: ['title', 'content', 'author__name']
-            # Output: ['title', 'content', 'author__name'] (model-level permission grants all)
+            # Output: ['title', 'content', 'author__name']
+            # (model-level permission grants all)
         """
         from django.conf import settings
-        TURBODRF_ROLES = getattr(settings, 'TURBODRF_ROLES', {})
+
+        TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
 
         user_permissions = set()
         for role in user.roles:
@@ -407,7 +411,8 @@ class TurboDRFSerializerFactory:
     def _get_user_permissions_set(cls, user):
         """Get all permissions for a user as a set."""
         from django.conf import settings
-        TURBODRF_ROLES = getattr(settings, 'TURBODRF_ROLES', {})
+
+        TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
         user_permissions = set()
         for role in user.roles:
             user_permissions.update(TURBODRF_ROLES.get(role, []))
@@ -442,7 +447,8 @@ class TurboDRFSerializerFactory:
             # Result: 'title' will be in the read-only fields list
         """
         from django.conf import settings
-        TURBODRF_ROLES = getattr(settings, 'TURBODRF_ROLES', {})
+
+        TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
 
         user_permissions = set()
         for role in user.roles:

@@ -10,10 +10,10 @@ The documentation is dynamically filtered based on user roles, showing only
 the endpoints and fields that each role has permission to access.
 """
 
+from django.conf import settings
 from drf_yasg import openapi
 from drf_yasg.views import get_schema_view
 from rest_framework import permissions
-from django.conf import settings
 
 
 def get_turbodrf_schema_view():

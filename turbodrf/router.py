@@ -5,10 +5,11 @@ This module provides the TurboDRFRouter that automatically discovers
 and registers all models with TurboDRFMixin.
 """
 
-from rest_framework.routers import DefaultRouter
 from django.apps import apps
-from .views import TurboDRFViewSet
+from rest_framework.routers import DefaultRouter
+
 from .mixins import TurboDRFMixin
+from .views import TurboDRFViewSet
 
 
 class TurboDRFRouter(DefaultRouter):

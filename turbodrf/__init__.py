@@ -40,10 +40,10 @@ __email__ = "your.email@example.com"
 __license__ = "MIT"
 
 from .mixins import TurboDRFMixin
-from .router import TurboDRFRouter
-from .views import TurboDRFViewSet
 from .permissions import TurboDRFPermission
+from .router import TurboDRFRouter
 from .serializers import TurboDRFSerializer, TurboDRFSerializerFactory
+from .views import TurboDRFViewSet
 
 __all__ = [
     "TurboDRFMixin",

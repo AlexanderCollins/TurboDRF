@@ -21,15 +21,11 @@ class TurboDRFMetadata(SimpleMetadata):
             metadata["model"] = {
                 "name": model._meta.verbose_name,
                 "app_label": model._meta.app_label,
-                "fields": self._get_field_metadata(
-                    model, fields, request.user
-                ),
+                "fields": self._get_field_metadata(model, fields, request.user),
             }
 
             # Add allowed actions based on permissions
-            metadata["actions"] = self._get_allowed_actions(
-                model, request.user
-            )
+            metadata["actions"] = self._get_allowed_actions(model, request.user)
 
         return metadata
 
@@ -51,9 +47,7 @@ class TurboDRFMetadata(SimpleMetadata):
                 # Handle nested fields
                 base_field = field_name.split("__")[0]
                 if base_field not in field_metadata:
-                    field_metadata[base_field] = {
-                        "type": "nested", "fields": []
-                    }
+                    field_metadata[base_field] = {"type": "nested", "fields": []}
                 field_metadata[base_field]["fields"].append(
                     field_name.split("__", 1)[1]
                 )
@@ -72,9 +66,7 @@ class TurboDRFMetadata(SimpleMetadata):
                     field_info = {
                         "type": field.__class__.__name__,
                         "required": (
-                            not field.blank
-                            if hasattr(field, "blank")
-                            else True
+                            not field.blank if hasattr(field, "blank") else True
                         ),
                         "read_only": not can_write,
                         "write_only": not can_read and can_write,
@@ -87,8 +79,7 @@ class TurboDRFMetadata(SimpleMetadata):
                         field_info["max_length"] = field.max_length
                     if hasattr(field, "choices") and field.choices:
                         field_info["choices"] = [
-                            {"value": k, "display": v}
-                            for k, v in field.choices
+                            {"value": k, "display": v} for k, v in field.choices
                         ]
 
                     field_metadata[field_name] = field_info
@@ -114,8 +105,6 @@ class TurboDRFMetadata(SimpleMetadata):
             "retrieve": f"{app_label}.{model_name}.read" in user_permissions,
             "create": f"{app_label}.{model_name}.create" in user_permissions,
             "update": f"{app_label}.{model_name}.update" in user_permissions,
-            "partial_update": (
-                f"{app_label}.{model_name}.update" in user_permissions
-            ),
+            "partial_update": (f"{app_label}.{model_name}.update" in user_permissions),
             "destroy": f"{app_label}.{model_name}.delete" in user_permissions,
         }

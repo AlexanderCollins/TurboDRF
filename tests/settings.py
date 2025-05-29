@@ -2,7 +2,6 @@
 Django settings for TurboDRF tests.
 """
 
-import os
 from pathlib import Path
 
 # Build paths inside the project

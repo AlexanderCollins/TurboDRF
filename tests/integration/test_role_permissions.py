@@ -6,12 +6,13 @@ and fields.
 """
 
 from decimal import Decimal
-from django.test import TestCase
-from django.contrib.auth import get_user_model
-from rest_framework.test import APIClient
-from rest_framework import status
-from tests.test_app.models import SampleModel, RelatedModel
 
+from django.contrib.auth import get_user_model
+from django.test import TestCase
+from rest_framework import status
+from rest_framework.test import APIClient
+
+from tests.test_app.models import RelatedModel, SampleModel
 
 User = get_user_model()
 
@@ -28,12 +29,12 @@ class TestRoleBasedPermissions(TestCase):
             username="admin", password="admin123", is_superuser=True
         )
         self.admin_user._test_roles = ["admin"]
-        
+
         self.editor_user = User.objects.create_user(
             username="editor", password="editor123", is_staff=True
         )
         self.editor_user._test_roles = ["editor"]
-        
+
         self.viewer_user = User.objects.create_user(
             username="viewer", password="viewer123"
         )

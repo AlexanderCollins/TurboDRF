@@ -5,9 +5,10 @@ Provides common test data and helper functions.
 """
 
 from decimal import Decimal
-from django.contrib.auth import get_user_model
-from tests.test_app.models import SampleModel, RelatedModel
 
+from django.contrib.auth import get_user_model
+
+from tests.test_app.models import RelatedModel, SampleModel
 
 User = get_user_model()
 

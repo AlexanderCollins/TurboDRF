@@ -118,30 +118,28 @@ class MyAppConfig(AppConfig):
 
 ```python
 # urls.py
+from django.contrib import admin
 from django.urls import path, include
-from turbodrf.router import TurboDRFRouter
-from turbodrf.documentation import get_turbodrf_schema_view
-from turbodrf.swagger_ui import role_selector_view, set_api_role
-
-# Create router
-router = TurboDRFRouter()
-
-# Get schema view
-schema_view = get_turbodrf_schema_view()
+from turbodrf import urls as turbodrf_urls
 
 urlpatterns = [
     # Admin
     path('admin/', admin.site.urls),
     
-    # API
-    path('api/', include(router.urls)),
-    
-    # API Documentation
-    path('api/docs/', role_selector_view, name='turbodrf-docs'),
-    path('api/set-role/', set_api_role, name='turbodrf-set-role'),
-    path('swagger/', schema_view.with_ui('swagger', cache_timeout=0)),
-    path('redoc/', schema_view.with_ui('redoc', cache_timeout=0)),
+    # API with auto-configured documentation
+    path('api/', include(turbodrf_urls)),
 ]
+```
+
+This automatically provides:
+- API endpoints at `/api/`
+- Swagger UI at `/api/swagger/` (if docs are enabled)
+- ReDoc at `/api/redoc/` (if docs are enabled)
+
+To disable documentation in production:
+```python
+# settings.py
+TURBODRF_ENABLE_DOCS = False  # Default: True
 ```
 
 ## Model Setup

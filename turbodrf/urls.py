@@ -1,7 +1,7 @@
-from django.urls import path, include
-from .router import TurboDRFRouter
+from django.urls import include, path
+
 from .documentation import get_turbodrf_schema_view
-from .swagger_ui import role_selector_view, set_api_role
+from .router import TurboDRFRouter
 
 # Auto-discover and register all models
 router = TurboDRFRouter()
@@ -13,15 +13,19 @@ schema_view = get_turbodrf_schema_view()
 urlpatterns = [
     # API endpoints
     path("", include(router.urls)),
-    # Documentation
-    path("docs/", role_selector_view, name="turbodrf-docs"),
-    path("set-role/", set_api_role, name="turbodrf-set-role"),
-    path(
-        "swagger/",
-        schema_view.with_ui("swagger", cache_timeout=0),
-        name="turbodrf-swagger",
-    ),
-    path(
-        "redoc/", schema_view.with_ui("redoc", cache_timeout=0), name="turbodrf-redoc"
-    ),
 ]
+
+# Only add documentation URLs if enabled
+if schema_view:
+    urlpatterns += [
+        path(
+            "swagger/",
+            schema_view.with_ui("swagger", cache_timeout=0),
+            name="turbodrf-swagger",
+        ),
+        path(
+            "redoc/",
+            schema_view.with_ui("redoc", cache_timeout=0),
+            name="turbodrf-redoc",
+        ),
+    ]

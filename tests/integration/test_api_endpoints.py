@@ -6,13 +6,13 @@ search, filtering, ordering, and pagination.
 """
 
 from decimal import Decimal
-from django.test import TestCase
-from django.contrib.auth import get_user_model
-from django.urls import reverse
-from rest_framework.test import APIClient
-from rest_framework import status
-from tests.test_app.models import SampleModel, RelatedModel
 
+from django.contrib.auth import get_user_model
+from django.test import TestCase
+from rest_framework import status
+from rest_framework.test import APIClient
+
+from tests.test_app.models import RelatedModel, SampleModel
 
 User = get_user_model()
 
@@ -29,12 +29,12 @@ class TestAPIEndpoints(TestCase):
             username="admin", password="admin123", is_superuser=True
         )
         self.admin_user._test_roles = ["admin"]
-        
+
         self.editor_user = User.objects.create_user(
             username="editor", password="editor123", is_staff=True
         )
         self.editor_user._test_roles = ["editor"]
-        
+
         self.viewer_user = User.objects.create_user(
             username="viewer", password="viewer123"
         )
@@ -309,7 +309,7 @@ class TestAPIEndpoints(TestCase):
         # Create a custom endpoint model instance
         from tests.test_app.models import CustomEndpointModel
 
-        custom = CustomEndpointModel.objects.create(name="Custom Item")
+        CustomEndpointModel.objects.create(name="Custom Item")
 
         # Test the custom endpoint
         response = self.client.get("/api/custom-items/")

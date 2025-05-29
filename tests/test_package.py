@@ -3,6 +3,7 @@ Test that the TurboDRF package is properly structured and installable.
 """
 
 import unittest
+
 import turbodrf
 
 
@@ -18,12 +19,14 @@ class TestPackageStructure(unittest.TestCase):
     def test_core_imports(self):
         """Test that core components can be imported."""
         # Test main components
-        from turbodrf import TurboDRFMixin
-        from turbodrf import TurboDRFRouter
-        from turbodrf import TurboDRFViewSet
-        from turbodrf import TurboDRFPermission
-        from turbodrf import TurboDRFSerializer
-        from turbodrf import TurboDRFSerializerFactory
+        from turbodrf import (
+            TurboDRFMixin,
+            TurboDRFPermission,
+            TurboDRFRouter,
+            TurboDRFSerializer,
+            TurboDRFSerializerFactory,
+            TurboDRFViewSet,
+        )
 
         # Verify they're classes/functions
         self.assertTrue(callable(TurboDRFMixin))
@@ -36,14 +39,14 @@ class TestPackageStructure(unittest.TestCase):
     def test_submodule_imports(self):
         """Test that submodules can be imported."""
         # Test individual module imports
-        import turbodrf.mixins
-        import turbodrf.router
-        import turbodrf.views
-        import turbodrf.permissions
-        import turbodrf.serializers
         import turbodrf.documentation
+        import turbodrf.mixins
+        import turbodrf.permissions
+        import turbodrf.router
+        import turbodrf.serializers
         import turbodrf.swagger
         import turbodrf.swagger_ui
+        import turbodrf.views
 
         # Verify modules are loaded
         self.assertIsNotNone(turbodrf.mixins)

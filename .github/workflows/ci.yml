@@ -40,7 +40,9 @@ jobs:
     
     - name: Run linters
       run: |
-        make lint || (black turbodrf/ tests/ && isort turbodrf/ tests/ && flake8 turbodrf/ tests/)
+        black --check turbodrf/ tests/
+        isort --check-only turbodrf/ tests/
+        flake8 turbodrf/ tests/
 
   test:
     name: Test Python ${{ matrix.python-version }} - Django ${{ matrix.django-version }}

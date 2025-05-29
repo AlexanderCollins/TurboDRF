@@ -5,17 +5,17 @@ Tests that users can extend TurboDRFViewSet with custom actions.
 """
 
 from decimal import Decimal
-from django.test import TestCase
-from django.contrib.auth import get_user_model
-from rest_framework.test import APIClient
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework import status
-from turbodrf.views import TurboDRFViewSet
-from tests.test_app.models import SampleModel, RelatedModel
-from rest_framework.test import APIRequestFactory, force_authenticate
-from rest_framework.request import Request
 
+from django.contrib.auth import get_user_model
+from django.test import TestCase
+from rest_framework import status
+from rest_framework.decorators import action
+from rest_framework.request import Request
+from rest_framework.response import Response
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
+
+from tests.test_app.models import RelatedModel, SampleModel
+from turbodrf.views import TurboDRFViewSet
 
 User = get_user_model()
 

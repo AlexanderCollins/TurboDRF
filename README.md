@@ -9,7 +9,6 @@
 [![Tests](https://img.shields.io/github/actions/workflow/status/alexandercollins/turbodrf/tests.yml?branch=main&label=tests)](https://github.com/alexandercollins/turbodrf/actions)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/alexandercollins/turbodrf)
 [![PyPI Version](https://img.shields.io/pypi/v/turbodrf?label=pypi)](https://pypi.org/project/turbodrf/)
-[![Downloads](https://img.shields.io/pypi/dm/turbodrf)](https://pypi.org/project/turbodrf/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/alexandercollins/turbodrf/pulls)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
@@ -93,8 +92,8 @@ With just **4 lines of configuration**, TurboDRF automatically provides:
 ### 📖 **Interactive API Documentation**
 - Auto-generated Swagger UI
 - ReDoc alternative interface
-- Role-specific documentation
 - Try-it-out functionality
+- Disable in production with one setting
 
 </td>
 <td width="50%">
@@ -737,43 +736,69 @@ REST_FRAMEWORK = {
 
 ### 📊 API Documentation
 
-Enable Swagger and ReDoc with role-based filtering:
+TurboDRF automatically generates interactive API documentation using Swagger UI and ReDoc. The documentation shows all available endpoints and fields based on the current user's permissions.
+
+#### Enabling Documentation
+
+Documentation is enabled by default. The URLs are automatically configured when you include TurboDRF URLs:
 
 ```python
 # urls.py
-from turbodrf.documentation import get_turbodrf_schema_view
-from turbodrf.swagger_ui import role_selector_view, set_api_role
-
-schema_view = get_turbodrf_schema_view()
+from django.urls import path, include
+from turbodrf import urls as turbodrf_urls
 
 urlpatterns = [
-    # API endpoints
-    path('api/', include(router.urls)),
+    path('api/', include(turbodrf_urls)),
 ]
-
-# Only add documentation URLs if enabled (default: True)
-if schema_view:  # Will be None if docs are disabled
-    urlpatterns += [
-        # Documentation
-        path('api/docs/', role_selector_view, name='turbodrf-docs'),
-        path('api/set-role/', set_api_role, name='turbodrf-set-role'),
-        path('swagger/', schema_view.with_ui('swagger', cache_timeout=0)),
-        path('redoc/', schema_view.with_ui('redoc', cache_timeout=0)),
-    ]
 ```
+
+This automatically provides:
+- Swagger UI at `/api/swagger/`
+- ReDoc at `/api/redoc/`
 
 #### Disabling Documentation in Production
 
-To disable Swagger/ReDoc documentation (recommended for production):
+**Important**: API documentation should typically be disabled in production environments for security reasons. To disable documentation:
 
 ```python
 # settings.py
 TURBODRF_ENABLE_DOCS = False  # Default: True
 ```
 
-Visit `/api/docs/` to select a role and view filtered API documentation:
+When disabled:
+- Documentation endpoints return 404
+- No schema is generated
+- API endpoints continue to work normally
 
-<img src="https://via.placeholder.com/600x400/28a745/FFFFFF?text=Role-Based+API+Documentation" alt="API Docs Screenshot" width="100%">
+#### How Documentation Works
+
+1. **Automatic Generation**: Documentation is automatically generated from your models and their `turbodrf()` configuration
+2. **Permission-Based Filtering**: Users only see endpoints and fields they have permission to access
+3. **Real-Time Updates**: Documentation updates automatically as you modify your models
+4. **Interactive Testing**: Both Swagger UI and ReDoc allow testing API endpoints directly from the browser
+
+#### Custom Documentation Configuration
+
+You can customize the documentation by creating your own schema view:
+
+```python
+# urls.py
+from turbodrf.documentation import get_turbodrf_schema_view
+
+# Custom schema configuration
+schema_view = get_turbodrf_schema_view(
+    title="My API",
+    version="v1",
+    description="My awesome API powered by TurboDRF",
+)
+
+urlpatterns = [
+    path('api/', include('turbodrf.urls')),
+    # Override default documentation URLs
+    path('docs/swagger/', schema_view.with_ui('swagger', cache_timeout=0)),
+    path('docs/redoc/', schema_view.with_ui('redoc', cache_timeout=0)),
+]
+```
 
 ### 🔗 Working with Relations
 

@@ -4,16 +4,16 @@ Unit tests for TurboDRF router.
 Tests the automatic model discovery and URL registration.
 """
 
-from django.test import TestCase, override_settings
-from django.urls import reverse
-from turbodrf.router import TurboDRFRouter
+from django.test import TestCase
+
 from tests.test_app.models import (
-    SampleModel,
-    RelatedModel,
-    NoTurboDRFModel,
     CustomEndpointModel,
     DisabledModel,
+    NoTurboDRFModel,
+    RelatedModel,
+    SampleModel,
 )
+from turbodrf.router import TurboDRFRouter
 
 
 class TestTurboDRFRouter(TestCase):

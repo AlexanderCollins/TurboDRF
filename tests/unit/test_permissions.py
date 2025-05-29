@@ -4,12 +4,12 @@ Unit tests for TurboDRF permissions.
 Tests the role-based permission system.
 """
 
-from django.test import TestCase, RequestFactory
 from django.contrib.auth import get_user_model
+from django.test import TestCase
 from rest_framework.test import APIRequestFactory
-from turbodrf.permissions import TurboDRFPermission
-from tests.test_app.models import SampleModel
 
+from tests.test_app.models import SampleModel
+from turbodrf.permissions import TurboDRFPermission
 
 User = get_user_model()
 
@@ -34,12 +34,12 @@ class TestTurboDRFPermission(TestCase):
             username="admin", password="admin123", is_superuser=True
         )
         self.admin_user._test_roles = ["admin"]
-        
+
         self.editor_user = User.objects.create_user(
             username="editor", password="editor123", is_staff=True
         )
         self.editor_user._test_roles = ["editor"]
-        
+
         self.viewer_user = User.objects.create_user(
             username="viewer", password="viewer123"
         )

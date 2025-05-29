@@ -4,14 +4,14 @@ Unit tests for TurboDRF mixins.
 Tests the core functionality of the TurboDRFMixin class.
 """
 
-import pytest
 from django.test import TestCase
+
 from tests.test_app.models import (
-    SampleModel,
-    RelatedModel,
-    NoTurboDRFModel,
     CustomEndpointModel,
     DisabledModel,
+    NoTurboDRFModel,
+    RelatedModel,
+    SampleModel,
 )
 from turbodrf.mixins import TurboDRFMixin
 
