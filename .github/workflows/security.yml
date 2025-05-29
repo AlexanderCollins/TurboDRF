@@ -32,7 +32,7 @@ jobs:
         bandit -r turbodrf/ -ll
     
     - name: Upload Bandit results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: bandit-results
@@ -44,7 +44,7 @@ jobs:
         safety check || true
     
     - name: Upload Safety results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: safety-results
