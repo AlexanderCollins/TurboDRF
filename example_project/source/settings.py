@@ -129,51 +129,51 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # REST Framework settings
 REST_FRAMEWORK = {
-    'DEFAULT_FILTER_BACKENDS': [
-        'django_filters.rest_framework.DjangoFilterBackend',
+    "DEFAULT_FILTER_BACKENDS": [
+        "django_filters.rest_framework.DjangoFilterBackend",
     ],
 }
 
 # TurboDRF settings
 TURBODRF_ROLES = {
-    'admin': [
+    "admin": [
         # Full access to all models
-        'books.author.read',
-        'books.author.create',
-        'books.author.update',
-        'books.author.delete',
-        'books.book.read',
-        'books.book.create',
-        'books.book.update',
-        'books.book.delete',
-        'books.review.read',
-        'books.review.create',
-        'books.review.update',
-        'books.review.delete',
+        "books.author.read",
+        "books.author.create",
+        "books.author.update",
+        "books.author.delete",
+        "books.book.read",
+        "books.book.create",
+        "books.book.update",
+        "books.book.delete",
+        "books.review.read",
+        "books.review.create",
+        "books.review.update",
+        "books.review.delete",
         # All field permissions
-        'books.book.price.read',
-        'books.book.price.write',
+        "books.book.price.read",
+        "books.book.price.write",
     ],
-    'editor': [
+    "editor": [
         # Can read and update, but not delete
-        'books.author.read',
-        'books.author.update',
-        'books.book.read',
-        'books.book.create',
-        'books.book.update',
-        'books.review.read',
-        'books.review.create',
-        'books.review.update',
+        "books.author.read",
+        "books.author.update",
+        "books.book.read",
+        "books.book.create",
+        "books.book.update",
+        "books.review.read",
+        "books.review.create",
+        "books.review.update",
         # Can see prices but not change them
-        'books.book.price.read',
+        "books.book.price.read",
     ],
-    'viewer': [
+    "viewer": [
         # Read-only access
-        'books.author.read',
-        'books.book.read',
-        'books.review.read',
+        "books.author.read",
+        "books.book.read",
+        "books.review.read",
         # Cannot see prices
-    ]
+    ],
 }
 
 # TurboDRF Documentation Setting

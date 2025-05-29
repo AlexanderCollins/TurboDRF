@@ -1,16 +1,18 @@
 #!/usr/bin/env python
 import os
 import sys
+
 import django
 
 # Add the project to the Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Configure Django settings
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'source.settings')
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "source.settings")
 django.setup()
 
 from django.apps import apps
+
 from turbodrf.mixins import TurboDRFMixin
 from turbodrf.router import TurboDRFRouter
 
@@ -21,8 +23,8 @@ for model in apps.get_models():
     print(f"\nModel: {model.__name__}")
     print(f"  Module: {model.__module__}")
     print(f"  Has TurboDRFMixin: {issubclass(model, TurboDRFMixin)}")
-    
-    if hasattr(model, 'turbodrf'):
+
+    if hasattr(model, "turbodrf"):
         print(f"  Has turbodrf method: True")
         try:
             config = model.turbodrf()

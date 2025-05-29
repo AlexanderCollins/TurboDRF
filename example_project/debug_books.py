@@ -7,10 +7,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Setup Django
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'source.settings')
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "source.settings")
 
 # Override the INSTALLED_APPS to ensure books is included
 from django.conf import settings
+
 settings.INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -26,12 +27,14 @@ settings.INSTALLED_APPS = [
 ]
 
 import django
+
 django.setup()
 
-from turbodrf.router import TurboDRFRouter
-from turbodrf.mixins import TurboDRFMixin
 from books.models import Author, Book, Review
 from django.apps import apps
+
+from turbodrf.mixins import TurboDRFMixin
+from turbodrf.router import TurboDRFRouter
 
 print("Checking if models have TurboDRFMixin...")
 for model in [Author, Book, Review]:

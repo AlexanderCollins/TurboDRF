@@ -16,10 +16,10 @@ Including another URLconf
 """
 
 from django.contrib import admin
-from django.urls import path, include
-from django.conf import settings
-from turbodrf.router import TurboDRFRouter
+from django.urls import include, path
+
 from turbodrf.documentation import get_turbodrf_schema_view
+from turbodrf.router import TurboDRFRouter
 
 # Create the TurboDRF router
 router = TurboDRFRouter()
@@ -30,7 +30,7 @@ schema_view = get_turbodrf_schema_view()
 urlpatterns = [
     path("admin/", admin.site.urls),
     # API endpoints
-    path('api/', include(router.urls)),
+    path("api/", include(router.urls)),
 ]
 
 # Only add documentation URLs if enabled (default: True)
@@ -38,6 +38,12 @@ urlpatterns = [
 if schema_view:  # Will be None if docs are disabled
     urlpatterns += [
         # API Documentation
-        path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
-        path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
+        path(
+            "swagger/",
+            schema_view.with_ui("swagger", cache_timeout=0),
+            name="schema-swagger-ui",
+        ),
+        path(
+            "redoc/", schema_view.with_ui("redoc", cache_timeout=0), name="schema-redoc"
+        ),
     ]

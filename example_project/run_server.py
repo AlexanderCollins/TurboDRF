@@ -7,11 +7,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Ensure we're using the example project settings, not test settings
-os.environ['DJANGO_SETTINGS_MODULE'] = 'source.settings'
+os.environ["DJANGO_SETTINGS_MODULE"] = "source.settings"
 
 # Remove any test paths from sys.path
-sys.path = [p for p in sys.path if 'tests' not in p]
+sys.path = [p for p in sys.path if "tests" not in p]
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     from django.core.management import execute_from_command_line
-    execute_from_command_line(['manage.py', 'runserver'])
+
+    execute_from_command_line(["manage.py", "runserver"])
