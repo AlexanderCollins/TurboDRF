@@ -1,0 +1,27 @@
+include README.md
+include LICENSE
+include CHANGELOG.md
+include CONTRIBUTING.md
+include INSTALL.md
+include API.md
+include DEPLOYMENT.md
+include pyproject.toml
+include pytest.ini
+include tox.ini
+include requirements*.txt
+
+recursive-include turbodrf/templates *
+recursive-include tests *.py
+recursive-exclude tests __pycache__
+recursive-exclude * *.py[co]
+recursive-exclude * .DS_Store
+
+prune example_project
+prune docs
+prune .github
+prune venv
+prune .git
+prune .pytest_cache
+prune .tox
+prune htmlcov
+prune .coverage

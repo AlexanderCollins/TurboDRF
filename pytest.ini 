@@ -1,0 +1,14 @@
+[tool:pytest]
+DJANGO_SETTINGS_MODULE = tests.settings
+python_files = tests.py test_*.py *_tests.py
+addopts = 
+    --verbose
+    --strict-markers
+    --tb=short
+    --nomigrations
+testpaths = tests
+markers =
+    slow: marks tests as slow (deselect with '-m "not slow"')
+    integration: marks tests as integration tests
+    unit: marks tests as unit tests
+
