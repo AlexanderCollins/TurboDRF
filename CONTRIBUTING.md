@@ -104,13 +104,13 @@ Unsure where to begin? Look for these labels:
 
 1. **Clone your fork:**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/turbodrf.git
+   git clone https://github.com/alexandercollins/turbodrf.git
    cd turbodrf
    ```
 
 2. **Add upstream remote:**
    ```bash
-   git remote add upstream https://github.com/originaluser/turbodrf.git
+   git remote add upstream https://github.com/alexandercollins/turbodrf.git
    ```
 
 3. **Create virtual environment:**
@@ -308,9 +308,9 @@ from .permissions import TurboDRFPermission
 ### Types of Documentation
 
 1. **Code Documentation** - Docstrings in source code
-2. **API Documentation** - Technical reference in `docs/api.md`
-3. **User Guides** - Tutorials and how-tos in `docs/guides/`
-4. **Examples** - Working examples in `examples/`
+2. **API Documentation** - Technical reference in `API.md`
+3. **User Documentation** - README.md and other markdown files
+4. **Examples** - Working examples in `example_project/`
 
 ### Documentation Standards
 
