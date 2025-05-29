@@ -5,13 +5,13 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="turbodrf",
-    version="0.1.6",
+    version="0.1.7",
     author="Your Name",
     author_email="your.email@example.com",
     description="Dead simple Django REST API generator with role-based permissions",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/turbodrf",
+    url="https://github.com/alexandercollins/turbodrf",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",

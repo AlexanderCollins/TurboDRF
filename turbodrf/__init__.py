@@ -31,10 +31,10 @@ This automatically creates:
 - PUT /api/books/{id}/ - Update a book
 - DELETE /api/books/{id}/ - Delete a book
 
-For more information, see: https://github.com/yourusername/turbodrf
+For more information, see: https://github.com/alexandercollins/turbodrf
 """
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 __author__ = "Alexander Collins"
 __email__ = "your.email@example.com"
 __license__ = "MIT"

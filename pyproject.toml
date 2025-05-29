@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "turbodrf"
-version = "0.1.6"
+version = "0.1.7"
 description = "Dead simple Django REST API generator with role-based permissions"
 readme = "README.md"
 authors = [
@@ -51,10 +51,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/turbodrf"
+Homepage = "https://github.com/alexandercollins/turbodrf"
 Documentation = "https://turbodrf.readthedocs.io"
-Repository = "https://github.com/yourusername/turbodrf.git"
-"Bug Tracker" = "https://github.com/yourusername/turbodrf/issues"
+Repository = "https://github.com/alexandercollins/turbodrf.git"
+"Bug Tracker" = "https://github.com/alexandercollins/turbodrf/issues"
 
 [tool.setuptools.packages.find]
 include = ["turbodrf*"]
