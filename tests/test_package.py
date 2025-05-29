@@ -14,7 +14,11 @@ class TestPackageStructure(unittest.TestCase):
         """Test that package version is defined."""
         self.assertTrue(hasattr(turbodrf, "__version__"))
         self.assertIsInstance(turbodrf.__version__, str)
-        self.assertEqual(turbodrf.__version__, "0.1.0")
+        # Version should follow semantic versioning format
+        version_parts = turbodrf.__version__.split(".")
+        self.assertEqual(len(version_parts), 3)
+        for part in version_parts:
+            self.assertTrue(part.isdigit())
 
     def test_core_imports(self):
         """Test that core components can be imported."""
