@@ -102,7 +102,7 @@ gh release create vX.Y.Z --notes-file RELEASE_NOTES.md
 
 - Python 3.8+
 - Git configured with push access
-- PyPI API token in GitHub Secrets (for automatic deployment)
+- PyPI trusted publisher configured (for automatic OIDC deployment)
 - GitHub CLI (optional, for quick releases)
 
 ## Troubleshooting
@@ -116,6 +116,7 @@ gh release create vX.Y.Z --notes-file RELEASE_NOTES.md
 - Pull latest changes: `git pull origin main`
 
 **PyPI deployment failed**
-- Check `PYPI_API_TOKEN` is set in GitHub Secrets
-- Verify the token has upload permissions
+- Check PyPI trusted publisher is configured correctly
+- Verify the workflow name matches the trusted publisher settings
+- Ensure the workflow has `id-token: write` permission
 - Check package builds locally: `python -m build`

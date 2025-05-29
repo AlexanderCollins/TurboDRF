@@ -1387,8 +1387,11 @@ TurboDRF is trusted by developers and companies building production APIs:
 
 3. **Upload to PyPI**:
    ```bash
+   # Manual upload (if not using GitHub Actions)
    twine upload dist/*
    ```
+   
+   Or better yet, create a GitHub release to trigger automatic OIDC publishing!
 
 ### GitHub Actions CI/CD
 
@@ -1433,6 +1436,8 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for OIDC
     steps:
     - uses: actions/checkout@v3
     - name: Set up Python
@@ -1441,26 +1446,27 @@ jobs:
         python-version: '3.x'
     - name: Install dependencies
       run: |
-        pip install build twine
+        pip install build
     - name: Build package
       run: python -m build
     - name: Publish to PyPI
-      env:
-        TWINE_USERNAME: __token__
-        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-      run: twine upload dist/*
+      uses: pypa/gh-action-pypi-publish@release/v1
+      # No credentials needed - uses OIDC!
 ```
 
 ### Next Steps for Public Deployment
 
 1. **Create PyPI Account**
    - Register at [pypi.org](https://pypi.org/account/register/)
-   - Generate API token for automated uploads
+   - Configure trusted publisher for OIDC (no API tokens needed!)
 
 2. **Set up GitHub Repository**
    - Create public repository
-   - Add `PYPI_API_TOKEN` to repository secrets
    - Enable GitHub Actions
+   - Configure PyPI trusted publisher:
+     - Publisher: GitHub
+     - Repository: alexandercollins/turbodrf
+     - Workflow: publish.yml
 
 3. **Documentation Hosting**
    - Set up Read the Docs account

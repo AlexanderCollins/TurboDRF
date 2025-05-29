@@ -14,18 +14,11 @@ This guide covers how to build, test, and deploy TurboDRF to PyPI (Python Packag
    pip install --upgrade build twine
    ```
 
-3. **Configure PyPI Credentials**
+3. **Configure PyPI Publishing**
    
-   Create `~/.pypirc`:
-   ```ini
-   [pypi]
-   username = __token__
-   password = pypi-<your-token-here>
-
-   [testpypi]
-   username = __token__
-   password = pypi-<your-test-token-here>
-   ```
+   TurboDRF uses OpenID Connect (OIDC) for secure PyPI publishing via GitHub Actions.
+   No API tokens or passwords are needed - authentication happens automatically
+   through GitHub's trusted publisher setup.
 
 ## Building the Package
 
@@ -155,6 +148,18 @@ unzip -l dist/turbodrf-0.1.0-py3-none-any.whl
 
 ## Automation with GitHub Actions
 
+### Setting up OIDC Publishing
+
+1. **Configure PyPI Trusted Publisher**
+   - Go to your PyPI project settings
+   - Add a new trusted publisher:
+     - Publisher: GitHub
+     - Repository: alexandercollins/turbodrf
+     - Workflow: publish.yml
+     - Environment: pypi (optional)
+
+2. **GitHub Actions Workflow**
+
 Create `.github/workflows/publish.yml`:
 
 ```yaml
@@ -167,6 +172,8 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # Required for OIDC
     steps:
     - uses: actions/checkout@v3
     - name: Set up Python
@@ -176,15 +183,20 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install build twine
+        pip install build
     - name: Build package
       run: python -m build
     - name: Publish to PyPI
-      env:
-        TWINE_USERNAME: __token__
-        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-      run: twine upload dist/*
+      uses: pypa/gh-action-pypi-publish@release/v1
+      # No credentials needed - uses OIDC!
 ```
+
+### Benefits of OIDC Publishing
+
+- **No API tokens to manage** - Authentication via GitHub identity
+- **More secure** - No long-lived credentials that can be compromised
+- **Easier setup** - No secrets to configure in GitHub
+- **Automatic** - Works immediately when trusted publisher is configured
 
 ## Maintenance
 
