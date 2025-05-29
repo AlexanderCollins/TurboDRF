@@ -401,6 +401,11 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
             GET /api/articles/?created_at__gte=2024-01-01
             GET /api/articles/?title__icontains=django
             GET /api/articles/?price__gte=10&price__lte=100
+
+        Note:
+            JSONField and BinaryField are excluded from automatic filtering
+            as they require special handling that django-filter doesn't
+            support out of the box.
         """
         from django.db import models
 
@@ -409,6 +414,13 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
         # Get all fields from the model
         for field in self.model._meta.fields:
             field_name = field.name
+
+            # Check field class name for special handling
+            field_class_name = field.__class__.__name__
+            
+            # Skip fields that django-filter doesn't support or that don't make sense to filter
+            if field_class_name in ['JSONField', 'BinaryField']:
+                continue
 
             # Define lookups based on field type
             if isinstance(
@@ -442,6 +454,9 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
             elif isinstance(field, models.ForeignKey):
                 # Foreign keys get exact lookup
                 filterset_fields[field_name] = ["exact"]
+            elif isinstance(field, (models.FileField, models.ImageField)):
+                # File fields can be filtered by exact match or if they're null
+                filterset_fields[field_name] = ["exact", "isnull"]
             else:
                 # Default to exact lookup
                 filterset_fields[field_name] = ["exact"]
