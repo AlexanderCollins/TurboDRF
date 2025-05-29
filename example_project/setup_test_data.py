@@ -45,7 +45,9 @@ print("\nAll test users created/updated successfully!")
 print("\nCredentials:")
 for user_data in users:
     print(
-        f"Username: {user_data['username']}, Password: {user_data['password']}, Role: {user_data['role']}"
+        f"Username: {user_data['username']}, "
+        f"Password: {user_data['password']}, "
+        f"Role: {user_data['role']}"
     )
 
 # Create some test data

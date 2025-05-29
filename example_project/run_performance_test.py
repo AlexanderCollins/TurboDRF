@@ -127,7 +127,7 @@ def run_performance_suite():
                 "ERROR: API server not responding. Please run the server on port 8001"
             )
             return
-    except:
+    except Exception:
         print("ERROR: Cannot connect to API server on port 8001")
         return
 

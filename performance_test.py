@@ -18,11 +18,10 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "example_project.source.settings
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 django.setup()
 
-from django.contrib.auth import get_user_model
-from django.db import connection, reset_queries
-from django.test.utils import override_settings
+from django.contrib.auth import get_user_model  # noqa: E402
+from django.db import connection, reset_queries  # noqa: E402
 
-from example_project.books.models import Author, Book, Review
+from example_project.books.models import Author, Book  # noqa: E402
 
 User = get_user_model()
 
@@ -85,7 +84,7 @@ def test_concurrent_requests(endpoint, num_requests=10):
 
         for future in as_completed(futures):
             start = time.time()
-            response = future.result()
+            future.result()
             elapsed = time.time() - start
             times.append(elapsed)
 
@@ -164,7 +163,8 @@ def test_filtering_performance():
 def create_bulk_test_data(num_authors=50, books_per_author=10):
     """Create bulk test data for performance testing"""
     print(
-        f"\nCreating test data: {num_authors} authors with {books_per_author} books each..."
+        f"\nCreating test data: {num_authors} authors "
+        f"with {books_per_author} books each..."
     )
 
     # Create authors
@@ -208,7 +208,7 @@ def run_performance_suite():
                 "ERROR: API server not responding. Please run the server on port 8001"
             )
             return
-    except:
+    except Exception:
         print("ERROR: Cannot connect to API server on port 8001")
         return
 

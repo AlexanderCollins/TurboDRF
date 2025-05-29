@@ -156,20 +156,21 @@ def main():
         run_command(f"git push origin v{new_version}")
 
         print("\n🎉 Release preparation complete!")
-        print(f"\n📋 Next steps:")
-        print(f"1. Go to: https://github.com/alexandercollins/turbodrf/releases/new")
+        print("\n📋 Next steps:")
+        print("1. Go to: https://github.com/alexandercollins/turbodrf/releases/new")
         print(f"2. Select the tag 'v{new_version}'")
         print(f"3. Set release title: 'TurboDRF v{new_version}'")
-        print(f"4. Add release notes describing the changes")
-        print(f"5. Click 'Publish release' to trigger PyPI deployment")
-        print(f"\nOr use GitHub CLI:")
+        print("4. Add release notes describing the changes")
+        print("5. Click 'Publish release' to trigger PyPI deployment")
+        print("\nOr use GitHub CLI:")
         print(
-            f'gh release create v{new_version} --title "TurboDRF v{new_version}" --notes "Add release notes here"'
+            f'gh release create v{new_version} --title "TurboDRF v{new_version}" '
+            '--notes "Add release notes here"'
         )
     else:
         print("\n✅ Changes committed locally (not pushed)")
-        print(f"Run these commands when ready:")
-        print(f"  git push origin main")
+        print("Run these commands when ready:")
+        print("  git push origin main")
         print(f"  git push origin v{new_version}")
 
 

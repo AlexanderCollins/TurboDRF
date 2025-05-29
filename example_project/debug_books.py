@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "source.settings")
 
 # Override the INSTALLED_APPS to ensure books is included
-from django.conf import settings
+from django.conf import settings  # noqa: E402
 
 settings.INSTALLED_APPS = [
     "django.contrib.admin",
@@ -26,15 +26,15 @@ settings.INSTALLED_APPS = [
     "books",
 ]
 
-import django
+import django  # noqa: E402
 
 django.setup()
 
-from books.models import Author, Book, Review
-from django.apps import apps
+from books.models import Author, Book, Review  # noqa: E402
+from django.apps import apps  # noqa: E402
 
-from turbodrf.mixins import TurboDRFMixin
-from turbodrf.router import TurboDRFRouter
+from turbodrf.mixins import TurboDRFMixin  # noqa: E402
+from turbodrf.router import TurboDRFRouter  # noqa: E402
 
 print("Checking if models have TurboDRFMixin...")
 for model in [Author, Book, Review]:

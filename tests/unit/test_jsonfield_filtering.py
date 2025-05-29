@@ -1,6 +1,4 @@
-import pytest
 from django.db import models
-from django.test import RequestFactory
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.test import APIRequestFactory
 

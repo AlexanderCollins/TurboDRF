@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "source.settings")
 django.setup()
 
-from django.contrib.auth.models import User
+from django.contrib.auth.models import User  # noqa: E402
 
 # Create users with different roles
 users = [
@@ -40,5 +40,7 @@ print("\nAll test users created/updated successfully!")
 print("\nCredentials:")
 for user_data in users:
     print(
-        f"Username: {user_data['username']}, Password: {user_data['password']}, Role: {user_data['role']}"
+        f"Username: {user_data['username']}, "
+        f"Password: {user_data['password']}, "
+        f"Role: {user_data['role']}"
     )

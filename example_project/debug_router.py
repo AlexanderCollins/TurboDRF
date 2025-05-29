@@ -11,10 +11,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "source.settings")
 django.setup()
 
-from django.apps import apps
+from django.apps import apps  # noqa: E402
 
-from turbodrf.mixins import TurboDRFMixin
-from turbodrf.router import TurboDRFRouter
+from turbodrf.mixins import TurboDRFMixin  # noqa: E402
+from turbodrf.router import TurboDRFRouter  # noqa: E402
 
 print("Checking for models with TurboDRFMixin...")
 
@@ -25,7 +25,7 @@ for model in apps.get_models():
     print(f"  Has TurboDRFMixin: {issubclass(model, TurboDRFMixin)}")
 
     if hasattr(model, "turbodrf"):
-        print(f"  Has turbodrf method: True")
+        print("  Has turbodrf method: True")
         try:
             config = model.turbodrf()
             print(f"  Config: {config}")

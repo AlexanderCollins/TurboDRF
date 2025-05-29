@@ -13,7 +13,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "source.settings")
 django.setup()
 
 # Import models
-from books.models import Author, Book, Review
+from books.models import Author, Book, Review  # noqa: E402
 
 # Create some authors
 author1 = Author.objects.create(
@@ -25,7 +25,7 @@ author1 = Author.objects.create(
 author2 = Author.objects.create(
     name="George R.R. Martin",
     email="grrm@example.com",
-    bio="American novelist and short story writer, best known for A Song of Ice and Fire.",
+    bio="American novelist and short story writer, best known for ASOIAF.",
 )
 
 # Create some books
