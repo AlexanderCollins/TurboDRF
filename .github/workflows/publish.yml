@@ -3,9 +3,6 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
-  push:
-    tags:
-      - 'v*'
 
 jobs:
   build:
@@ -70,7 +67,7 @@ jobs:
   publish-test-pypi:
     needs: [build, test-install]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'release'
     environment:
       name: test-pypi
       url: https://test.pypi.org/project/turbodrf/
@@ -115,7 +112,6 @@ jobs:
         
     - name: Create GitHub Release Assets
       uses: softprops/action-gh-release@v1
-      if: startsWith(github.ref, 'refs/tags/')
       with:
         files: dist/*
       env:
