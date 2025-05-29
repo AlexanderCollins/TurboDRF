@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="turbodrf",
-    version="0.1.3",
+    version="0.1.4",
     author="Your Name",
     author_email="your.email@example.com",
     description="Dead simple Django REST API generator with role-based permissions",
