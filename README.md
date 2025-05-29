@@ -1352,6 +1352,18 @@ TurboDRF is trusted by developers and companies building production APIs:
 - 👨‍💻 **Solo Developers** - Build full-stack apps without a team
 
 
+## 📋 Known Limitations
+
+While TurboDRF handles most Django field types automatically, there are a few limitations to be aware of:
+
+### Field Type Support
+
+- **JSONField**: JSONFields are not filterable through the API due to django-filter limitations. They are included in API responses but cannot be used for filtering queries.
+- **BinaryField**: Binary fields are excluded from filtering for security and performance reasons.
+- **FilePathField**: File path fields are not filterable to prevent directory traversal attacks.
+
+These fields will still be included in your API responses and can be read/written normally - they just cannot be used as filter parameters in API queries.
+
 ## 📝 License
 
 TurboDRF is MIT licensed. See [LICENSE](LICENSE) for details.

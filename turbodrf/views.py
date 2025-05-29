@@ -420,7 +420,31 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
 
             # Skip fields that django-filter doesn't support or that
             # don't make sense to filter
-            if field_class_name in ["JSONField", "BinaryField"]:
+            unsupported_fields = ["JSONField", "BinaryField", "FilePathField"]
+            if field_class_name in unsupported_fields:
+                continue
+
+            # Also check by importing JSONField classes directly for extra safety
+            try:
+                from django.db.models import JSONField as ModelsJSONField
+
+                if isinstance(field, ModelsJSONField):
+                    continue
+            except ImportError:
+                pass
+
+            # Check for PostgreSQL JSONField (older Django versions)
+            try:
+                from django.contrib.postgres.fields import JSONField as PGJSONField
+
+                if isinstance(field, PGJSONField):
+                    continue
+            except ImportError:
+                pass
+
+            # Skip any field that has 'json' in its class name (case insensitive)
+            # This catches custom JSONField implementations
+            if "json" in field_class_name.lower():
                 continue
 
             # Define lookups based on field type
@@ -458,6 +482,12 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
             elif isinstance(field, (models.FileField, models.ImageField)):
                 # File fields can be filtered by exact match or if they're null
                 filterset_fields[field_name] = ["exact", "isnull"]
+            elif isinstance(field, models.UUIDField):
+                # UUID fields only support exact matching
+                filterset_fields[field_name] = ["exact", "isnull"]
+            elif isinstance(field, models.GenericIPAddressField):
+                # IP address fields support exact and startswith
+                filterset_fields[field_name] = ["exact", "istartswith"]
             else:
                 # Default to exact lookup
                 filterset_fields[field_name] = ["exact"]

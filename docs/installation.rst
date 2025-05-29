@@ -20,7 +20,7 @@ Install from Source
 
 .. code-block:: bash
 
-   git clone https://github.com/yourusername/turbodrf.git
+   git clone https://github.com/alexandercollins/turbodrf.git
    cd turbodrf
    pip install -e .
 

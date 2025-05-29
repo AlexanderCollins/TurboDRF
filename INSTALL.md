@@ -17,14 +17,14 @@ pip install turbodrf
 ### Install from GitHub
 
 ```bash
-pip install git+https://github.com/yourusername/turbodrf.git
+pip install git+https://github.com/alexandercollins/turbodrf.git
 ```
 
 ### Install for Development
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/turbodrf.git
+git clone https://github.com/alexandercollins/turbodrf.git
 cd turbodrf
 
 # Create a virtual environment
