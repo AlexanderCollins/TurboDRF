@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "turbodrf"
-version = "0.1.4"
+version = "0.1.6"
 description = "Dead simple Django REST API generator with role-based permissions"
 readme = "README.md"
 authors = [
