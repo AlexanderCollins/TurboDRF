@@ -23,11 +23,11 @@ Transform your Django models into fully-featured REST APIs with just a mixin and
 </div>
 
 ---
-# DISCLAIMER: This project is in its infancy and is not currently used in production environments. proceed with caution.
+## DISCLAIMER: This project is in its infancy and is not currently used in production environments. proceed with caution.
 
 ## 🎯 Why TurboDRF?
 
-Building REST APIs in Django shouldn't require writing hundreds of lines of boilerplate code. **TurboDRF** revolutionizes Django API development by automatically generating production-ready REST APIs from your models with minimal configuration.
+Building REST APIs in Django shouldn't require writing hundreds of lines of boilerplate code. **TurboDRF** revolutionizes Django API development by automatically generating REST APIs from your models with minimal configuration.
 
 ### 🚫 The Problem
 
