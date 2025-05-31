@@ -121,13 +121,17 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
 
     # Use default Django permissions if configured,
     # otherwise use TurboDRF's role-based permissions
-    permission_classes = [
-        (
-            DefaultDjangoPermission
-            if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False)
-            else TurboDRFPermission
-        )
-    ]
+    permission_classes = (
+        [
+            (
+                DefaultDjangoPermission
+                if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False)
+                else TurboDRFPermission
+            )
+        ]
+        if not getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False)
+        else []
+    )
     pagination_class = TurboDRFPagination
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
 
