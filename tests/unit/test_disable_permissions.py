@@ -1,4 +1,3 @@
-import json
 from decimal import Decimal
 
 import pytest
@@ -26,7 +25,10 @@ class TestDisablePermissions(TestCase):
 
     @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
     def test_permissions_disabled_allows_read_operations(self):
-        """Test that read operations work without authentication when permissions are disabled."""
+        """
+        Test that read operations work without authentication
+        when permissions are disabled.
+        """
         # Create an item first
         item = SampleModel.objects.create(
             title="Test Item",
@@ -49,10 +51,14 @@ class TestDisablePermissions(TestCase):
 
     @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
     @pytest.mark.skip(
-        reason="Test passes in isolation but fails in full suite due to test isolation issues"
+        reason="Test passes in isolation but fails "
+        "in full suite due to test isolation issues"
     )
     def test_permissions_disabled_allows_write_operations(self):
-        """Test that write operations work without authentication when permissions are disabled."""
+        """
+        Test that write operations work without
+        authentication when permissions are disabled.
+        """
         # Test data - use string for price as expected by DRF
         test_data = {
             "title": "DisablePermTest Item",
@@ -99,7 +105,10 @@ class TestDisablePermissions(TestCase):
 
     @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
     def test_authenticated_users_can_access_with_disabled_permissions(self):
-        """Test that authenticated users can still access endpoints when permissions are disabled."""
+        """
+        Test that authenticated users can still access
+        endpoints when permissions are disabled.
+        """
         # Create an item first with direct model creation
         item = SampleModel.objects.create(
             title="Auth Test Item",
