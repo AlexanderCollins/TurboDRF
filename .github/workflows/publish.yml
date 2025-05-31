@@ -33,7 +33,7 @@ jobs:
         name: dist
         path: dist/
 
-  test-install:
+  test-package:
     needs: build
     runs-on: ubuntu-latest
     strategy:
@@ -59,13 +59,21 @@ jobs:
         pip install dist/*.whl
         python -c "import turbodrf; print(f'TurboDRF {turbodrf.__version__} installed successfully')"
     
+    - name: Install test dependencies
+      run: |
+        pip install django djangorestframework django-filter drf-yasg pytest pytest-django
+    
     - name: Test with Django
       run: |
-        pip install django djangorestframework
         python -c "from turbodrf.mixins import TurboDRFMixin; print('Import successful')"
+    
+    - name: Run tests
+      run: |
+        # Run tests to ensure the package works correctly
+        pytest tests/ -v --tb=short
 
   publish-test-pypi:
-    needs: [build, test-install]
+    needs: [build, test-package]
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
     environment:
@@ -89,7 +97,7 @@ jobs:
         # No password needed - uses OIDC!
 
   publish-pypi:
-    needs: [build, test-install]
+    needs: [build, test-package]
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
     environment:
