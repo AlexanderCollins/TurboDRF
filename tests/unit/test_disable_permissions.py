@@ -1,12 +1,13 @@
 import json
 from decimal import Decimal
-import pytest
-from django.test import TestCase, override_settings
-from django.contrib.auth.models import User
-from rest_framework.test import APIClient
-from rest_framework import status
 
-from tests.test_app.models import SampleModel, RelatedModel
+import pytest
+from django.contrib.auth.models import User
+from django.test import TestCase, override_settings
+from rest_framework import status
+from rest_framework.test import APIClient
+
+from tests.test_app.models import RelatedModel, SampleModel
 
 
 class TestDisablePermissions(TestCase):
