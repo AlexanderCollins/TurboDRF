@@ -127,7 +127,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
             if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False)
             else TurboDRFPermission
         )
-    ]
+    ] if not getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False) else []
     pagination_class = TurboDRFPagination
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
 

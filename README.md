@@ -197,6 +197,8 @@ def turbodrf(cls):
 
 ### 🔐 Permissions System
 
+> **Note:** To disable all permissions for development, set `TURBODRF_DISABLE_PERMISSIONS = True` in your Django settings.
+
 TurboDRF offers two permission modes: Django's default permissions or TurboDRF's advanced role-based permissions.
 
 #### Default Django Permissions (Simple Mode)
@@ -922,7 +924,7 @@ class BookAPITestCase(TestCase):
 
 ## 🤝 Contributing
 
-Open to contributors! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+Open to contributors!
 
 ```bash
 # Clone the repo
@@ -982,8 +984,6 @@ make lint
 ```
 
 ### Test Coverage
-
-Current test coverage: **100%** ✅
 
 View detailed coverage report:
 ```bash
