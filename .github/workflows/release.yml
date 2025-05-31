@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install bump2version
+    
+    - name: Get current version
+      id: current_version
+      run: |
+        echo "version=$(python -c 'import turbodrf; print(turbodrf.__version__)')" >> $GITHUB_OUTPUT
+    
+    - name: Determine version bump
+      id: version_bump
+      run: |
+        # Check commit messages since last tag
+        if git log --format=%B -n 50 | grep -E "^(feat|feature)(\(.+\))?:" > /dev/null; then
+          echo "bump=minor" >> $GITHUB_OUTPUT
+        elif git log --format=%B -n 50 | grep -E "^fix(\(.+\))?:" > /dev/null; then
+          echo "bump=patch" >> $GITHUB_OUTPUT
+        else
+          echo "bump=patch" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Bump version
+      id: bump_version
+      run: |
+        # Configure git
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Get current version parts
+        current_version="${{ steps.current_version.outputs.version }}"
+        IFS='.' read -r major minor patch <<< "$current_version"
+        
+        # Calculate new version
+        if [ "${{ steps.version_bump.outputs.bump }}" = "minor" ]; then
+          new_version="$major.$((minor + 1)).0"
+        else
+          new_version="$major.$minor.$((patch + 1))"
+        fi
+        
+        echo "new_version=$new_version" >> $GITHUB_OUTPUT
+        
+        # Update files
+        sed -i "s/__version__ = \".*\"/__version__ = \"$new_version\"/" turbodrf/__init__.py
+        sed -i "s/version=\".*\"/version=\"$new_version\"/" setup.py
+        sed -i "s/^version = \".*\"/version = \"$new_version\"/" pyproject.toml
+        
+        # Commit changes
+        git add turbodrf/__init__.py setup.py pyproject.toml
+        git commit -m "chore: release version $new_version [skip ci]" || echo "No changes to commit"
+    
+    - name: Push changes
+      if: steps.bump_version.outputs.new_version != steps.current_version.outputs.version
+      run: |
+        git push origin main
+    
+    - name: Create Release
+      if: steps.bump_version.outputs.new_version != steps.current_version.outputs.version
+      uses: ncipollo/release-action@v1
+      with:
+        tag: v${{ steps.bump_version.outputs.new_version }}
+        name: Release v${{ steps.bump_version.outputs.new_version }}
+        body: |
+          ## What's Changed
+          
+          See the [full changelog](https://github.com/${{ github.repository }}/compare/v${{ steps.current_version.outputs.version }}...v${{ steps.bump_version.outputs.new_version }})
+        draft: false
+        prerelease: false
+        token: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,53 @@
+name: Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New version number (e.g., 0.1.11)'
+        required: true
+        type: string
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Update version in Python files
+      run: |
+        # Update __init__.py
+        sed -i 's/__version__ = ".*"/__version__ = "${{ inputs.version }}"/' turbodrf/__init__.py
+        
+        # Update setup.py
+        sed -i 's/version=".*"/version="${{ inputs.version }}"/' setup.py
+        
+        # Update pyproject.toml
+        sed -i 's/^version = ".*"/version = "${{ inputs.version }}"/' pyproject.toml
+    
+    - name: Create Pull Request
+      uses: peter-evans/create-pull-request@v6
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: "chore: bump version to ${{ inputs.version }}"
+        title: "chore: bump version to ${{ inputs.version }}"
+        body: |
+          Automated version bump to ${{ inputs.version }}
+          
+          This PR updates the version in:
+          - `turbodrf/__init__.py`
+          - `setup.py`
+          - `pyproject.toml`
+        branch: bump-version-${{ inputs.version }}
+        delete-branch: true

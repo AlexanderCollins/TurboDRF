@@ -36,7 +36,7 @@ For more information, see: https://github.com/alexandercollins/turbodrf
 
 __version__ = "0.1.10"
 __author__ = "Alexander Collins"
-__email__ = "your.email@example.com"
+__email__ = ""
 __license__ = "MIT"
 
 
