@@ -182,3 +182,6 @@ TURBODRF_ROLES = {
 # TurboDRF Documentation Setting
 # Set to False to disable Swagger/ReDoc documentation
 TURBODRF_ENABLE_DOCS = True
+
+# Disable all permissions for development
+# TURBODRF_DISABLE_PERMISSIONS = True
