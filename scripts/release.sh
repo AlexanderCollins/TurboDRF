@@ -17,7 +17,7 @@ echo -e "${GREEN}Current version: ${CURRENT_VERSION}${NC}"
 if [ -z "$1" ]; then
     echo "Usage: $0 [patch|minor|major|version]"
     echo "Example: $0 patch"
-    echo "Example: $0 0.1.10"
+    echo "Example: $0 0.1.11"
     exit 1
 fi
 

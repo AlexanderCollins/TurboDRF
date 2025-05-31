@@ -11,9 +11,9 @@ This script automates the release process:
 
 Usage:
     python scripts/release.py patch  # 0.1.0 -> 0.1.1
-    python scripts/release.py minor  # 0.1.0 -> 0.1.10
+    python scripts/release.py minor  # 0.1.0 -> 0.1.11
     python scripts/release.py major  # 0.1.0 -> 1.0.0
-    python scripts/release.py 0.1.10  # Specific version
+    python scripts/release.py 0.1.11  # Specific version
 """
 
 import argparse
@@ -91,7 +91,7 @@ def main():
     parser = argparse.ArgumentParser(description="Automate TurboDRF releases")
     parser.add_argument(
         "version",
-        help="Version bump type (major/minor/patch) or specific version (e.g., 0.1.10)",
+        help="Version bump type (major/minor/patch) or specific version (e.g., 0.1.11)",
     )
     parser.add_argument(
         "--dry-run",

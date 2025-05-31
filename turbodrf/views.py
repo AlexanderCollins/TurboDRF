@@ -1,8 +1,9 @@
 from django.conf import settings
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.response import Response
 
 from .permissions import DefaultDjangoPermission, TurboDRFPermission
 from .serializers import TurboDRFSerializer
@@ -248,8 +249,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
         # Create unique ref_name for swagger
         if hasattr(self.model, "_meta"):
             ref_name = (
-                f"{self.model._meta.app_label}_"
-                f"{self.model._meta.model_name}_{action}"
+                f"{self.model._meta.app_label}_{self.model._meta.model_name}_{action}"
             )
         else:
             # Fallback for non-Django models (e.g., in tests)
@@ -503,3 +503,19 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
         """Property wrapper for filterset_fields to work with
         DjangoFilterBackend."""
         return self.get_filterset_fields()
+
+    def create(self, request, *args, **kwargs):
+        """
+        Create a model instance.
+
+        Overrides the default create method to ensure the response
+        returns with status 201 and the created instance data directly,
+        not wrapped in pagination.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(
+            serializer.data, status=status.HTTP_201_CREATED, headers=headers
+        )
