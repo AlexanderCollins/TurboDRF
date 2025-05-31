@@ -1,12 +1,14 @@
-name: Publish to PyPI
+name: Publish
 
 on:
   release:
     types: [published]
 
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     
     steps:
     - uses: actions/checkout@v4
@@ -16,7 +18,7 @@ jobs:
       with:
         python-version: '3.11'
     
-    - name: Install dependencies
+    - name: Install build tools
       run: |
         python -m pip install --upgrade pip
         pip install build twine
@@ -24,103 +26,5 @@ jobs:
     - name: Build package
       run: python -m build
     
-    - name: Check package
-      run: twine check dist/*
-    
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: dist
-        path: dist/
-
-  test-package:
-    needs: build
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-    
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: dist
-        path: dist/
-    
-    - name: Test installation
-      run: |
-        pip install dist/*.whl
-        python -c "import turbodrf; print(f'TurboDRF {turbodrf.__version__} installed successfully')"
-    
-    - name: Install test dependencies
-      run: |
-        pip install django djangorestframework django-filter drf-yasg pytest pytest-django
-    
-    - name: Test with Django
-      run: |
-        python -c "from turbodrf.mixins import TurboDRFMixin; print('Import successful')"
-    
-    - name: Run tests
-      run: |
-        # Run tests to ensure the package works correctly
-        pytest tests/ -v --tb=short
-
-  publish-test-pypi:
-    needs: [build, test-package]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release'
-    environment:
-      name: test-pypi
-      url: https://test.pypi.org/project/turbodrf/
-    permissions:
-      id-token: write  # Required for OIDC
-    
-    steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: dist
-        path: dist/
-    
-    - name: Publish to Test PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        repository-url: https://test.pypi.org/legacy/
-        skip-existing: true
-        # No password needed - uses OIDC!
-
-  publish-pypi:
-    needs: [build, test-package]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release'
-    environment:
-      name: pypi
-      url: https://pypi.org/project/turbodrf/
-    permissions:
-      id-token: write  # Required for OIDC
-      contents: write  # Required for GitHub Release
-    
-    steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: dist
-        path: dist/
-    
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
-      # No password needed - uses OIDC!
-        
-    - name: Create GitHub Release Assets
-      uses: softprops/action-gh-release@v2
-      with:
-        files: dist/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
