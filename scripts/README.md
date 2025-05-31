@@ -10,14 +10,14 @@ The easiest way to create a release is using the Makefile:
 # Patch release (0.1.0 -> 0.1.1)
 make release-patch
 
-# Minor release (0.1.0 -> 0.2.0)
+# Minor release (0.1.0 -> 0.1.10)
 make release-minor
 
 # Major release (0.1.0 -> 1.0.0)
 make release-major
 
 # Specific version
-make release VERSION=0.2.0
+make release VERSION=0.1.10
 
 # Quick release with auto-generated notes (requires GitHub CLI)
 make quick-release-patch
@@ -42,7 +42,7 @@ python scripts/release.py minor
 python scripts/release.py major
 
 # Specific version
-python scripts/release.py 0.2.0
+python scripts/release.py 0.1.10
 
 # Dry run (no changes)
 python scripts/release.py patch --dry-run
@@ -61,7 +61,7 @@ chmod +x scripts/release.sh
 ./scripts/release.sh patch
 ./scripts/release.sh minor
 ./scripts/release.sh major
-./scripts/release.sh 0.2.0
+./scripts/release.sh 0.1.10
 ```
 
 ## What the Scripts Do
