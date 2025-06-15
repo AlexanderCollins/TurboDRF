@@ -44,7 +44,7 @@ release-major:
 
 release:
 	@if [ -z "$(VERSION)" ]; then \
-		echo "Usage: make release VERSION=0.1.11"; \
+		echo "Usage: make release VERSION=0.1.12"; \
 		exit 1; \
 	fi
 	@python scripts/release.py $(VERSION)
