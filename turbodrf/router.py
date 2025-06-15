@@ -105,31 +105,33 @@ class TurboDRFRouter(DefaultRouter):
     def get_urls(self):
         """
         Generate URL patterns that work with or without trailing slashes.
-        
+
         This override ensures that POST requests work regardless of whether
         the client includes a trailing slash, avoiding the common Django
         redirect issue that loses POST data.
         """
         urls = super().get_urls()
-        
+
         # Create duplicate patterns without trailing slashes
         additional_urls = []
         for url_pattern in urls:
-            if hasattr(url_pattern, 'pattern') and hasattr(url_pattern.pattern, '_regex'):
+            if hasattr(url_pattern, "pattern") and hasattr(
+                url_pattern.pattern, "_regex"
+            ):
                 # Get the regex pattern
                 regex = url_pattern.pattern._regex
-                
+
                 # If it ends with '/$', create a version without it
-                if regex.endswith('/$'):
-                    new_regex = regex[:-2] + '$'  # Remove / before $
-                    
+                if regex.endswith("/$"):
+                    new_regex = regex[:-2] + "$"  # Remove / before $
+
                     # Create new URL pattern without trailing slash
                     new_pattern = re_path(
                         new_regex,
                         url_pattern.callback,
                         url_pattern.default_args,
-                        url_pattern.name + '_no_slash' if url_pattern.name else None
+                        url_pattern.name + "_no_slash" if url_pattern.name else None,
                     )
                     additional_urls.append(new_pattern)
-        
+
         return urls + additional_urls
