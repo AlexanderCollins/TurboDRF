@@ -18,18 +18,16 @@ class TestTrailingSlash(TestCase):
     def setUp(self):
         """Set up test fixtures."""
         self.client = APIClient()
-        
+
         # Create test user
-        self.user = User.objects.create_superuser(
-            username="admin", password="admin123"
-        )
+        self.user = User.objects.create_superuser(username="admin", password="admin123")
         self.user._test_roles = ["admin"]
-        
+
         # Create related model
         self.related = RelatedModel.objects.create(
             name="Test Related", description="Test"
         )
-        
+
         # Authenticate
         self.client.force_authenticate(user=self.user)
 
@@ -44,9 +42,9 @@ class TestTrailingSlash(TestCase):
             "is_active": True,
             "secret_field": "secret",
         }
-        
+
         response = self.client.post("/api/samplemodels/", data, format="json")
-        
+
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["title"], "Test Item 1")
         # Ensure response is not paginated
@@ -64,9 +62,9 @@ class TestTrailingSlash(TestCase):
             "is_active": True,
             "secret_field": "secret",
         }
-        
+
         response = self.client.post("/api/samplemodels", data, format="json")
-        
+
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["title"], "Test Item 2")
         # Ensure response is not paginated
@@ -81,14 +79,14 @@ class TestTrailingSlash(TestCase):
             price=Decimal("99.99"),
             related=self.related,
         )
-        
+
         # Test with trailing slash
         response1 = self.client.get("/api/samplemodels/")
         self.assertEqual(response1.status_code, status.HTTP_200_OK)
         self.assertIn("pagination", response1.data)
         self.assertIn("data", response1.data)
         self.assertEqual(len(response1.data["data"]), 1)
-        
+
         # Test without trailing slash
         response2 = self.client.get("/api/samplemodels")
         self.assertEqual(response2.status_code, status.HTTP_200_OK)
