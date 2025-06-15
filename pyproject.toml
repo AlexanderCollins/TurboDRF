@@ -49,6 +49,10 @@ dev = [
     "isort>=5.0",
     "mypy>=0.9",
 ]
+docs = [
+    "sphinx>=5.0",
+    "myst-parser>=2.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/alexandercollins/turbodrf"
