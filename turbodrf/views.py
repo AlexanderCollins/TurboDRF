@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.db import models
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status, viewsets
 from rest_framework.filters import OrderingFilter, SearchFilter
