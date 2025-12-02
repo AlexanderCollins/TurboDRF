@@ -1,3 +1,5 @@
+import hashlib
+
 from django.db import models
 from rest_framework import serializers
 
@@ -307,6 +309,12 @@ class TurboDRFSerializerFactory:
         read_only_fields_list = cls._get_read_only_fields(model, simple_fields, user)
         nested_fields_meta = nested_fields if nested_fields else {}
 
+        # Generate unique ref_name for swagger schema generation
+        fields_hash = hashlib.md5(",".join(sorted(all_fields)).encode()).hexdigest()[:8]
+        app_label = model_class._meta.app_label
+        model_name = model_class._meta.model_name
+        ref_name_value = f"{app_label}_{model_name}_{view_type}_{fields_hash}"
+
         # Create the main serializer class
         class DynamicSerializer(TurboDRFSerializer):
             def __init__(self, *args, **kwargs):
@@ -323,6 +331,8 @@ class TurboDRFSerializerFactory:
                 read_only_fields = read_only_fields_list
                 # Include nested fields metadata for TurboDRFSerializer
                 _nested_fields = nested_fields_meta
+                # Unique ref_name for swagger schema generation
+                ref_name = ref_name_value
 
         return DynamicSerializer
 
@@ -503,9 +513,17 @@ class TurboDRFSerializerFactory:
         model_class = model
         field_list = fields
 
+        # Generate unique ref_name for swagger schema generation
+        fields_hash = hashlib.md5(",".join(sorted(field_list)).encode()).hexdigest()[:8]
+        app_label = model_class._meta.app_label
+        model_name = model_class._meta.model_name
+        nested_ref_name = f"{app_label}_{model_name}_nested_{fields_hash}"
+
         class NestedSerializer(serializers.ModelSerializer):
             class Meta:
                 model = model_class
                 fields = field_list
+                # Unique ref_name for swagger schema generation
+                ref_name = nested_ref_name
 
         return NestedSerializer
