@@ -526,8 +526,8 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
                         queryset = queryset.distinct()
                     else:  # OR
                         q_lookup = {f"{rel_field_name}__{lookup_rest}__in": values}
-                        queryset = queryset.filter(**q_lookup).distinct()
-
+                        queryset = queryset.filter(**q_lookup)
+                queryset = queryset.distinct()
         return queryset
 
     @property
