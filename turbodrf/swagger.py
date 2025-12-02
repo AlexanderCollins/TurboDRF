@@ -315,7 +315,7 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
             for (path, path_regex, method, callback) in endpoints:
                 if _is_valid_endpoint_path(path):
                     if path not in filtered_dict:
-                        filtered_dict[path] = ([], [])
+                        filtered_dict[path] = (callback, [])
                     filtered_dict[path][1].append((method, callback))
             endpoints = filtered_dict
 
