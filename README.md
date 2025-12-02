@@ -157,8 +157,13 @@ GET /api/books/?search=django
 
 # Filter books
 GET /api/books/?author__name=Rowling&price__lt=20
-GET /api/books/?author__name=Rowling, J.K. # default as OR with author__name_cond=AND it is possible to change the behaviour
+# Filter books by multiple authors (OR by default)
+GET /api/books/?author__name=Rowling&author__name=J.K.
+# or with comma-separated values
+GET /api/books/?author__name=Rowling,J.K.
 
+# Use AND condition to find books with both criteria
+GET /api/books/?author__name=Rowling,J.K.&author__name_cond=AND
 # Order books
 GET /api/books/?ordering=-price,title
 
