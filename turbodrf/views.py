@@ -513,7 +513,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
                             break
                     cond = (str(cond_value).strip().upper() if cond_value is not None else None)
                     if cond not in ("AND", "OR"):
-                        cond = "OR" if len(cleaned) > 1 else "OR"
+                        cond = "OR"
 
                     m2m_filters.append((rel_field_name, lookup_rest, cleaned, cond))
 
