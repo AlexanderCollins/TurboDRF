@@ -83,10 +83,14 @@ def update_readme(percentage):
 
     # Pattern to match the coverage badge
     # Matches: [![Coverage](https://img.shields.io/badge/coverage-XX%25-color)]...
-    pattern = r'\[!\[Coverage\]\(https://img\.shields\.io/badge/coverage-[\d.]+%25-\w+\)\]'
+    pattern = (
+        r"\[!\[Coverage\]\(https://img\.shields\.io/badge/coverage-[\d.]+%25-\w+\)\]"
+    )
 
     # New badge
-    new_badge = f"[![Coverage](https://img.shields.io/badge/coverage-{percentage}%25-{color})]"
+    new_badge = (
+        f"[![Coverage](https://img.shields.io/badge/coverage-{percentage}%25-{color})]"
+    )
 
     # Check if badge exists
     if re.search(pattern, content):
@@ -95,7 +99,7 @@ def update_readme(percentage):
         print(f"Updated existing coverage badge to {percentage}%")
     else:
         # Badge doesn't exist, look for commented badge
-        comment_pattern = r'<!-- \[!\[Coverage\].*?\) -->'
+        comment_pattern = r"<!-- \[!\[Coverage\].*?\) -->"
         if re.search(comment_pattern, content):
             # Replace commented badge
             content = re.sub(comment_pattern, new_badge, content)
