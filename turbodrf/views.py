@@ -341,13 +341,14 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
 
         prefetch_fields = []
         for field in fields:
-            base_field = field.split("__")[0]
-            try:
-                model_field = self.model._meta.get_field(base_field)
-                if isinstance(model_field, models.ManyToManyField):
-                    prefetch_fields.append(base_field)
-            except Exception:
-                continue
+            if "__" in field:
+                base_field = field.split("__")[0]
+                try:
+                    model_field = self.model._meta.get_field(base_field)
+                    if isinstance(model_field, models.ManyToManyField):
+                        prefetch_fields.append(base_field)
+                except Exception:
+                    continue
 
         if prefetch_fields:
             queryset = queryset.prefetch_related(*prefetch_fields)
