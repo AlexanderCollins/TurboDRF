@@ -69,7 +69,15 @@ class TurboDRFSerializer(serializers.ModelSerializer):
 
                         field_name = full_field_path.replace("__", "_")
                         data[field_name] = value
-                        if base_field in data and base_field != field_name:
+                        # Only remove base_field if it is not explicitly requested in the serializer's fields
+                        if (
+                            base_field in data
+                            and base_field != field_name
+                            and (
+                                not hasattr(self, "fields")
+                                or base_field not in self.fields
+                            )
+                        ):
                             data.pop(base_field)
                     except Exception:
                         pass
