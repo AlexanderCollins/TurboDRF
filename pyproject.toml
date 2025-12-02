@@ -53,6 +53,9 @@ docs = [
     "sphinx>=5.0",
     "myst-parser>=2.0",
 ]
+allauth = [
+    "django-allauth>=0.57.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/alexandercollins/turbodrf"
