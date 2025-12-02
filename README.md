@@ -11,7 +11,7 @@
 [![DRF Version](https://img.shields.io/badge/djangorestframework-3.12%2B-red)](https://www.django-rest-framework.org/)
 [![License](https://img.shields.io/badge/license-MIT-purple)](LICENSE)
 [![Tests](https://img.shields.io/github/actions/workflow/status/alexandercollins/turbodrf/tests.yml?branch=main&label=tests)](https://github.com/alexandercollins/turbodrf/actions)
-<!-- [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/alexandercollins/turbodrf) -->
+[![Coverage](https://img.shields.io/badge/coverage-65.38%25-yellow)](https://github.com/alexandercollins/turbodrf)
 [![PyPI Version](https://img.shields.io/pypi/v/turbodrf?label=pypi)](https://pypi.org/project/turbodrf/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/alexandercollins/turbodrf/pulls)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
@@ -439,28 +439,78 @@ mapping = create_role_mapping(
 )
 ```
 
-#### Authentication Flow (SPA Example)
+#### Authentication Flow (Secure with httpOnly Cookies)
+
+**Recommended**: Use httpOnly session cookies for maximum security (prevents XSS attacks):
+
+```python
+# settings.py
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.SessionAuthentication',  # Uses httpOnly cookies
+    ],
+}
+
+# Allauth configuration for secure cookies
+SESSION_COOKIE_HTTPONLY = True  # Prevents JavaScript access (XSS protection)
+SESSION_COOKIE_SECURE = True    # HTTPS only (production)
+SESSION_COOKIE_SAMESITE = 'Lax' # CSRF protection
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SECURE = True       # HTTPS only (production)
+```
 
 ```javascript
-// 1. Login via allauth API
+// Frontend (SPA) - No token exposure!
+// 1. Login via allauth API (sets httpOnly cookie automatically)
 const response = await fetch('/api/auth/login/', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': getCsrfToken()  // From CSRF cookie
+    },
+    credentials: 'include',  // Include cookies
     body: JSON.stringify({ username: 'john', password: 'secret' })
 });
 
-const { meta } = await response.json();
-const sessionToken = meta.session_token;
-
-// 2. Use session token for TurboDRF API requests
+// 2. Make TurboDRF API requests (cookie sent automatically)
 const booksResponse = await fetch('/api/books/', {
-    headers: {
-        'X-Session-Token': sessionToken
-    }
+    credentials: 'include'  // Automatically includes httpOnly session cookie
 });
 
 // User's roles (from groups) automatically apply to permissions!
+// Session token never exposed to JavaScript = XSS-safe ✅
+
+function getCsrfToken() {
+    return document.cookie
+        .split('; ')
+        .find(row => row.startsWith('csrftoken='))
+        ?.split('=')[1];
+}
 ```
+
+**Alternative (Less Secure)**: Session tokens in headers:
+
+<details>
+<summary>Click to see token-based approach (not recommended for production)</summary>
+
+```javascript
+// This approach exposes tokens to JavaScript (XSS risk)
+const response = await fetch('/api/auth/login/', {
+    method: 'POST',
+    body: JSON.stringify({ username: 'john', password: 'secret' })
+});
+const { meta } = await response.json();
+const sessionToken = meta.session_token;
+
+// Token in headers
+const booksResponse = await fetch('/api/books/', {
+    headers: { 'X-Session-Token': sessionToken }
+});
+```
+
+⚠️ **Not recommended**: Tokens in localStorage/sessionStorage are vulnerable to XSS attacks.
+
+</details>
 
 #### Why Use allauth with TurboDRF?
 
