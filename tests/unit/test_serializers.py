@@ -259,3 +259,149 @@ class TestTurboDRFSerializerFactory(TestCase):
         self.assertIn("title", data)
         # The factory should handle nested fields appropriately
         # (exact behavior depends on implementation)
+
+
+class TestSerializerRefNameUniqueness(TestCase):
+    """Test cases for unique ref_name generation in serializers (Issue #10)."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.admin_user = User.objects.create_user(username="admin", is_superuser=True)
+        self.admin_user._test_roles = ["admin"]
+
+        self.related = RelatedModel.objects.create(
+            name="Related", description="Description"
+        )
+        self.test_obj = SampleModel.objects.create(
+            title="Test",
+            price=Decimal("100.00"),
+            quantity=1,
+            related=self.related,
+        )
+
+    def test_different_fields_produce_different_ref_names(self):
+        """Test that serializers with different fields have unique ref_names."""
+        # Create two serializers with different field sets
+        Serializer1 = TurboDRFSerializerFactory.create_serializer(
+            SampleModel, ["title", "price"], self.admin_user, view_type="list"
+        )
+        Serializer2 = TurboDRFSerializerFactory.create_serializer(
+            SampleModel, ["title", "description"], self.admin_user, view_type="list"
+        )
+
+        # Get ref_names from Meta
+        ref_name_1 = Serializer1.Meta.ref_name
+        ref_name_2 = Serializer2.Meta.ref_name
+
+        # They should be different
+        self.assertNotEqual(ref_name_1, ref_name_2)
+
+        # Both should contain the app_label and model_name
+        self.assertIn("test_app", ref_name_1)
+        self.assertIn("samplemodel", ref_name_1)
+        self.assertIn("test_app", ref_name_2)
+        self.assertIn("samplemodel", ref_name_2)
+
+    def test_same_fields_produce_same_ref_name(self):
+        """Test that serializers with identical fields have the same ref_name."""
+        # Create two serializers with the same field sets
+        Serializer1 = TurboDRFSerializerFactory.create_serializer(
+            SampleModel, ["title", "price"], self.admin_user, view_type="list"
+        )
+        Serializer2 = TurboDRFSerializerFactory.create_serializer(
+            SampleModel, ["title", "price"], self.admin_user, view_type="list"
+        )
+
+        # Get ref_names from Meta
+        ref_name_1 = Serializer1.Meta.ref_name
+        ref_name_2 = Serializer2.Meta.ref_name
+
+        # They should be the same (consistent hashing)
+        self.assertEqual(ref_name_1, ref_name_2)
+
+    def test_different_view_types_produce_different_ref_names(self):
+        """Test that different view types produce different ref_names."""
+        # Create serializers with same fields but different view types
+        ListSerializer = TurboDRFSerializerFactory.create_serializer(
+            SampleModel, ["title", "price"], self.admin_user, view_type="list"
+        )
+        DetailSerializer = TurboDRFSerializerFactory.create_serializer(
+            SampleModel, ["title", "price"], self.admin_user, view_type="detail"
+        )
+
+        # Get ref_names from Meta
+        list_ref_name = ListSerializer.Meta.ref_name
+        detail_ref_name = DetailSerializer.Meta.ref_name
+
+        # They should be different
+        self.assertNotEqual(list_ref_name, detail_ref_name)
+
+        # Should contain the view_type
+        self.assertIn("list", list_ref_name)
+        self.assertIn("detail", detail_ref_name)
+
+    def test_ref_name_format(self):
+        """Test that ref_name follows the expected format."""
+        SerializerClass = TurboDRFSerializerFactory.create_serializer(
+            SampleModel, ["title", "price"], self.admin_user, view_type="list"
+        )
+
+        ref_name = SerializerClass.Meta.ref_name
+
+        # Should be in format: app_label_model_name_view_type_hash
+        parts = ref_name.split("_")
+
+        self.assertGreaterEqual(len(parts), 4, "ref_name should have at least 4 parts")
+        self.assertEqual(parts[0], "test")
+        self.assertEqual(parts[1], "app")
+        self.assertEqual(parts[2], "samplemodel")
+        self.assertEqual(parts[3], "list")
+        # Last part should be the hash (8 characters)
+        self.assertEqual(len(parts[4]), 8)
+
+    def test_nested_serializer_has_unique_ref_name(self):
+        """Test that nested serializers also have unique ref_names."""
+        NestedSerializer = TurboDRFSerializerFactory._create_nested_serializer(
+            RelatedModel, ["name", "description"], self.admin_user
+        )
+
+        # Should have a ref_name
+        self.assertTrue(hasattr(NestedSerializer.Meta, "ref_name"))
+
+        ref_name = NestedSerializer.Meta.ref_name
+
+        # Should contain app_label, model_name, and "nested"
+        self.assertIn("test_app", ref_name)
+        self.assertIn("relatedmodel", ref_name)
+        self.assertIn("nested", ref_name)
+
+    def test_different_nested_fields_produce_different_ref_names(self):
+        """Test that nested serializers with different fields have unique ref_names."""
+        NestedSerializer1 = TurboDRFSerializerFactory._create_nested_serializer(
+            RelatedModel, ["name"], self.admin_user
+        )
+        NestedSerializer2 = TurboDRFSerializerFactory._create_nested_serializer(
+            RelatedModel, ["name", "description"], self.admin_user
+        )
+
+        ref_name_1 = NestedSerializer1.Meta.ref_name
+        ref_name_2 = NestedSerializer2.Meta.ref_name
+
+        # They should be different
+        self.assertNotEqual(ref_name_1, ref_name_2)
+
+    def test_field_order_does_not_affect_ref_name(self):
+        """Test that field order doesn't affect ref_name (fields are sorted)."""
+        # Create serializers with same fields in different order
+        Serializer1 = TurboDRFSerializerFactory.create_serializer(
+            SampleModel, ["title", "price", "description"], self.admin_user
+        )
+        Serializer2 = TurboDRFSerializerFactory.create_serializer(
+            SampleModel, ["price", "description", "title"], self.admin_user
+        )
+
+        ref_name_1 = Serializer1.Meta.ref_name
+        ref_name_2 = Serializer2.Meta.ref_name
+
+        # They should be the same (fields are sorted before hashing)
+        self.assertEqual(ref_name_1, ref_name_2)
