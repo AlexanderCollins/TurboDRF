@@ -330,7 +330,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
         for field in fields:
             if "__" in field:
                 base_field = field.split("__")[0]
-                # Controlla che sia FK o OneToOne
+                # Check that it is FK or OneToOne
                 model_field = self.model._meta.get_field(base_field)
                 if isinstance(model_field, (models.ForeignKey, models.OneToOneField)):
                     select_related_fields.append(base_field)
