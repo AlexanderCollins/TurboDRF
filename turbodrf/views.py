@@ -506,7 +506,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
                         if ck in request.query_params:
                             cond_value = request.query_params.get(ck)
                             break
-                        if ck in request.data:
+                        if hasattr(request, "data") and isinstance(request.data, dict) and ck in request.data:
                             cond_value = request.data.get(ck)
                             break
                     cond = (str(cond_value).strip().upper() if cond_value is not None else None)
