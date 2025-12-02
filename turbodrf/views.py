@@ -339,7 +339,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
         if select_related_fields:
             queryset = queryset.select_related(*select_related_fields)
 
-        prefetch_fields = []
+        prefetch_fields = set()
         for field in fields:
             if "__" in field:
                 base_field = field.split("__")[0]
