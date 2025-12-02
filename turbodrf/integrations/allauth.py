@@ -129,7 +129,10 @@ class AllAuthRoleMiddleware:
         if hasattr(request, "user") and request.user.is_authenticated:
             # Check if user already has _test_roles (used by test property)
             # or if roles is already customized in __dict__
-            if not hasattr(request.user, "_test_roles") and "roles" not in request.user.__dict__:
+            if (
+                not hasattr(request.user, "_test_roles")
+                and "roles" not in request.user.__dict__
+            ):
                 # Get roles from groups
                 roles = get_user_roles_from_groups(request.user)
 
