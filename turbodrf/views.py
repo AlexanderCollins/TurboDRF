@@ -449,7 +449,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
                                 values = [qv]
 
                 # Also collect from request.data (POST support)
-                if key_name in request.data:
+                if hasattr(request, "data") and isinstance(request.data, dict) and key_name in request.data:
                     dv = request.data.get(key_name)
                     if isinstance(dv, list):
                         values_from_data = [str(x) for x in dv]
