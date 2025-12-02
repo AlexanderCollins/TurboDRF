@@ -16,7 +16,11 @@ from drf_yasg.views import get_schema_view
 from rest_framework import permissions
 
 
-def get_turbodrf_schema_view(title="TurboDRF API", version="v1", description="Auto-generated API with role-based access control powered by TurboDRF"):
+def get_turbodrf_schema_view(
+    title="TurboDRF API",
+    version="v1",
+    description="Auto-generated API with role-based access control powered by TurboDRF",
+):
     """
     Create and configure the schema view for TurboDRF API documentation.
 
