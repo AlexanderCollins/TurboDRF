@@ -269,6 +269,31 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
         return schema
 
     def get_endpoints(self, request):
+        """
+        Filter endpoints to include only those with trailing slashes or file extensions.
+
+        This method overrides the parent class's `get_endpoints` to filter the list of
+        API endpoints. Only endpoints whose paths end with a trailing slash ("/") or
+        have a file extension (e.g., ".json", ".html") in the last path segment are included.
+        This filtering is necessary to exclude endpoints that are not intended to be
+        exposed in the API documentation, such as those without a trailing slash, which
+        are typically not RESTful or may be internal.
+
+        Args:
+            request: The HTTP request object. Used to determine the context for endpoint
+                generation, such as user permissions or other request-specific data.
+
+        Returns:
+            dict: A dictionary mapping endpoint paths to (viewset, methods) tuples,
+                or a transformed dictionary if the original return value is not a dict.
+                Only endpoints with trailing slashes or file extensions are included.
+
+        Filtering Logic:
+            - Endpoints are included if their path ends with a "/" (trailing slash), or
+              if the last segment of the path contains a "." (indicating a file extension).
+            - Endpoints without a trailing slash or file extension are excluded to avoid
+              exposing non-RESTful or internal endpoints in the documentation.
+        """
         endpoints = super().get_endpoints(request)
 
         if isinstance(endpoints, dict):
