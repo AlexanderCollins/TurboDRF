@@ -296,16 +296,24 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
         """
         endpoints = super().get_endpoints(request)
 
+        def _is_valid_endpoint_path(path):
+            # Only include paths that end with '/' or have a known format suffix (e.g., .json, .yaml)
+            if path.endswith('/'):
+                return True
+            # Match known format suffixes (e.g., .json, .yaml, .html)
+            import re
+            return re.search(r'\.(json|yaml|yml|html|xml)$', path.split('/')[-1]) is not None
+
         if isinstance(endpoints, dict):
             filtered_dict = {}
             for path, (viewset, methods) in endpoints.items():
-                if path.endswith('/') or '.' in path.split('/')[-1]:
+                if _is_valid_endpoint_path(path):
                     filtered_dict[path] = (viewset, methods)
             endpoints = filtered_dict
         else:
             filtered_dict = {}
             for (path, path_regex, method, callback) in endpoints:
-                if path.endswith('/') or '.' in path.split('/')[-1]:
+                if _is_valid_endpoint_path(path):
                     if path not in filtered_dict:
                         filtered_dict[path] = ([], [])
                     filtered_dict[path][1].append((method, callback))
