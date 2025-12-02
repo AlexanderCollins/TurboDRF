@@ -11,7 +11,7 @@
 [![DRF Version](https://img.shields.io/badge/djangorestframework-3.12%2B-red)](https://www.django-rest-framework.org/)
 [![License](https://img.shields.io/badge/license-MIT-purple)](LICENSE)
 [![Tests](https://img.shields.io/github/actions/workflow/status/alexandercollins/turbodrf/tests.yml?branch=main&label=tests)](https://github.com/alexandercollins/turbodrf/actions)
-<!-- [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/alexandercollins/turbodrf) -->
+[![Coverage](https://img.shields.io/badge/coverage-65.38%25-yellow)](https://github.com/alexandercollins/turbodrf)
 [![PyPI Version](https://img.shields.io/pypi/v/turbodrf?label=pypi)](https://pypi.org/project/turbodrf/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/alexandercollins/turbodrf/pulls)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
@@ -310,11 +310,217 @@ User.add_to_class('roles', property(get_user_roles))
 # Option 2: Custom User model
 class User(AbstractUser):
     user_roles = models.JSONField(default=list)
-    
+
     @property
     def roles(self):
         return self.user_roles
 ```
+
+### 🔐 Authentication with django-allauth (Optional)
+
+TurboDRF provides seamless integration with [django-allauth](https://docs.allauth.org/) for modern, headless authentication. This is perfect for single-page applications (SPAs) and mobile apps.
+
+#### Installation
+
+```bash
+# Install TurboDRF with allauth support
+pip install turbodrf[allauth]
+
+# Or install separately
+pip install turbodrf django-allauth
+```
+
+#### Setup
+
+```python
+# settings.py
+INSTALLED_APPS = [
+    'django.contrib.auth',
+    'django.contrib.messages',
+    'django.contrib.sessions',
+    # ... other apps
+    'allauth',
+    'allauth.account',
+    'allauth.headless',  # For API authentication
+    'rest_framework',
+    'turbodrf',
+    'myapp',
+]
+
+MIDDLEWARE = [
+    # ... other middleware
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # Add TurboDRF allauth middleware
+    'turbodrf.integrations.allauth.AllAuthRoleMiddleware',
+]
+
+# Enable allauth integration
+TURBODRF_ALLAUTH_INTEGRATION = True
+
+# Map Django groups to TurboDRF roles (optional)
+# If not provided, group names are used directly as role names
+TURBODRF_ALLAUTH_ROLE_MAPPING = {
+    'Administrators': 'admin',
+    'Content Editors': 'editor',
+    'Basic Users': 'viewer',
+}
+
+# Configure allauth
+ACCOUNT_EMAIL_VERIFICATION = 'optional'
+HEADLESS_ONLY = True  # Disable traditional allauth views
+```
+
+#### How It Works
+
+The integration automatically:
+1. **Maps Django groups to TurboDRF roles**: Users' group memberships are converted to roles
+2. **Adds `roles` property to users**: The middleware populates `user.roles` from group membership
+3. **Works with allauth's session tokens**: Perfect for headless/SPA authentication
+
+#### Example Usage
+
+```python
+# Create role-based groups
+from turbodrf.integrations import create_role_groups
+
+# Create standard role groups
+create_role_groups(['admin', 'editor', 'viewer'])
+
+# Assign roles to users
+from turbodrf.integrations import assign_roles_to_user
+
+user = User.objects.get(username='john')
+assign_roles_to_user(user, ['editor', 'viewer'])
+
+# Now user.roles returns ['editor', 'viewer'] automatically!
+```
+
+#### Role Mapping
+
+By default, Django group names are used as role names:
+```python
+# User in group "admin" → role "admin"
+# User in group "editor" → role "editor"
+```
+
+Custom mapping allows different group names:
+```python
+TURBODRF_ALLAUTH_ROLE_MAPPING = {
+    'Site Administrators': 'admin',    # Group "Site Administrators" → role "admin"
+    'Content Team': 'editor',          # Group "Content Team" → role "editor"
+    'Read Only': 'viewer',             # Group "Read Only" → role "viewer"
+}
+```
+
+#### Utilities
+
+```python
+from turbodrf.integrations import (
+    create_role_groups,
+    assign_roles_to_user,
+    get_users_with_role,
+    create_role_mapping,
+)
+
+# Create role groups
+groups = create_role_groups(['admin', 'editor', 'viewer'])
+
+# Assign multiple roles to a user
+assign_roles_to_user(user, ['admin', 'editor'])
+
+# Get all users with a specific role
+admins = get_users_with_role('admin')
+
+# Create custom role mapping
+mapping = create_role_mapping(
+    ['Admins', 'Editors'],
+    ['admin', 'editor']
+)
+```
+
+#### Authentication Flow (Secure with httpOnly Cookies)
+
+**Recommended**: Use httpOnly session cookies for maximum security (prevents XSS attacks):
+
+```python
+# settings.py
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.SessionAuthentication',  # Uses httpOnly cookies
+    ],
+}
+
+# Allauth configuration for secure cookies
+SESSION_COOKIE_HTTPONLY = True  # Prevents JavaScript access (XSS protection)
+SESSION_COOKIE_SECURE = True    # HTTPS only (production)
+SESSION_COOKIE_SAMESITE = 'Lax' # CSRF protection
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SECURE = True       # HTTPS only (production)
+```
+
+```javascript
+// Frontend (SPA) - No token exposure!
+// 1. Login via allauth API (sets httpOnly cookie automatically)
+const response = await fetch('/api/auth/login/', {
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/json',
+        'X-CSRFToken': getCsrfToken()  // From CSRF cookie
+    },
+    credentials: 'include',  // Include cookies
+    body: JSON.stringify({ username: 'john', password: 'secret' })
+});
+
+// 2. Make TurboDRF API requests (cookie sent automatically)
+const booksResponse = await fetch('/api/books/', {
+    credentials: 'include'  // Automatically includes httpOnly session cookie
+});
+
+// User's roles (from groups) automatically apply to permissions!
+// Session token never exposed to JavaScript = XSS-safe ✅
+
+function getCsrfToken() {
+    return document.cookie
+        .split('; ')
+        .find(row => row.startsWith('csrftoken='))
+        ?.split('=')[1];
+}
+```
+
+**Alternative (Less Secure)**: Session tokens in headers:
+
+<details>
+<summary>Click to see token-based approach (not recommended for production)</summary>
+
+```javascript
+// This approach exposes tokens to JavaScript (XSS risk)
+const response = await fetch('/api/auth/login/', {
+    method: 'POST',
+    body: JSON.stringify({ username: 'john', password: 'secret' })
+});
+const { meta } = await response.json();
+const sessionToken = meta.session_token;
+
+// Token in headers
+const booksResponse = await fetch('/api/books/', {
+    headers: { 'X-Session-Token': sessionToken }
+});
+```
+
+⚠️ **Not recommended**: Tokens in localStorage/sessionStorage are vulnerable to XSS attacks.
+
+</details>
+
+#### Why Use allauth with TurboDRF?
+
+- **Separation of concerns**: allauth handles authentication, TurboDRF handles authorization
+- **Modern auth flows**: Email verification, password reset, social auth (Google, GitHub, etc.)
+- **Headless-first**: Perfect for SPAs and mobile apps
+- **Automatic role sync**: Group membership automatically becomes roles
+- **Battle-tested**: allauth is widely used and well-maintained
+
+For more details, see [django-allauth documentation](https://docs.allauth.org/).
 
 ### 🔍 Searching and Filtering
 
