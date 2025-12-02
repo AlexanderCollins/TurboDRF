@@ -57,7 +57,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                     value = instance
                     try:
                         parts = full_field_path.split("__")
-                        for i, part in enumerate(parts):
+                        for part in parts:
                             if value is None:
                                 break
                             attr = getattr(value, part, None)
