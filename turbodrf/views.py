@@ -413,7 +413,9 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
                         request._request.GET = original_get
 
                 # Prevent DRF from applying DjangoFilterBackend again later
-                self.filter_backends = [fb for fb in self.filter_backends if fb is not DjangoFilterBackend]
+                if not hasattr(self, '_original_filter_backends'):
+                    self._original_filter_backends = self.filter_backends
+                self.filter_backends = [fb for fb in self._original_filter_backends if fb is not DjangoFilterBackend]
             else:
                 # No M2M special handling needed — let DjangoFilterBackend run normally
                 queryset = DjangoFilterBackend().filter_queryset(request, queryset, self)
