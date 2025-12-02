@@ -519,15 +519,11 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
             if m2m_filters:
                 for idx, (rel_field_name, lookup_rest, values, cond) in enumerate(m2m_filters):
                     if cond == "AND":
-                        ann_name = f"_turbodrf_m2m_matched_{idx}"
-                        q_lookup = {f"{rel_field_name}__{lookup_rest}__in": values}
-                        queryset = queryset.annotate(
-                            **{
-                                ann_name: Count(
-                                    rel_field_name, filter=Q(**q_lookup), distinct=True
-                                )
-                            }
-                        ).filter(**{ann_name: len(values)})
+                        # Apply each value as a separate filter for AND logic
+                        for value in values:
+                            q_lookup = {f"{rel_field_name}__{lookup_rest}": value}
+                            queryset = queryset.filter(**q_lookup)
+                        queryset = queryset.distinct()
                     else:  # OR
                         q_lookup = {f"{rel_field_name}__{lookup_rest}__in": values}
                         queryset = queryset.filter(**q_lookup).distinct()
