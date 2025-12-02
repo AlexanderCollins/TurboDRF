@@ -334,9 +334,11 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
                 base_field = field.split("__")[0]
                 model_field = self.model._meta.get_field(base_field)
                 if isinstance(model_field, (models.ForeignKey, models.OneToOneField)):
-                    select_related_fields.append(base_field)
+                    if base_field not in select_related_fields:
+                        select_related_fields.append(base_field)
                 if isinstance(model_field, models.ManyToManyField):
-                    prefetch_fields.append(base_field)
+                    if base_field not in prefetch_fields:
+                        prefetch_fields.append(base_field)
 
         if select_related_fields:
             queryset = queryset.select_related(*select_related_fields)
