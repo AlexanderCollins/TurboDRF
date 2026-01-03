@@ -5,8 +5,10 @@ from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
+from .filter_backends import ORFilterBackend
 from .permissions import DefaultDjangoPermission, TurboDRFPermission
 from .serializers import TurboDRFSerializer
+from .tracking import get_viewset_base_classes
 
 
 class TurboDRFPagination(PageNumberPagination):
@@ -71,7 +73,11 @@ class TurboDRFPagination(PageNumberPagination):
         )
 
 
-class TurboDRFViewSet(viewsets.ModelViewSet):
+# Get base classes with optional tracking mixin
+_viewset_bases = get_viewset_base_classes()
+
+
+class TurboDRFViewSet(*_viewset_bases):
     """
     Base ViewSet for TurboDRF-enabled models with automatic configuration.
 
@@ -134,7 +140,17 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
         else []
     )
     pagination_class = TurboDRFPagination
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter, ORFilterBackend]
+
+    # Set custom swagger schema class for better OpenAPI documentation
+    # This prevents custom actions from incorrectly showing all model fields
+    try:
+        from .swagger import TurboDRFSwaggerAutoSchema
+
+        swagger_schema = TurboDRFSwaggerAutoSchema
+    except ImportError:
+        # drf-yasg not installed, skip swagger configuration
+        pass
 
     model = None  # Will be set by the router
 
@@ -228,19 +244,38 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
         # validation handle permissions
         use_default_perms = getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False)
 
-        if (
-            not use_default_perms
-            and user
-            and hasattr(user, "roles")
-            and self.action in ["list", "retrieve"]
-        ):
-            # Use the factory for permission-based field filtering
-            # (TurboDRF permissions mode)
-            from .serializers import TurboDRFSerializerFactory
+        if not use_default_perms and user and self.action in ["list", "retrieve"]:
+            # For unauthenticated users, check if guest role is configured
+            if not user.is_authenticated:
+                TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
 
-            return TurboDRFSerializerFactory.create_serializer(
-                self.model, original_fields, user
-            )
+                # Only use guest role if it's defined in settings
+                if "guest" in TURBODRF_ROLES:
+                    # Create a pseudo-user object with "guest" role
+                    class GuestUser:
+                        roles = ["guest"]
+                        is_authenticated = False
+
+                    user = GuestUser()
+                else:
+                    # No guest role defined, skip factory and use default serializer
+                    pass
+            elif hasattr(user, "roles"):
+                # Use the factory for permission-based field filtering
+                # (TurboDRF permissions mode)
+                from .serializers import TurboDRFSerializerFactory
+
+                return TurboDRFSerializerFactory.create_serializer(
+                    self.model, original_fields, user
+                )
+
+            # If we have a user with roles (including guest), use factory
+            if hasattr(user, "roles"):
+                from .serializers import TurboDRFSerializerFactory
+
+                return TurboDRFSerializerFactory.create_serializer(
+                    self.model, original_fields, user
+                )
 
         # Create serializer class dynamically with unique name per action
         action = self.action or "default"
@@ -311,7 +346,12 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
             - Automatic detection of optimal fetch strategies
             - Configuration options for custom optimizations
         """
-        queryset = super().get_queryset()
+        # If model is set (typical for TurboDRF), use it directly
+        # Otherwise fall back to the queryset attribute
+        if self.model is not None:
+            queryset = self.model.objects.all()
+        else:
+            queryset = super().get_queryset()
 
         # Add default ordering by primary key to avoid pagination warnings
         if not queryset.ordered:
@@ -395,7 +435,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
 
         This method dynamically generates filter configurations for all
         model fields with common lookup expressions like gte, lte, exact,
-        icontains, etc.
+        icontains, etc. It also includes ManyToMany fields.
 
         Returns:
             dict: Field configurations with lookup expressions.
@@ -405,6 +445,7 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
             GET /api/articles/?created_at__gte=2024-01-01
             GET /api/articles/?title__icontains=django
             GET /api/articles/?price__gte=10&price__lte=100
+            GET /api/products/?categories__slug=electronics
 
         Note:
             JSONField and BinaryField are excluded from automatic filtering
@@ -415,25 +456,22 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
 
         filterset_fields = {}
 
-        # Get all fields from the model
-        for field in self.model._meta.fields:
-            field_name = field.name
-
-            # Check field class name for special handling
+        # Helper function to get lookups for a field
+        def get_field_lookups(field):
             field_class_name = field.__class__.__name__
 
             # Skip fields that django-filter doesn't support or that
             # don't make sense to filter
             unsupported_fields = ["JSONField", "BinaryField", "FilePathField"]
             if field_class_name in unsupported_fields:
-                continue
+                return None
 
             # Also check by importing JSONField classes directly for extra safety
             try:
                 from django.db.models import JSONField as ModelsJSONField
 
                 if isinstance(field, ModelsJSONField):
-                    continue
+                    return None
             except ImportError:
                 pass
 
@@ -442,24 +480,24 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
                 from django.contrib.postgres.fields import JSONField as PGJSONField
 
                 if isinstance(field, PGJSONField):
-                    continue
+                    return None
             except ImportError:
                 pass
 
             # Skip any field that has 'json' in its class name (case insensitive)
             # This catches custom JSONField implementations
             if "json" in field_class_name.lower():
-                continue
+                return None
 
             # Define lookups based on field type
             if isinstance(
                 field, (models.IntegerField, models.DecimalField, models.FloatField)
             ):
                 # Numeric fields get comparison lookups
-                filterset_fields[field_name] = ["exact", "gte", "lte", "gt", "lt"]
+                return ["exact", "gte", "lte", "gt", "lt"]
             elif isinstance(field, (models.DateField, models.DateTimeField)):
                 # Date fields get date lookups
-                filterset_fields[field_name] = [
+                return [
                     "exact",
                     "gte",
                     "lte",
@@ -471,10 +509,10 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
                 ]
             elif isinstance(field, models.BooleanField):
                 # Boolean fields only need exact
-                filterset_fields[field_name] = ["exact"]
+                return ["exact"]
             elif isinstance(field, (models.CharField, models.TextField)):
                 # Text fields get string lookups
-                filterset_fields[field_name] = [
+                return [
                     "exact",
                     "icontains",
                     "istartswith",
@@ -482,19 +520,31 @@ class TurboDRFViewSet(viewsets.ModelViewSet):
                 ]
             elif isinstance(field, models.ForeignKey):
                 # Foreign keys get exact lookup
-                filterset_fields[field_name] = ["exact"]
+                return ["exact"]
             elif isinstance(field, (models.FileField, models.ImageField)):
                 # File fields can be filtered by exact match or if they're null
-                filterset_fields[field_name] = ["exact", "isnull"]
+                return ["exact", "isnull"]
             elif isinstance(field, models.UUIDField):
                 # UUID fields only support exact matching
-                filterset_fields[field_name] = ["exact", "isnull"]
+                return ["exact", "isnull"]
             elif isinstance(field, models.GenericIPAddressField):
                 # IP address fields support exact and startswith
-                filterset_fields[field_name] = ["exact", "istartswith"]
+                return ["exact", "istartswith"]
             else:
                 # Default to exact lookup
-                filterset_fields[field_name] = ["exact"]
+                return ["exact"]
+
+        # Get all regular fields from the model
+        for field in self.model._meta.fields:
+            lookups = get_field_lookups(field)
+            if lookups:
+                filterset_fields[field.name] = lookups
+
+        # Get all ManyToMany fields
+        for field in self.model._meta.many_to_many:
+            # ManyToMany fields support exact lookup by ID
+            # They also support filtering through related model fields
+            filterset_fields[field.name] = ["exact"]
 
         return filterset_fields
 

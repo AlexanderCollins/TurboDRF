@@ -68,16 +68,25 @@ class TurboDRFPermission(BasePermission):
         Returns:
             bool: True if permission is granted, False otherwise.
         """
-        # Allow read access for unauthenticated users (viewer role)
+        model = view.model
+        config = model.turbodrf()
+
+        # Check if public access is allowed for this model
+        # Default to True for backward compatibility
+        public_access = config.get("public_access", True)
+
+        # Allow read access for unauthenticated users if public_access is enabled
         if not request.user or not request.user.is_authenticated:
             # Only allow GET and OPTIONS requests for unauthenticated users
-            return request.method in ["GET", "OPTIONS"]
+            if public_access and request.method in ["GET", "OPTIONS"]:
+                return True
+            # For models without public_access, deny all access
+            return False
 
         if not hasattr(request.user, "roles"):
             return False
 
         user_permissions = self._get_user_permissions(request.user)
-        model = view.model
         app_label = model._meta.app_label
         model_name = model._meta.model_name
 
