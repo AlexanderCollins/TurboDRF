@@ -1,6 +1,6 @@
 from decimal import Decimal
+from unittest import skip
 
-import pytest
 from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
 from rest_framework import status
@@ -50,8 +50,8 @@ class TestDisablePermissions(TestCase):
         self.assertEqual(response.data["title"], "Test Item")
 
     @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
-    @pytest.mark.skip(
-        reason="Test passes in isolation but fails "
+    @skip(
+        "Test passes in isolation but fails "
         "in full suite due to test isolation issues"
     )
     def test_permissions_disabled_allows_write_operations(self):

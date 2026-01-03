@@ -83,18 +83,28 @@ class TurboDRFRouter(DefaultRouter):
                     # Get custom endpoint or use default
                     endpoint = config.get("endpoint", f"{model._meta.model_name}s")
 
+                    # Get lookup field if specified
+                    lookup_field = config.get("lookup_field", None)
+
+                    # Build viewset attributes
+                    viewset_attrs = {
+                        "model": model,
+                        "queryset": model.objects.all(),
+                        "__module__": model.__module__,
+                        "__doc__": (
+                            f"Auto-generated ViewSet for {model.__name__} model."
+                        ),
+                    }
+
+                    # Add lookup_field if specified
+                    if lookup_field:
+                        viewset_attrs["lookup_field"] = lookup_field
+
                     # Create a custom viewset for this model
                     viewset_class = type(
                         f"{model.__name__}ViewSet",
                         (TurboDRFViewSet,),
-                        {
-                            "model": model,
-                            "queryset": model.objects.all(),
-                            "__module__": model.__module__,
-                            "__doc__": (
-                                f"Auto-generated ViewSet for {model.__name__} model."
-                            ),
-                        },
+                        viewset_attrs,
                     )
 
                     # Register the viewset

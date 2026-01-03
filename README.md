@@ -1058,6 +1058,398 @@ TurboDRF is optimized for speed and efficiency with automatic query optimization
    }
    ```
 
+### 🔍 OR Query Filtering
+
+TurboDRF supports advanced OR filtering for complex queries using the `ORFilterBackend`:
+
+```python
+# settings.py
+REST_FRAMEWORK = {
+    'DEFAULT_FILTER_BACKENDS': [
+        'turbodrf.filter_backends.ORFilterBackend',
+        'django_filters.rest_framework.DjangoFilterBackend',
+        # ... other backends
+    ]
+}
+```
+
+#### Basic OR Queries
+
+Use the `_or` suffix to filter with OR logic:
+
+```bash
+# Find books with title "Django" OR "Python"
+GET /api/books/?title_or=Django&title_or=Python
+
+# Find books at price $20 OR $30
+GET /api/books/?price_or=20.00&price_or=30.00
+
+# Find books by author ID 1 OR 2
+GET /api/books/?author_or=1&author_or=2
+```
+
+#### OR Queries with Lookups
+
+Combine OR filtering with Django's lookup syntax:
+
+```bash
+# Title contains "Django" OR "Python" (case-insensitive)
+GET /api/books/?title__icontains_or=django&title__icontains_or=python
+
+# Price >= $50 OR >= $100
+GET /api/books/?price__gte_or=50&price__gte_or=100
+
+# Published in 2023 OR 2024
+GET /api/books/?published_date__year_or=2023&published_date__year_or=2024
+```
+
+#### Combining OR with AND Filters
+
+Mix OR and regular filters - OR groups are combined with AND:
+
+```bash
+# (Title "Django" OR "Python") AND (is_active=True)
+GET /api/books/?title_or=Django&title_or=Python&is_active=true
+
+# (Author 1 OR 2) AND (Price < 50)
+GET /api/books/?author_or=1&author_or=2&price__lt=50
+```
+
+#### Multiple OR Fields
+
+Use different OR fields together (combined with AND):
+
+```bash
+# (Title "Django" OR "Python") AND (Category "Programming" OR "Web")
+GET /api/books/?title_or=Django&title_or=Python&category_or=Programming&category_or=Web
+```
+
+### 🌐 Public/Private Access Control
+
+Control public accessibility of your API endpoints with fine-grained access controls:
+
+```python
+class Book(models.Model, TurboDRFMixin):
+    title = models.CharField(max_length=200)
+    is_published = models.BooleanField(default=False)
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            'fields': ['title', 'author', 'price'],
+            # Allow unauthenticated GET requests
+            'public_access': True,  # Default: True for backward compatibility
+        }
+
+class PrivateDocument(models.Model, TurboDRFMixin):
+    title = models.CharField(max_length=200)
+    content = models.TextField()
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            'fields': ['title', 'content'],
+            # Require authentication for all requests
+            'public_access': False,  # Only authenticated users can access
+        }
+```
+
+#### Guest Role Support
+
+Define permissions for unauthenticated users using the `guest` role:
+
+```python
+# settings.py
+TURBODRF_ROLES = {
+    'guest': [
+        # Unauthenticated users can read books but with limited fields
+        'books.book.read',
+        'books.book.title.read',
+        'books.book.author.read',
+        # No price visibility for guests
+    ],
+    'viewer': [
+        'books.book.read',
+        'books.book.title.read',
+        'books.book.author.read',
+        'books.book.price.read',  # Authenticated users can see prices
+    ],
+}
+```
+
+**How it works:**
+- `public_access: True` - Allows unauthenticated GET/OPTIONS requests
+- `public_access: False` - Requires authentication for all requests
+- Unauthenticated users with `public_access: True` get the `guest` role
+- Field visibility for guests is controlled by `guest` role permissions
+
+### 🔐 Keycloak/OpenID Connect Integration
+
+Integrate with Keycloak or any OpenID Connect provider for enterprise authentication:
+
+#### Installation
+
+```bash
+# Install with social auth support
+pip install turbodrf social-auth-app-django
+```
+
+#### Configuration
+
+```python
+# settings.py
+INSTALLED_APPS = [
+    # ... other apps
+    'social_django',
+    'turbodrf',
+]
+
+MIDDLEWARE = [
+    # ... other middleware
+    'turbodrf.integrations.keycloak.KeycloakRoleMiddleware',
+]
+
+# Enable Keycloak integration
+TURBODRF_KEYCLOAK_INTEGRATION = True
+
+# Configure role claim path (default: 'roles')
+TURBODRF_KEYCLOAK_ROLE_CLAIM = 'roles'  # For top-level roles
+# TURBODRF_KEYCLOAK_ROLE_CLAIM = 'realm_access.roles'  # For realm roles
+# TURBODRF_KEYCLOAK_ROLE_CLAIM = 'resource_access.my-client.roles'  # For client roles
+
+# Optional: Map Keycloak roles to TurboDRF roles
+TURBODRF_KEYCLOAK_ROLE_MAPPING = {
+    'realm-admin': 'admin',
+    'content-editor': 'editor',
+    'basic-user': 'viewer',
+}
+
+# Social auth configuration
+SOCIAL_AUTH_KEYCLOAK_KEY = 'your-client-id'
+SOCIAL_AUTH_KEYCLOAK_SECRET = 'your-client-secret'
+SOCIAL_AUTH_KEYCLOAK_PUBLIC_KEY = 'your-public-key'
+```
+
+#### How It Works
+
+The Keycloak integration:
+1. **Extracts roles from ID tokens** - Supports nested claims (e.g., `realm_access.roles`)
+2. **Maps Keycloak roles to TurboDRF roles** - Optional custom mapping
+3. **Automatically assigns roles to users** - Via middleware on each request
+4. **Supports realm and client roles** - Flexible claim path configuration
+
+#### Helper Functions
+
+```python
+from turbodrf.integrations.keycloak import (
+    extract_roles_from_token,
+    map_keycloak_roles_to_turbodrf,
+    get_user_roles_from_social_auth,
+    setup_keycloak_integration,
+)
+
+# Extract roles from an ID token
+token = {'realm_access': {'roles': ['admin', 'editor']}}
+roles = extract_roles_from_token(token)  # ['admin', 'editor']
+
+# Map Keycloak roles to TurboDRF roles
+keycloak_roles = ['realm-admin', 'content-editor']
+turbodrf_roles = map_keycloak_roles_to_turbodrf(keycloak_roles)  # ['admin', 'editor']
+
+# Get roles from a user's social auth data
+roles = get_user_roles_from_social_auth(user)
+
+# Check integration status
+status = setup_keycloak_integration()
+print(status)  # {'social_auth_installed': True, 'integration_enabled': True, ...}
+```
+
+### 📊 API Request Tracking Integration
+
+Integrate with [drf-api-tracking](https://github.com/lingster/drf-api-tracking) to log all API requests:
+
+#### Installation
+
+```bash
+pip install turbodrf drf-api-tracking
+```
+
+#### Configuration
+
+```python
+# settings.py
+INSTALLED_APPS = [
+    # ... other apps
+    'rest_framework_tracking',
+    'turbodrf',
+]
+
+# Optional: Configure tracking settings
+DRF_TRACKING_ADMIN_LOG_READONLY = True
+DRF_TRACKING_TIMEOUT_FUNCTION = 'myapp.utils.get_request_timeout'
+```
+
+**That's it!** TurboDRF automatically detects drf-api-tracking and enables logging for all API requests.
+
+#### What Gets Tracked
+
+- HTTP method, path, and query parameters
+- Request and response bodies
+- Response status codes
+- Request/response timestamps
+- User information (if authenticated)
+- Client IP address
+- All standard drf-api-tracking features
+
+#### Accessing Logs
+
+```python
+from rest_framework_tracking.models import APIRequestLog
+
+# Get all API requests
+logs = APIRequestLog.objects.all()
+
+# Filter by user
+user_logs = APIRequestLog.objects.filter(user=user)
+
+# Filter by endpoint
+book_logs = APIRequestLog.objects.filter(path__startswith='/api/books/')
+
+# Filter by status code
+errors = APIRequestLog.objects.filter(status_code__gte=400)
+```
+
+#### Disabling Tracking
+
+To disable even when drf-api-tracking is installed:
+
+```python
+# Uninstall the package
+pip uninstall drf-api-tracking
+
+# Or remove from INSTALLED_APPS
+INSTALLED_APPS = [
+    # ... other apps
+    # 'rest_framework_tracking',  # Commented out
+]
+```
+
+### 🔑 Custom Lookup Fields
+
+Use custom fields for object lookups instead of primary keys:
+
+```python
+class Book(models.Model, TurboDRFMixin):
+    isbn = models.CharField(max_length=13, unique=True)
+    slug = models.SlugField(unique=True)
+    uuid = models.UUIDField(default=uuid.uuid4, unique=True)
+    title = models.CharField(max_length=200)
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            'fields': ['isbn', 'title', 'author'],
+            'lookup_field': 'isbn',  # Use ISBN instead of ID for lookups
+        }
+```
+
+#### Usage Examples
+
+```bash
+# With default lookup (pk/id)
+GET /api/books/1/
+
+# With ISBN lookup
+GET /api/books/978-0134685991/
+
+# With slug lookup
+GET /api/books/django-for-beginners/
+
+# With UUID lookup
+GET /api/books/550e8400-e29b-41d4-a716-446655440000/
+```
+
+#### Supported Lookup Fields
+
+Any unique field can be used:
+- `'slug'` - SlugField
+- `'uuid'` - UUIDField
+- `'isbn'` - CharField with unique=True
+- `'username'` - CharField with unique=True
+- Custom fields with unique constraint
+
+### 📝 Swagger Schema Customization
+
+Customize your API documentation with detailed metadata:
+
+```python
+# urls.py
+from turbodrf.documentation import get_turbodrf_schema_view
+
+schema_view = get_turbodrf_schema_view(
+    title='My Amazing API',
+    version='v2.1.0',
+    description='A comprehensive API for managing books, authors, and more.',
+    terms_of_service='https://myapp.com/terms/',
+    contact_email='api@myapp.com',
+    license_name='Apache 2.0',
+)
+
+urlpatterns = [
+    path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
+    path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
+]
+```
+
+#### Default Values
+
+If not specified, sensible defaults are used:
+- **title**: `"TurboDRF API"`
+- **version**: `"v1"`
+- **description**: `"Auto-generated API with role-based access control powered by TurboDRF"`
+- **terms_of_service**: `"https://www.example.com/terms/"`
+- **contact_email**: `"contact@example.com"`
+- **license_name**: `"MIT License"`
+
+### 🔗 ManyToMany Field Filtering
+
+Filter on many-to-many relationships automatically:
+
+```python
+class Book(models.Model, TurboDRFMixin):
+    title = models.CharField(max_length=200)
+    tags = models.ManyToManyField('Tag')
+    categories = models.ManyToManyField('Category')
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            'fields': ['title', 'tags__name', 'categories__name']
+        }
+```
+
+#### Filtering Examples
+
+```bash
+# Books with specific tag
+GET /api/books/?tags=1
+
+# Books in specific category
+GET /api/books/?categories=2
+
+# Books with tag name containing "python"
+GET /api/books/?tags__name__icontains=python
+
+# Combine with OR filtering
+GET /api/books/?tags_or=1&tags_or=2  # Books with tag 1 OR tag 2
+```
+
+**How it works:**
+- ManyToMany fields are automatically detected
+- Filter support added for both the relation and nested fields
+- Supports all Django lookup types (`__in`, `__icontains`, etc.)
+- Works seamlessly with OR filtering
+
 ## 🧪 Testing
 
 ```python

@@ -11,9 +11,11 @@ Key Features:
     - Field-level permission filtering in response schemas
     - Session-based role selection for documentation viewing
     - Automatic permission extraction from URL patterns
+    - Custom action parameter handling
 """
 
 from drf_yasg.generators import OpenAPISchemaGenerator
+from drf_yasg.inspectors import SwaggerAutoSchema
 
 
 class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
@@ -267,3 +269,106 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
 
         schema["properties"] = filtered_properties
         return schema
+
+    def get_endpoints(self, request=None):
+        """
+        Get API endpoints, filtering out duplicate no-slash variants.
+
+        This override filters out the duplicate URL patterns created for
+        trailing slash handling, preventing duplicate entries in the
+        Swagger documentation.
+        """
+        endpoints = super().get_endpoints(request)
+
+        # Filter out _no_slash variants
+        filtered_endpoints = []
+        for path, path_regex, method, callback in endpoints:
+            # Skip endpoints with _no_slash suffix in the URL name
+            if hasattr(callback, "cls") and hasattr(callback.cls, "_basename"):
+                # Check if this is a duplicate no-slash endpoint
+                # by looking at the URL pattern name
+                if (
+                    hasattr(callback, "actions")
+                    and hasattr(callback, "name")
+                    and callback.name
+                    and callback.name.endswith("_no_slash")
+                ):
+                    continue
+
+            filtered_endpoints.append((path, path_regex, method, callback))
+
+        return filtered_endpoints
+
+
+class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
+    """
+    Custom SwaggerAutoSchema for TurboDRF ViewSets.
+
+    This schema inspector prevents custom actions from incorrectly showing
+    all model fields as request parameters. Custom actions decorated with
+    @action should only show their actual parameters, not the entire model
+    serializer.
+    """
+
+    def get_request_body_parameters(self, consumes):
+        """
+        Get request body parameters for the current operation.
+
+        For custom actions (methods decorated with @action), this method
+        returns an empty list to prevent drf-yasg from including all model
+        fields in the request schema.
+
+        For standard CRUD operations (create, update, etc.), it delegates
+        to the parent implementation which correctly includes model fields.
+        """
+        # Check if this is a custom action
+        if hasattr(self.view, "action"):
+            action = self.view.action
+
+            # Standard actions that should include model fields
+            standard_actions = [
+                "create",
+                "update",
+                "partial_update",
+                "list",
+                "retrieve",
+            ]
+
+            # If it's a custom action (not in standard actions), don't include
+            # model fields unless explicitly defined
+            if action not in standard_actions:
+                # For custom actions, only include explicitly defined parameters
+                # Don't auto-generate from the serializer
+                return []
+
+        # For standard actions, use the default behavior
+        return super().get_request_body_parameters(consumes)
+
+    def get_request_serializer(self):
+        """
+        Get the request serializer for the current operation.
+
+        For custom actions, returns None to prevent automatic serializer
+        field inclusion in the request schema.
+        """
+        # Check if this is a custom action
+        if hasattr(self.view, "action"):
+            action = self.view.action
+
+            # Standard actions that should include model fields
+            standard_actions = ["create", "update", "partial_update"]
+
+            # If it's a custom action, don't use the model serializer for request
+            if action not in standard_actions:
+                # Check if the action method has a custom serializer_class
+                action_method = getattr(self.view, action, None)
+                if action_method and hasattr(action_method, "kwargs"):
+                    serializer_class = action_method.kwargs.get("serializer_class")
+                    if serializer_class:
+                        return serializer_class()
+
+                # No serializer for request body
+                return None
+
+        # For standard actions, use the default behavior
+        return super().get_request_serializer()
