@@ -11,7 +11,7 @@
 [![DRF Version](https://img.shields.io/badge/djangorestframework-3.12%2B-red)](https://www.django-rest-framework.org/)
 [![License](https://img.shields.io/badge/license-MIT-purple)](LICENSE)
 [![Tests](https://img.shields.io/github/actions/workflow/status/alexandercollins/turbodrf/tests.yml?branch=main&label=tests)](https://github.com/alexandercollins/turbodrf/actions)
-[![Coverage](https://img.shields.io/badge/coverage-65.38%25-yellow)](https://github.com/alexandercollins/turbodrf)
+[![Coverage](https://img.shields.io/badge/coverage-71.29%25-yellowgreen)](https://github.com/alexandercollins/turbodrf)
 [![PyPI Version](https://img.shields.io/pypi/v/turbodrf?label=pypi)](https://pypi.org/project/turbodrf/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/alexandercollins/turbodrf/pulls)
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
