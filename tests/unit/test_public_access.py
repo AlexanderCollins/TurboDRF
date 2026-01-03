@@ -59,8 +59,7 @@ class TestPublicAccess(TestCase):
 
         # Create related model first
         self.related = RelatedModel.objects.create(
-            name="Test Category",
-            description="Test Description"
+            name="Test Category", description="Test Description"
         )
 
         # Create test data
@@ -214,8 +213,7 @@ class TestGuestRole(TestCase):
 
         # Create related model first
         self.related = RelatedModel.objects.create(
-            name="Test Category",
-            description="Test Description"
+            name="Test Category", description="Test Description"
         )
 
         self.item = SampleModel.objects.create(

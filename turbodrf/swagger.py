@@ -327,7 +327,13 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
             action = self.view.action
 
             # Standard actions that should include model fields
-            standard_actions = ["create", "update", "partial_update", "list", "retrieve"]
+            standard_actions = [
+                "create",
+                "update",
+                "partial_update",
+                "list",
+                "retrieve",
+            ]
 
             # If it's a custom action (not in standard actions), don't include
             # model fields unless explicitly defined

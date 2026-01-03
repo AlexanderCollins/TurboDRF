@@ -58,8 +58,7 @@ class TestSwaggerCustomActions(TestCase):
 
         # Create related model first
         self.related = RelatedModel.objects.create(
-            name="Test Category",
-            description="Test Description"
+            name="Test Category", description="Test Description"
         )
 
         # Create test data

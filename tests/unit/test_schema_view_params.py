@@ -86,9 +86,7 @@ class TestSchemaViewParameters(TestCase):
     @override_settings(TURBODRF_ENABLE_DOCS=False)
     def test_get_turbodrf_schema_view_disabled_with_custom_params(self):
         """Test that schema view returns None even with custom params when disabled."""
-        schema_view = get_turbodrf_schema_view(
-            title="Custom Title", version="v2.0"
-        )
+        schema_view = get_turbodrf_schema_view(title="Custom Title", version="v2.0")
 
         self.assertIsNone(schema_view)
 
