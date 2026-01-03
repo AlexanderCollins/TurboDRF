@@ -150,24 +150,16 @@ class TestManyToManyFilteringIntegration(TestCase):
         self.clothing = Category.objects.create(name="Clothing", slug="clothing")
 
         # Create products with categories
-        self.laptop = Product.objects.create(
-            title="Laptop", price=Decimal("999.99")
-        )
+        self.laptop = Product.objects.create(title="Laptop", price=Decimal("999.99"))
         self.laptop.categories.add(self.electronics)
 
-        self.novel = Product.objects.create(
-            title="Novel", price=Decimal("19.99")
-        )
+        self.novel = Product.objects.create(title="Novel", price=Decimal("19.99"))
         self.novel.categories.add(self.books)
 
-        self.tablet = Product.objects.create(
-            title="Tablet", price=Decimal("499.99")
-        )
+        self.tablet = Product.objects.create(title="Tablet", price=Decimal("499.99"))
         self.tablet.categories.add(self.electronics, self.books)
 
-        self.shirt = Product.objects.create(
-            title="Shirt", price=Decimal("29.99")
-        )
+        self.shirt = Product.objects.create(title="Shirt", price=Decimal("29.99"))
         self.shirt.categories.add(self.clothing)
 
     def test_filter_by_m2m_field_id(self):
@@ -187,9 +179,7 @@ class TestManyToManyFilteringIntegration(TestCase):
     def test_m2m_filtering_with_queryset(self):
         """Test M2M filtering works with queryset."""
         # Test direct queryset filtering (not through DRF)
-        electronics_products = Product.objects.filter(
-            categories=self.electronics
-        )
+        electronics_products = Product.objects.filter(categories=self.electronics)
 
         # Should return laptop and tablet
         self.assertEqual(electronics_products.count(), 2)

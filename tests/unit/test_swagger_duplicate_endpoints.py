@@ -28,10 +28,6 @@ class TestSwaggerDuplicateEndpoints(TestCase):
 
     def test_get_endpoints_filters_no_slash_variants(self):
         """Test that get_endpoints filters out _no_slash URL patterns."""
-        generator = RoleBasedSchemaGenerator(
-            info=openapi.Info(title="Test API", default_version="v1")
-        )
-
         # Create mock endpoints - one normal, one no_slash variant
         mock_endpoints = [
             ("/api/test/", r"^api/test/$", "get", MockCallback(name="test-list")),
@@ -78,10 +74,6 @@ class TestSwaggerDuplicateEndpoints(TestCase):
 
     def test_normal_endpoints_preserved(self):
         """Test that normal endpoints without _no_slash are preserved."""
-        generator = RoleBasedSchemaGenerator(
-            info=openapi.Info(title="Test API", default_version="v1")
-        )
-
         mock_endpoints = [
             ("/api/test/", r"^api/test/$", "get", MockCallback(name="test-list")),
             (
@@ -107,10 +99,6 @@ class TestSwaggerDuplicateEndpoints(TestCase):
 
     def test_endpoints_without_name_preserved(self):
         """Test that endpoints without name attribute are preserved."""
-        generator = RoleBasedSchemaGenerator(
-            info=openapi.Info(title="Test API", default_version="v1")
-        )
-
         mock_endpoints = [
             ("/api/test/", r"^api/test/$", "get", MockCallback(name=None)),
             (
@@ -219,7 +207,7 @@ class TestRoleBasedSchemaGenerator(TestCase):
         try:
             # This will fail without patterns, but we're just testing the signature
             generator.get_endpoints(request=None)
-        except (AttributeError, TypeError, ValueError) as e:
+        except (AttributeError, TypeError, ValueError):
             # Expected - we don't have actual URL patterns
             # We're just verifying the method signature
             pass

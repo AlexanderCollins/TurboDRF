@@ -9,7 +9,6 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
-from rest_framework import status
 from rest_framework.test import APIClient
 
 from tests.test_app.models import SampleModel
@@ -59,8 +58,7 @@ class TestPublicAccess(TestCase):
 
         # Create related model first
         self.related = RelatedModel.objects.create(
-            name="Test Category",
-            description="Test Description"
+            name="Test Category", description="Test Description"
         )
 
         # Create test data
@@ -153,7 +151,7 @@ class TestPublicAccess(TestCase):
         self.assertTrue(has_perm)
 
     def test_authenticated_user_can_access_private_model(self):
-        """Test that authenticated users are checked for permissions on private models."""
+        """Test that authenticated users are checked for permissions."""
         from rest_framework.test import APIRequestFactory
 
         factory = APIRequestFactory()
@@ -214,8 +212,7 @@ class TestGuestRole(TestCase):
 
         # Create related model first
         self.related = RelatedModel.objects.create(
-            name="Test Category",
-            description="Test Description"
+            name="Test Category", description="Test Description"
         )
 
         self.item = SampleModel.objects.create(
@@ -261,13 +258,7 @@ class TestGuestRole(TestCase):
     def test_guest_role_field_filtering(self):
         """Test that guest role only sees permitted fields."""
         # This test verifies the serializer factory applies guest permissions
-        from rest_framework.request import Request
-        from rest_framework.test import APIRequestFactory
-
         from turbodrf.serializers import TurboDRFSerializerFactory
-
-        factory = APIRequestFactory()
-        django_request = factory.get("/api/samplemodels/")
 
         # Create guest user
         class GuestUser:

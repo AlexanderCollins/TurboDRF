@@ -4,8 +4,6 @@ Tests for lookup_field configuration.
 Tests that models can specify custom lookup fields for detail views.
 """
 
-from decimal import Decimal
-
 from django.contrib.auth import get_user_model
 from django.db import models
 from django.test import TestCase
@@ -72,8 +70,6 @@ class TestLookupFieldConfiguration(TestCase):
 
     def test_router_applies_lookup_field_to_viewset(self):
         """Test that router applies lookup_field to generated viewset."""
-        from django.apps import apps
-
         # Create router
         router = TurboDRFRouter()
 
@@ -178,7 +174,6 @@ class TestLookupFieldIntegration(TestCase):
     def test_default_lookup_field_when_not_specified(self):
         """Test that viewset uses default pk lookup when not specified."""
         from tests.test_app.models import SampleModel
-
         from turbodrf.views import TurboDRFViewSet
 
         model = SampleModel

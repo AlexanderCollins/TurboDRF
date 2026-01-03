@@ -58,8 +58,7 @@ class TestSwaggerCustomActions(TestCase):
 
         # Create related model first
         self.related = RelatedModel.objects.create(
-            name="Test Category",
-            description="Test Description"
+            name="Test Category", description="Test Description"
         )
 
         # Create test data
@@ -73,8 +72,8 @@ class TestSwaggerCustomActions(TestCase):
 
     def test_standard_actions_get_serializer(self):
         """Test that standard actions (create, update) get serializer."""
-        from rest_framework.test import APIRequestFactory
         from drf_yasg import openapi
+        from rest_framework.test import APIRequestFactory
 
         factory = APIRequestFactory()
         request = factory.post("/api/samplemodels/")
@@ -100,8 +99,8 @@ class TestSwaggerCustomActions(TestCase):
 
     def test_custom_action_no_request_serializer(self):
         """Test that custom actions don't get model serializer."""
-        from rest_framework.test import APIRequestFactory
         from drf_yasg import openapi
+        from rest_framework.test import APIRequestFactory
 
         factory = APIRequestFactory()
         request = factory.post("/api/samplemodels/1/activate/")
@@ -127,8 +126,8 @@ class TestSwaggerCustomActions(TestCase):
 
     def test_custom_action_no_request_body_parameters(self):
         """Test that custom actions don't show model fields as parameters."""
-        from rest_framework.test import APIRequestFactory
         from drf_yasg import openapi
+        from rest_framework.test import APIRequestFactory
 
         factory = APIRequestFactory()
         request = factory.post("/api/samplemodels/1/activate/")
@@ -154,8 +153,8 @@ class TestSwaggerCustomActions(TestCase):
 
     def test_update_action_has_request_serializer(self):
         """Test that update action gets serializer."""
-        from rest_framework.test import APIRequestFactory
         from drf_yasg import openapi
+        from rest_framework.test import APIRequestFactory
 
         factory = APIRequestFactory()
         request = factory.put("/api/samplemodels/1/")
@@ -180,8 +179,8 @@ class TestSwaggerCustomActions(TestCase):
 
     def test_partial_update_action_has_request_serializer(self):
         """Test that partial_update action gets serializer."""
-        from rest_framework.test import APIRequestFactory
         from drf_yasg import openapi
+        from rest_framework.test import APIRequestFactory
 
         factory = APIRequestFactory()
         request = factory.patch("/api/samplemodels/1/")
@@ -206,8 +205,8 @@ class TestSwaggerCustomActions(TestCase):
 
     def test_list_action_no_request_serializer(self):
         """Test that list action doesn't need request serializer."""
-        from rest_framework.test import APIRequestFactory
         from drf_yasg import openapi
+        from rest_framework.test import APIRequestFactory
 
         factory = APIRequestFactory()
         request = factory.get("/api/samplemodels/")
@@ -234,8 +233,8 @@ class TestSwaggerCustomActions(TestCase):
 
     def test_retrieve_action_no_request_serializer(self):
         """Test that retrieve action doesn't need request serializer."""
-        from rest_framework.test import APIRequestFactory
         from drf_yasg import openapi
+        from rest_framework.test import APIRequestFactory
 
         factory = APIRequestFactory()
         request = factory.get("/api/samplemodels/1/")
@@ -261,8 +260,8 @@ class TestSwaggerCustomActions(TestCase):
 
     def test_custom_action_with_get_method(self):
         """Test custom action with GET method."""
-        from rest_framework.test import APIRequestFactory
         from drf_yasg import openapi
+        from rest_framework.test import APIRequestFactory
 
         factory = APIRequestFactory()
         request = factory.get("/api/samplemodels/summary/")
@@ -288,8 +287,8 @@ class TestSwaggerCustomActions(TestCase):
 
     def test_custom_action_multiple_methods(self):
         """Test custom action that supports multiple methods."""
-        from rest_framework.test import APIRequestFactory
         from drf_yasg import openapi
+        from rest_framework.test import APIRequestFactory
 
         factory = APIRequestFactory()
 
@@ -368,5 +367,5 @@ class TestSwaggerAutoSchemaIntegration(TestCase):
         # Custom actions
         custom_actions = ["activate", "summary", "toggle", "custom_method"]
 
-        for action in custom_actions:
-            self.assertNotIn(action, standard_actions)
+        for custom_action in custom_actions:
+            self.assertNotIn(custom_action, standard_actions)

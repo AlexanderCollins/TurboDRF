@@ -120,10 +120,7 @@ class TestTrackingIntegration(TestCase):
         """Test that TurboDRFViewSet uses the generated base classes."""
         from turbodrf.views import TurboDRFViewSet
 
-        # Get the base classes
-        expected_bases = get_viewset_base_classes()
-
-        # TurboDRFViewSet should inherit from these bases
+        # TurboDRFViewSet should inherit from the generated base classes
         # We can't directly compare since it's created at import time,
         # but we can verify it has ModelViewSet as a base
         self.assertTrue(issubclass(TurboDRFViewSet, viewsets.ModelViewSet))
