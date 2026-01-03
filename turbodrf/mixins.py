@@ -55,6 +55,14 @@ class TurboDRFMixin:
                   - A dict with different fields for list/detail views:
                     {'list': ['title', 'author'], 'detail': '__all__'}
                   - The string '__all__' to include all fields
+                - 'lookup_field' (str): Field to use for object lookup in URLs.
+                  Defaults to 'pk'. Use 'slug' or any other unique field
+                  instead of integer IDs.
+                - 'public_access' (bool): Whether to allow public (unauthenticated)
+                  access to this model's endpoints. Defaults to False.
+                  When True, unauthenticated users can read (GET) the model.
+                  You can configure different fields for anonymous users using
+                  the 'guest' role in your permission configuration.
 
         Example:
             >>> @classmethod

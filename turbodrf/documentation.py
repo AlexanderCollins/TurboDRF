@@ -16,7 +16,14 @@ from drf_yasg.views import get_schema_view
 from rest_framework import permissions
 
 
-def get_turbodrf_schema_view():
+def get_turbodrf_schema_view(
+    title="TurboDRF API",
+    version="v1",
+    description="Auto-generated API with role-based access control powered by TurboDRF",
+    terms_of_service="https://www.example.com/terms/",
+    contact_email="contact@example.com",
+    license_name="MIT License",
+):
     """
     Create and configure the schema view for TurboDRF API documentation.
 
@@ -24,6 +31,14 @@ def get_turbodrf_schema_view():
     schema generator that filters API documentation based on user roles
     and permissions. The generated documentation will only show endpoints
     and fields that the viewing user has permission to access.
+
+    Args:
+        title (str): The API title. Defaults to "TurboDRF API".
+        version (str): The API version. Defaults to "v1".
+        description (str): The API description. Defaults to auto-generated text.
+        terms_of_service (str): URL to terms of service. Defaults to example URL.
+        contact_email (str): Contact email for API support. Defaults to example email.
+        license_name (str): License name. Defaults to "MIT License".
 
     Features:
         - Role-based filtering of API endpoints
@@ -44,7 +59,11 @@ def get_turbodrf_schema_view():
         # In your urls.py
         from turbodrf.documentation import get_turbodrf_schema_view
 
-        schema_view = get_turbodrf_schema_view()
+        schema_view = get_turbodrf_schema_view(
+            title="My API",
+            version="v1",
+            description="My awesome API powered by TurboDRF",
+        )
 
         if schema_view:  # Only add URLs if docs are enabled
             urlpatterns += [
@@ -56,8 +75,8 @@ def get_turbodrf_schema_view():
 
     Configuration:
         The schema view uses the following configuration:
-        - Title: "TurboDRF API" (customizable)
-        - Version: "v1"
+        - Title: Customizable via title parameter
+        - Version: Customizable via version parameter
         - Generator: RoleBasedSchemaGenerator for permission filtering
         - Permissions: AllowAny (filtering happens at schema level)
 
@@ -76,15 +95,12 @@ def get_turbodrf_schema_view():
 
     schema_view = get_schema_view(
         openapi.Info(
-            title="TurboDRF API",
-            default_version="v1",
-            description=(
-                "Auto-generated API with role-based access control "
-                "powered by TurboDRF"
-            ),
-            terms_of_service="https://www.example.com/terms/",
-            contact=openapi.Contact(email="contact@example.com"),
-            license=openapi.License(name="MIT License"),
+            title=title,
+            default_version=version,
+            description=description,
+            terms_of_service=terms_of_service,
+            contact=openapi.Contact(email=contact_email),
+            license=openapi.License(name=license_name),
         ),
         public=True,
         permission_classes=[permissions.AllowAny],
