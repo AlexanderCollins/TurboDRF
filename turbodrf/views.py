@@ -1,6 +1,6 @@
 from django.conf import settings
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import status, viewsets
+from rest_framework import status
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -140,7 +140,12 @@ class TurboDRFViewSet(*_viewset_bases):
         else []
     )
     pagination_class = TurboDRFPagination
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter, ORFilterBackend]
+    filter_backends = [
+        DjangoFilterBackend,
+        SearchFilter,
+        OrderingFilter,
+        ORFilterBackend,
+    ]
 
     # Set custom swagger schema class for better OpenAPI documentation
     # This prevents custom actions from incorrectly showing all model fields

@@ -7,7 +7,6 @@ Tests the ORFilterBackend functionality for OR query support.
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.db.models import Q
 from django.test import TestCase
 from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory
@@ -20,6 +19,7 @@ User = get_user_model()
 
 class MockView:
     """Mock view for testing filter backend."""
+
     pass
 
 
@@ -74,7 +74,9 @@ class TestORFilterBackend(TestCase):
 
     def test_or_filter_single_field_multiple_values(self):
         """Test OR filtering with multiple values for a single field."""
-        django_request = self.factory.get("/?title_or=Apple Product&title_or=Banana Product")
+        django_request = self.factory.get(
+            "/?title_or=Apple Product&title_or=Banana Product"
+        )
         request = Request(django_request)
 
         queryset = SampleModel.objects.all()
@@ -98,7 +100,9 @@ class TestORFilterBackend(TestCase):
 
     def test_or_filter_with_lookups(self):
         """Test OR filtering with Django lookups like icontains."""
-        django_request = self.factory.get("/?title__icontains_or=Apple&title__icontains_or=Cherry")
+        django_request = self.factory.get(
+            "/?title__icontains_or=Apple&title__icontains_or=Cherry"
+        )
         request = Request(django_request)
 
         queryset = SampleModel.objects.all()
@@ -111,7 +115,9 @@ class TestORFilterBackend(TestCase):
 
     def test_or_filter_combined_with_and_filters(self):
         """Test OR filters combined with regular AND filters."""
-        django_request = self.factory.get("/?title_or=Apple Product&title_or=Cherry Product&is_active=true")
+        django_request = self.factory.get(
+            "/?title_or=Apple Product&title_or=Cherry Product&is_active=true"
+        )
         request = Request(django_request)
 
         queryset = SampleModel.objects.all()
@@ -122,7 +128,9 @@ class TestORFilterBackend(TestCase):
 
     def test_or_filter_with_foreign_key(self):
         """Test OR filtering on foreign key fields."""
-        django_request = self.factory.get(f"/?related_or={self.related1.id}&related_or={self.related2.id}")
+        django_request = self.factory.get(
+            f"/?related_or={self.related1.id}&related_or={self.related2.id}"
+        )
         request = Request(django_request)
 
         queryset = SampleModel.objects.all()
@@ -133,7 +141,9 @@ class TestORFilterBackend(TestCase):
 
     def test_or_filter_empty_result(self):
         """Test OR filtering that matches no items."""
-        django_request = self.factory.get("/?title_or=Nonexistent Product&title_or=Another Missing")
+        django_request = self.factory.get(
+            "/?title_or=Nonexistent Product&title_or=Another Missing"
+        )
         request = Request(django_request)
 
         queryset = SampleModel.objects.all()
@@ -154,7 +164,10 @@ class TestORFilterBackend(TestCase):
 
     def test_or_filter_multiple_fields(self):
         """Test OR filtering across multiple different fields."""
-        django_request = self.factory.get("/?title_or=Apple Product&title_or=Banana Product&price_or=100.00&price_or=50.00")
+        django_request = self.factory.get(
+            "/?title_or=Apple Product&title_or=Banana Product"
+            "&price_or=100.00&price_or=50.00"
+        )
         request = Request(django_request)
 
         queryset = SampleModel.objects.all()
@@ -165,11 +178,14 @@ class TestORFilterBackend(TestCase):
 
     def test_or_filter_ignores_pagination_params(self):
         """Test that OR filter doesn't try to filter on pagination params."""
-        django_request = self.factory.get("/", {
-            "title_or": "Apple Product",
-            "page": "1",
-            "page_size": "10",
-        })
+        django_request = self.factory.get(
+            "/",
+            {
+                "title_or": "Apple Product",
+                "page": "1",
+                "page_size": "10",
+            },
+        )
         request = Request(django_request)
 
         queryset = SampleModel.objects.all()

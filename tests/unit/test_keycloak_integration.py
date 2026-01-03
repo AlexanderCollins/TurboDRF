@@ -123,9 +123,7 @@ class TestRoleExtraction(TestCase):
     @override_settings(TURBODRF_KEYCLOAK_ROLE_CLAIM="resource_access.my-client.roles")
     def test_extract_roles_client_claim(self):
         """Test extracting roles from client-specific claim."""
-        token = {
-            "resource_access": {"my-client": {"roles": ["app-admin", "app-user"]}}
-        }
+        token = {"resource_access": {"my-client": {"roles": ["app-admin", "app-user"]}}}
 
         roles = extract_roles_from_token(token)
 
@@ -166,7 +164,7 @@ class TestRoleExtraction(TestCase):
         self.assertEqual(roles, [])
 
 
-class TestRoleMapping(TestCase):
+class TestKeycloakRoleMapping(TestCase):
     """Test Keycloak to TurboDRF role mapping."""
 
     def test_map_roles_no_mapping(self):

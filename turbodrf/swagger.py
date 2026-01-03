@@ -14,7 +14,6 @@ Key Features:
     - Custom action parameter handling
 """
 
-from drf_yasg import openapi
 from drf_yasg.generators import OpenAPISchemaGenerator
 from drf_yasg.inspectors import SwaggerAutoSchema
 
@@ -327,7 +326,13 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
             action = self.view.action
 
             # Standard actions that should include model fields
-            standard_actions = ["create", "update", "partial_update", "list", "retrieve"]
+            standard_actions = [
+                "create",
+                "update",
+                "partial_update",
+                "list",
+                "retrieve",
+            ]
 
             # If it's a custom action (not in standard actions), don't include
             # model fields unless explicitly defined

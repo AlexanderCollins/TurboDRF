@@ -25,9 +25,11 @@ class ORFilterBackend(BaseFilterBackend):
         # email='test@example.com' OR private_email='test@example.com'
 
         # You can also use multiple OR groups:
-        GET /api/users/?email_or=test@example.com&private_email_or=alt@example.com&name=John
+        GET /api/users/?email_or=test@example.com&
+            private_email_or=alt@example.com&name=John
 
-        # This matches: (email='test@example.com' OR private_email='alt@example.com') AND name='John'
+        # This matches: (email='test@example.com' OR
+        # private_email='alt@example.com') AND name='John'
 
     Note:
         - Parameters ending with '_or' are grouped together with OR logic
