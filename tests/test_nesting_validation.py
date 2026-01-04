@@ -432,7 +432,7 @@ class TestNestedFieldPermissions:
         }
     )
     def test_nested_field_with_write_but_not_read(self):
-        """Having write permission without read permission denies access when there's an explicit read rule."""
+        """Write permission without read denies access with explicit read rule."""
         self.user._test_roles = ["viewer"]
 
         # NOTE: This test needs publisher.name to have an explicit read rule
@@ -535,7 +535,7 @@ class TestNestedPermissionEdgeCases:
         }
     )
     def test_fk_field_permission_vs_related_model(self):
-        """Having permission on FK field but not related model should block traversal."""
+        """Permission on FK field but not related model blocks traversal."""
         self.user._test_roles = ["tricky"]
 
         # Cannot traverse to author.name without author model permission
@@ -621,7 +621,10 @@ class TestNestedPermissionEdgeCases:
 
 @pytest.mark.django_db
 @pytest.mark.skip(
-    reason="Test models (Publisher/Author/Book) need migrations - functionality covered by other tests"
+    reason=(
+        "Test models (Publisher/Author/Book) need migrations - "
+        "functionality covered by other tests"
+    )
 )
 class TestNestedPermissionsInSerializer:
     """Test that nested permissions integrate correctly with serializers."""
@@ -943,7 +946,8 @@ class TestManyToManyFieldNesting:
         # Viewer can see tags__name (explicit permission)
         assert check_nested_field_permissions(Article, "tags__name", self.user) is True
 
-        # But NOT tags__slug or tags__category (no explicit permission, no model-level read)
+        # But NOT tags__slug or tags__category
+        # (no explicit permission, no model-level read)
         assert check_nested_field_permissions(Article, "tags__slug", self.user) is False
         assert (
             check_nested_field_permissions(Article, "tags__category", self.user)
@@ -1029,7 +1033,8 @@ class TestManyToManyFieldNesting:
         )
         assert is_valid is True
 
-        # But viewer CANNOT filter by tags__slug (no explicit permission, no model-level read)
+        # But viewer CANNOT filter by tags__slug
+        # (no explicit permission, no model-level read)
         is_valid = backend._is_valid_filter_field(
             "tags__slug", valid_fields, Article, self.user
         )
@@ -1101,7 +1106,8 @@ class TestManyToManyFieldNesting:
         assert has_permission is False
 
         # This prevents information leakage through filters like:
-        # ?tags__slug=secret-project (even checking if filter returns results leaks info)
+        # ?tags__slug=secret-project
+        # (even checking if filter returns results leaks info)
 
 
 if __name__ == "__main__":

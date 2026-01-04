@@ -184,7 +184,8 @@ class TestJSONFieldSupport(TestCase):
             filterset_fields["name"], ["exact", "icontains", "istartswith", "iendswith"]
         )
 
-        # Test 2: Creating FilterSet should not crash (no ImageFields in filterset_fields)
+        # Test 2: Creating FilterSet should not crash
+        # (no ImageFields in filterset_fields)
         try:
             # Create a dynamic FilterSet class like django-filter does
             class ImageModelFilterSet(FilterSet):

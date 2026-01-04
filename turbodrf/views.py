@@ -264,7 +264,8 @@ class TurboDRFViewSet(*_viewset_bases):
             snapshot = attach_snapshot_to_request(request, self.model)
 
             # Use factory if snapshot has any permissions
-            # (This handles all modes including database without requiring .roles property)
+            # (This handles all modes including database without requiring
+            # .roles property)
             if snapshot and (snapshot.allowed_actions or snapshot.readable_fields):
                 # For write operations, pass appropriate view_type
                 view_type = (

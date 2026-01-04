@@ -30,7 +30,8 @@ def validate_nesting_depth(field_name, max_depth=None):
     Validate that a field name doesn't exceed the maximum nesting depth.
 
     Args:
-        field_name: Field name potentially with __ notation (e.g., 'author__publisher__name')
+        field_name: Field name potentially with __ notation
+            (e.g., 'author__publisher__name')
         max_depth: Maximum allowed depth, or None to use setting
 
     Returns:
@@ -65,8 +66,9 @@ def validate_nesting_depth(field_name, max_depth=None):
         raise ValidationError(
             f"Field '{field_name}' exceeds maximum nesting depth of {max_depth}. "
             f"Current depth: {depth}. "
-            f"WARNING: Increasing TURBODRF_MAX_NESTING_DEPTH beyond 3 is UNSUPPORTED "
-            f"and may cause performance issues, security risks, and unexpected behavior."
+            f"WARNING: Increasing TURBODRF_MAX_NESTING_DEPTH beyond 3 is "
+            f"UNSUPPORTED and may cause performance issues, security risks, "
+            f"and unexpected behavior."
         )
 
     return True

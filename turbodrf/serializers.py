@@ -36,8 +36,10 @@ class TurboDRFSerializer(serializers.ModelSerializer):
 
         This method extends the default serialization to include nested fields
         that are defined using double-underscore notation. It handles both:
-        - ForeignKey relationships: Flat fields (e.g., author__name → author_name)
-        - ManyToMany relationships: Arrays of objects (e.g., categories__name → categories: [{name: ...}])
+        - ForeignKey relationships: Flat fields
+          (e.g., author__name → author_name)
+        - ManyToMany relationships: Arrays of objects
+          (e.g., categories__name → categories: [{name: ...}])
 
         Args:
             instance: The model instance to serialize.
@@ -113,7 +115,8 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         Args:
             instance: Model instance
             base_field: Name of the M2M field (e.g., 'categories')
-            nested_fields: List of nested field paths (e.g., ['categories__name', 'categories__id'])
+            nested_fields: List of nested field paths
+                (e.g., ['categories__name', 'categories__id'])
 
         Returns:
             list: Array of dictionaries containing the nested field values
@@ -320,7 +323,8 @@ class TurboDRFSerializerFactory:
 
             snapshot = build_permission_snapshot(user, model)
 
-        # Filter fields based on permissions using snapshot AND nested permission checking
+        # Filter fields based on permissions using snapshot
+        # AND nested permission checking
         permitted_fields = cls._get_permitted_fields_with_snapshot(model, fields, user)
 
         # Handle nested fields
