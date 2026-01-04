@@ -148,6 +148,7 @@ class TestTurboDRFSerializerFactory(TestCase):
     def setUp(self):
         """Set up test fixtures."""
         from django.core.cache import cache
+
         cache.clear()  # Clear cache to avoid test pollution
 
         # Create users with different roles
@@ -416,7 +417,8 @@ class TestManyToManyFieldSerialization(TestCase):
     def setUp(self):
         """Set up test fixtures."""
         from django.core.cache import cache
-        from tests.test_app.models import Category, ArticleWithCategories
+
+        from tests.test_app.models import ArticleWithCategories, Category
 
         cache.clear()  # Clear cache to avoid test pollution
 
@@ -594,21 +596,21 @@ class TestManyToManyFieldSerialization(TestCase):
 
     def test_m2m_with_null_field_values(self):
         """Test M2M serialization when nested fields have null values."""
-        from tests.test_app.models import Category, ArticleWithCategories
+        from tests.test_app.models import ArticleWithCategories, Category
 
         # Create category with no description (blank field)
         empty_cat = Category.objects.create(name="Empty Category", description="")
 
-        article = ArticleWithCategories.objects.create(
-            title="Test", author=self.author
-        )
+        article = ArticleWithCategories.objects.create(title="Test", author=self.author)
         article.categories.add(empty_cat)
 
         class TestSerializer(TurboDRFSerializer):
             class Meta:
                 model = ArticleWithCategories
                 fields = ["title", "categories"]
-                _nested_fields = {"categories": ["categories__name", "categories__description"]}
+                _nested_fields = {
+                    "categories": ["categories__name", "categories__description"]
+                }
 
         serializer = TestSerializer(article)
         data = serializer.data

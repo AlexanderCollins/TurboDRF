@@ -6,6 +6,7 @@ Django ORM relationships to check permissions at each level.
 """
 
 import logging
+
 from django.conf import settings
 from django.core.exceptions import FieldDoesNotExist, ValidationError
 
@@ -20,7 +21,8 @@ def get_max_nesting_depth():
         int or None: Maximum nesting depth, or None for unlimited
     """
     from .settings import TURBODRF_MAX_NESTING_DEPTH as default_depth
-    return getattr(settings, 'TURBODRF_MAX_NESTING_DEPTH', default_depth)
+
+    return getattr(settings, "TURBODRF_MAX_NESTING_DEPTH", default_depth)
 
 
 def validate_nesting_depth(field_name, max_depth=None):
@@ -57,7 +59,7 @@ def validate_nesting_depth(field_name, max_depth=None):
         return True
 
     # Count the number of __ separators to determine nesting depth
-    depth = field_name.count('__')
+    depth = field_name.count("__")
 
     if depth > max_depth:
         raise ValidationError(
@@ -94,7 +96,7 @@ def get_nested_field_model(model, field_path):
         >>> #   (Publisher, CharField, 'name')
         >>> # ])
     """
-    parts = field_path.split('__')
+    parts = field_path.split("__")
     field_chain = []
     current_model = model
 
@@ -104,7 +106,7 @@ def get_nested_field_model(model, field_path):
             field_chain.append((current_model, field, part))
 
             # If this is a relational field, get the related model
-            if hasattr(field, 'related_model') and field.related_model:
+            if hasattr(field, "related_model") and field.related_model:
                 current_model = field.related_model
             # For the final field, keep the current model
         except FieldDoesNotExist:
@@ -141,21 +143,23 @@ def check_nested_field_permissions(model, field_path, user, use_cache=True):
     from .backends import build_permission_snapshot
 
     # Simple field (no nesting) - check on base model
-    if '__' not in field_path:
+    if "__" not in field_path:
         snapshot = build_permission_snapshot(user, model, use_cache=use_cache)
         base_field = field_path
         if snapshot.has_read_rule(base_field):
             return snapshot.can_read_field(base_field)
         else:
-            return snapshot.can_perform_action('read')
+            return snapshot.can_perform_action("read")
 
     # Nested field - traverse and check permissions at each level
-    parts = field_path.split('__')
+    parts = field_path.split("__")
     current_model = model
 
     for i, part in enumerate(parts):
         # Build snapshot for current model
-        current_snapshot = build_permission_snapshot(user, current_model, use_cache=use_cache)
+        current_snapshot = build_permission_snapshot(
+            user, current_model, use_cache=use_cache
+        )
 
         # Check permission for this field
         if current_snapshot.has_read_rule(part):
@@ -166,7 +170,7 @@ def check_nested_field_permissions(model, field_path, user, use_cache=True):
                 )
                 return False
         else:
-            if not current_snapshot.can_perform_action('read'):
+            if not current_snapshot.can_perform_action("read"):
                 logger.debug(
                     f"Permission denied: {current_model.__name__}.{part} "
                     f"(model-level read permission failed)"
@@ -177,12 +181,12 @@ def check_nested_field_permissions(model, field_path, user, use_cache=True):
         if i < len(parts) - 1:
             try:
                 field = current_model._meta.get_field(part)
-                if hasattr(field, 'related_model') and field.related_model:
+                if hasattr(field, "related_model") and field.related_model:
                     # Get the related model for the next iteration
                     current_model = field.related_model
                 else:
                     # Not a relational field, can't traverse further
-                    remaining_path = ".".join(parts[i+1:])
+                    remaining_path = ".".join(parts[i + 1 :])
                     logger.warning(
                         f"Field '{part}' on {current_model.__name__} is not a "
                         f"relational field, cannot traverse to '{remaining_path}'"
@@ -215,28 +219,51 @@ def validate_filter_field(model, filter_param):
         ('price', 'gte')
     """
     # Strip _or suffix if present
-    if filter_param.endswith('_or'):
+    if filter_param.endswith("_or"):
         filter_param = filter_param[:-3]
 
     # Split into field path and lookup
-    parts = filter_param.split('__')
+    parts = filter_param.split("__")
 
     # Common Django lookups
     lookups = {
-        'exact', 'iexact', 'contains', 'icontains', 'in',
-        'gt', 'gte', 'lt', 'lte', 'startswith', 'istartswith',
-        'endswith', 'iendswith', 'range', 'date', 'year', 'month',
-        'day', 'week', 'week_day', 'quarter', 'time', 'hour',
-        'minute', 'second', 'isnull', 'regex', 'iregex'
+        "exact",
+        "iexact",
+        "contains",
+        "icontains",
+        "in",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "startswith",
+        "istartswith",
+        "endswith",
+        "iendswith",
+        "range",
+        "date",
+        "year",
+        "month",
+        "day",
+        "week",
+        "week_day",
+        "quarter",
+        "time",
+        "hour",
+        "minute",
+        "second",
+        "isnull",
+        "regex",
+        "iregex",
     }
 
     # Check if last part is a lookup
     if parts[-1] in lookups:
-        field_path = '__'.join(parts[:-1])
+        field_path = "__".join(parts[:-1])
         lookup = parts[-1]
     else:
         field_path = filter_param
-        lookup = 'exact'
+        lookup = "exact"
 
     # Validate nesting depth
     validate_nesting_depth(field_path)

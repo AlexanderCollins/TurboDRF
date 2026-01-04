@@ -153,6 +153,7 @@ class TestJSONFieldSupport(TestCase):
     def test_imagefield_with_django_filter_integration(self):
         """Test that ImageField works correctly with django-filter integration."""
         from django_filters import FilterSet
+
         from turbodrf.mixins import TurboDRFMixin
 
         class ImageModel(TurboDRFMixin, models.Model):
@@ -209,21 +210,21 @@ class TestJSONFieldSupport(TestCase):
 
             # Apply filters (only on supported fields)
             filter_instance = ImageModelFilterSet(
-                data={"name__icontains": "test"},
-                queryset=queryset
+                data={"name__icontains": "test"}, queryset=queryset
             )
 
             # This should not crash
-            filtered_queryset = filter_instance.qs
+            filter_instance.qs
 
         except Exception as e:
             self.fail(f"Using FilterSet with ImageModel failed: {e}")
 
     def test_imagefield_serialization_in_rest_output(self):
         """Test that ImageField can be serialized in REST output without crashing."""
-        from turbodrf.mixins import TurboDRFMixin
-        from rest_framework.test import APIRequestFactory
         from django.contrib.auth import get_user_model
+        from rest_framework.test import APIRequestFactory
+
+        from turbodrf.mixins import TurboDRFMixin
 
         User = get_user_model()
 

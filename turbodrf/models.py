@@ -40,12 +40,11 @@ class TurboDRFRole(models.Model):
         max_length=100,
         unique=True,
         db_index=True,
-        help_text="Unique role identifier (e.g., 'admin', 'editor', 'viewer')"
+        help_text="Unique role identifier (e.g., 'admin', 'editor', 'viewer')",
     )
 
     description = models.TextField(
-        blank=True,
-        help_text="Human-readable description of this role's purpose"
+        blank=True, help_text="Human-readable description of this role's purpose"
     )
 
     django_group = models.OneToOneField(
@@ -53,28 +52,25 @@ class TurboDRFRole(models.Model):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='turbodrf_role',
-        help_text="Optional link to Django Group for integration"
+        related_name="turbodrf_role",
+        help_text="Optional link to Django Group for integration",
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(
-        auto_now=True,
-        db_index=True,
-        help_text="Used for cache invalidation"
+        auto_now=True, db_index=True, help_text="Used for cache invalidation"
     )
 
     # Version counter for cache invalidation
     version = models.IntegerField(
-        default=1,
-        help_text="Incremented on each update for cache invalidation"
+        default=1, help_text="Incremented on each update for cache invalidation"
     )
 
     class Meta:
-        db_table = 'turbodrf_role'
-        ordering = ['name']
-        verbose_name = 'TurboDRF Role'
-        verbose_name_plural = 'TurboDRF Roles'
+        db_table = "turbodrf_role"
+        ordering = ["name"]
+        verbose_name = "TurboDRF Role"
+        verbose_name_plural = "TurboDRF Roles"
 
     def __str__(self):
         return self.name
@@ -120,43 +116,41 @@ class RolePermission(models.Model):
     """
 
     # Permission types
-    ACTION_READ = 'read'
-    ACTION_CREATE = 'create'
-    ACTION_UPDATE = 'update'
-    ACTION_DELETE = 'delete'
+    ACTION_READ = "read"
+    ACTION_CREATE = "create"
+    ACTION_UPDATE = "update"
+    ACTION_DELETE = "delete"
 
     ACTION_CHOICES = [
-        (ACTION_READ, 'Read'),
-        (ACTION_CREATE, 'Create'),
-        (ACTION_UPDATE, 'Update'),
-        (ACTION_DELETE, 'Delete'),
+        (ACTION_READ, "Read"),
+        (ACTION_CREATE, "Create"),
+        (ACTION_UPDATE, "Update"),
+        (ACTION_DELETE, "Delete"),
     ]
 
-    PERMISSION_TYPE_READ = 'read'
-    PERMISSION_TYPE_WRITE = 'write'
+    PERMISSION_TYPE_READ = "read"
+    PERMISSION_TYPE_WRITE = "write"
 
     PERMISSION_TYPE_CHOICES = [
-        (PERMISSION_TYPE_READ, 'Read'),
-        (PERMISSION_TYPE_WRITE, 'Write'),
+        (PERMISSION_TYPE_READ, "Read"),
+        (PERMISSION_TYPE_WRITE, "Write"),
     ]
 
     role = models.ForeignKey(
         TurboDRFRole,
         on_delete=models.CASCADE,
-        related_name='permissions',
-        help_text="The role this permission belongs to"
+        related_name="permissions",
+        help_text="The role this permission belongs to",
     )
 
     app_label = models.CharField(
-        max_length=100,
-        db_index=True,
-        help_text="Django app label (e.g., 'books')"
+        max_length=100, db_index=True, help_text="Django app label (e.g., 'books')"
     )
 
     model_name = models.CharField(
         max_length=100,
         db_index=True,
-        help_text="Model name in lowercase (e.g., 'book')"
+        help_text="Model name in lowercase (e.g., 'book')",
     )
 
     # Model-level permission
@@ -165,7 +159,7 @@ class RolePermission(models.Model):
         choices=ACTION_CHOICES,
         null=True,
         blank=True,
-        help_text="Model-level action (leave blank for field-level permissions)"
+        help_text="Model-level action (leave blank for field-level permissions)",
     )
 
     # Field-level permission
@@ -174,7 +168,7 @@ class RolePermission(models.Model):
         null=True,
         blank=True,
         db_index=True,
-        help_text="Field name (only for field-level permissions)"
+        help_text="Field name (only for field-level permissions)",
     )
 
     permission_type = models.CharField(
@@ -182,34 +176,39 @@ class RolePermission(models.Model):
         choices=PERMISSION_TYPE_CHOICES,
         null=True,
         blank=True,
-        help_text="Permission type for field-level permissions"
+        help_text="Permission type for field-level permissions",
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(
-        auto_now=True,
-        help_text="Used for cache invalidation"
+        auto_now=True, help_text="Used for cache invalidation"
     )
 
     class Meta:
-        db_table = 'turbodrf_permission'
-        ordering = ['role', 'app_label', 'model_name', 'field_name']
-        verbose_name = 'TurboDRF Permission'
-        verbose_name_plural = 'TurboDRF Permissions'
+        db_table = "turbodrf_permission"
+        ordering = ["role", "app_label", "model_name", "field_name"]
+        verbose_name = "TurboDRF Permission"
+        verbose_name_plural = "TurboDRF Permissions"
 
         # Ensure unique permissions per role
         constraints = [
             # Model-level permission uniqueness
             models.UniqueConstraint(
-                fields=['role', 'app_label', 'model_name', 'action'],
+                fields=["role", "app_label", "model_name", "action"],
                 condition=models.Q(field_name__isnull=True),
-                name='unique_model_permission'
+                name="unique_model_permission",
             ),
             # Field-level permission uniqueness
             models.UniqueConstraint(
-                fields=['role', 'app_label', 'model_name', 'field_name', 'permission_type'],
+                fields=[
+                    "role",
+                    "app_label",
+                    "model_name",
+                    "field_name",
+                    "permission_type",
+                ],
                 condition=models.Q(field_name__isnull=False),
-                name='unique_field_permission'
+                name="unique_field_permission",
             ),
         ]
 
@@ -218,10 +217,18 @@ class RolePermission(models.Model):
             # Either action OR (field_name + permission_type) must be set
             models.CheckConstraint(
                 check=(
-                    models.Q(action__isnull=False, field_name__isnull=True, permission_type__isnull=True) |
-                    models.Q(action__isnull=True, field_name__isnull=False, permission_type__isnull=False)
+                    models.Q(
+                        action__isnull=False,
+                        field_name__isnull=True,
+                        permission_type__isnull=True,
+                    )
+                    | models.Q(
+                        action__isnull=True,
+                        field_name__isnull=False,
+                        permission_type__isnull=False,
+                    )
                 ),
-                name='permission_type_check'
+                name="permission_type_check",
             ),
         ]
 
@@ -244,8 +251,7 @@ class RolePermission(models.Model):
         # Increment role version to invalidate caches
         if self.role:
             TurboDRFRole.objects.filter(pk=self.role.pk).update(
-                version=models.F('version') + 1,
-                updated_at=models.functions.Now()
+                version=models.F("version") + 1, updated_at=models.functions.Now()
             )
 
     def delete(self, *args, **kwargs):
@@ -255,8 +261,7 @@ class RolePermission(models.Model):
         # Increment role version to invalidate caches
         if role_pk:
             TurboDRFRole.objects.filter(pk=role_pk).update(
-                version=models.F('version') + 1,
-                updated_at=models.functions.Now()
+                version=models.F("version") + 1, updated_at=models.functions.Now()
             )
         return result
 
@@ -280,22 +285,20 @@ class UserRole(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name='turbodrf_roles'
+        related_name="turbodrf_roles",
     )
 
     role = models.ForeignKey(
-        TurboDRFRole,
-        on_delete=models.CASCADE,
-        related_name='user_assignments'
+        TurboDRFRole, on_delete=models.CASCADE, related_name="user_assignments"
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'turbodrf_user_role'
-        unique_together = [['user', 'role']]
-        verbose_name = 'User Role Assignment'
-        verbose_name_plural = 'User Role Assignments'
+        db_table = "turbodrf_user_role"
+        unique_together = [["user", "role"]]
+        verbose_name = "User Role Assignment"
+        verbose_name_plural = "User Role Assignments"
 
     def __str__(self):
         return f"{self.user} -> {self.role.name}"
