@@ -1,4 +1,5 @@
 from django.conf import settings
+from django.db import models
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status
 from rest_framework.filters import OrderingFilter, SearchFilter
@@ -244,42 +245,27 @@ class TurboDRFViewSet(*_viewset_bases):
         request = getattr(self, "request", None)
         user = getattr(request, "user", None) if request else None
 
-        # Only use permission-based field filtering for read operations
-        # For write operations, include all configured fields and let
-        # validation handle permissions
+        # Use permission-based field filtering for both read and write operations
+        # This prevents validation errors from leaking information about fields
+        # the user doesn't have permission to access
         use_default_perms = getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False)
 
-        if not use_default_perms and user and self.action in ["list", "retrieve"]:
-            # For unauthenticated users, check if guest role is configured
-            if not user.is_authenticated:
-                TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
+        if not use_default_perms and user and self.action in ["list", "retrieve", "create", "update", "partial_update"]:
+            from .serializers import TurboDRFSerializerFactory
+            from .backends import attach_snapshot_to_request
 
-                # Only use guest role if it's defined in settings
-                if "guest" in TURBODRF_ROLES:
-                    # Create a pseudo-user object with "guest" role
-                    class GuestUser:
-                        roles = ["guest"]
-                        is_authenticated = False
+            # Always build snapshot for permission checking
+            # This works for all modes: static (via .roles or _test_roles),
+            # database (via UserRole), and guest users
+            snapshot = attach_snapshot_to_request(request, self.model)
 
-                    user = GuestUser()
-                else:
-                    # No guest role defined, skip factory and use default serializer
-                    pass
-            elif hasattr(user, "roles"):
-                # Use the factory for permission-based field filtering
-                # (TurboDRF permissions mode)
-                from .serializers import TurboDRFSerializerFactory
-
+            # Use factory if snapshot has any permissions
+            # (This handles all modes including database without requiring .roles property)
+            if snapshot and (snapshot.allowed_actions or snapshot.readable_fields):
+                # For write operations, pass appropriate view_type
+                view_type = "detail" if self.action in ["create", "update", "partial_update"] else self.action
                 return TurboDRFSerializerFactory.create_serializer(
-                    self.model, original_fields, user
-                )
-
-            # If we have a user with roles (including guest), use factory
-            if hasattr(user, "roles"):
-                from .serializers import TurboDRFSerializerFactory
-
-                return TurboDRFSerializerFactory.create_serializer(
-                    self.model, original_fields, user
+                    self.model, original_fields, user, view_type=view_type, snapshot=snapshot
                 )
 
         # Create serializer class dynamically with unique name per action
@@ -527,8 +513,11 @@ class TurboDRFViewSet(*_viewset_bases):
                 # Foreign keys get exact lookup
                 return ["exact"]
             elif isinstance(field, (models.FileField, models.ImageField)):
-                # File fields can be filtered by exact match or if they're null
-                return ["exact", "isnull"]
+                # Skip FileField and ImageField - django-filter doesn't support them
+                # Attempting to filter by these fields causes:
+                # "AssertionError: ... resolved field 'X' with 'exact' lookup to an
+                # unrecognized field type ImageField"
+                return None
             elif isinstance(field, models.UUIDField):
                 # UUID fields only support exact matching
                 return ["exact", "isnull"]
@@ -547,9 +536,9 @@ class TurboDRFViewSet(*_viewset_bases):
 
         # Get all ManyToMany fields
         for field in self.model._meta.many_to_many:
-            # ManyToMany fields support exact lookup by ID
-            # They also support filtering through related model fields
-            filterset_fields[field.name] = ["exact"]
+            # ManyToMany fields support filtering by ID and null checks
+            # They also support filtering through related model fields via __ notation
+            filterset_fields[field.name] = ["exact", "in", "isnull"]
 
         return filterset_fields
 

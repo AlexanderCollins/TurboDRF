@@ -147,6 +147,9 @@ class TestTurboDRFSerializerFactory(TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
+        from django.core.cache import cache
+        cache.clear()  # Clear cache to avoid test pollution
+
         # Create users with different roles
         self.admin_user = User.objects.create_user(username="admin", is_superuser=True)
         self.admin_user._test_roles = ["admin"]
@@ -405,3 +408,233 @@ class TestSerializerRefNameUniqueness(TestCase):
 
         # They should be the same (fields are sorted before hashing)
         self.assertEqual(ref_name_1, ref_name_2)
+
+
+class TestManyToManyFieldSerialization(TestCase):
+    """Test cases for ManyToMany field serialization."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        from django.core.cache import cache
+        from tests.test_app.models import Category, ArticleWithCategories
+
+        cache.clear()  # Clear cache to avoid test pollution
+
+        # Create test users
+        self.admin_user = User.objects.create_user(username="admin", is_superuser=True)
+        self.admin_user._test_roles = ["admin"]
+
+        # Create categories
+        self.category1 = Category.objects.create(
+            name="Sales Enablement", description="Sales-related content"
+        )
+        self.category2 = Category.objects.create(
+            name="Marketing", description="Marketing-related content"
+        )
+        self.category3 = Category.objects.create(
+            name="Engineering", description="Technical content"
+        )
+
+        # Create author
+        self.author = RelatedModel.objects.create(
+            name="John Doe", description="Content author"
+        )
+
+        # Create article with categories
+        self.article = ArticleWithCategories.objects.create(
+            title="Test Article", content="Article content", author=self.author
+        )
+        self.article.categories.add(self.category1, self.category2)
+
+    def test_m2m_field_serialization_as_array_of_objects(self):
+        """Test that M2M fields are serialized as arrays of objects."""
+        from tests.test_app.models import ArticleWithCategories
+
+        # Create serializer with M2M nested fields
+        class TestSerializer(TurboDRFSerializer):
+            class Meta:
+                model = ArticleWithCategories
+                fields = ["title", "categories"]
+                _nested_fields = {
+                    "categories": ["categories__name", "categories__description"]
+                }
+
+        serializer = TestSerializer(self.article)
+        data = serializer.data
+
+        # Check that categories is an array
+        self.assertIn("categories", data)
+        self.assertIsInstance(data["categories"], list)
+        self.assertEqual(len(data["categories"]), 2)
+
+        # Check that each category is an object with name and description
+        category_names = {cat["name"] for cat in data["categories"]}
+        self.assertIn("Sales Enablement", category_names)
+        self.assertIn("Marketing", category_names)
+
+        # Check that description is included
+        for cat in data["categories"]:
+            self.assertIn("name", cat)
+            self.assertIn("description", cat)
+            if cat["name"] == "Sales Enablement":
+                self.assertEqual(cat["description"], "Sales-related content")
+
+    def test_m2m_field_with_single_nested_field(self):
+        """Test M2M serialization with only one nested field."""
+        from tests.test_app.models import ArticleWithCategories
+
+        class TestSerializer(TurboDRFSerializer):
+            class Meta:
+                model = ArticleWithCategories
+                fields = ["title", "categories"]
+                _nested_fields = {"categories": ["categories__name"]}
+
+        serializer = TestSerializer(self.article)
+        data = serializer.data
+
+        # Should still be an array of objects
+        self.assertIsInstance(data["categories"], list)
+        self.assertEqual(len(data["categories"]), 2)
+
+        # Each object should only have 'name' field
+        for cat in data["categories"]:
+            self.assertIn("name", cat)
+            self.assertEqual(len(cat.keys()), 1)  # Only 'name' field
+
+    def test_m2m_vs_fk_field_handling(self):
+        """Test that M2M fields are handled differently from FK fields."""
+        from tests.test_app.models import ArticleWithCategories
+
+        class TestSerializer(TurboDRFSerializer):
+            class Meta:
+                model = ArticleWithCategories
+                fields = ["title", "author", "categories"]
+                _nested_fields = {
+                    "author": ["author__name"],  # FK - should be flat
+                    "categories": ["categories__name"],  # M2M - should be array
+                }
+
+        serializer = TestSerializer(self.article)
+        data = serializer.data
+
+        # FK field should create flat field
+        self.assertIn("author_name", data)
+        self.assertEqual(data["author_name"], "John Doe")
+
+        # M2M field should create array
+        self.assertIn("categories", data)
+        self.assertIsInstance(data["categories"], list)
+        self.assertEqual(len(data["categories"]), 2)
+
+    def test_empty_m2m_field(self):
+        """Test serialization when M2M field has no relations."""
+        from tests.test_app.models import ArticleWithCategories
+
+        # Create article with no categories
+        empty_article = ArticleWithCategories.objects.create(
+            title="Empty Article", content="No categories", author=self.author
+        )
+
+        class TestSerializer(TurboDRFSerializer):
+            class Meta:
+                model = ArticleWithCategories
+                fields = ["title", "categories"]
+                _nested_fields = {"categories": ["categories__name"]}
+
+        serializer = TestSerializer(empty_article)
+        data = serializer.data
+
+        # Should return empty array
+        self.assertIn("categories", data)
+        self.assertIsInstance(data["categories"], list)
+        self.assertEqual(len(data["categories"]), 0)
+
+    def test_m2m_field_permission_filtering(self):
+        """Test that permission filtering works for M2M nested fields."""
+        from tests.test_app.models import ArticleWithCategories
+
+        # Use factory to create serializer with permissions
+        fields = ["title", "categories__name", "categories__description"]
+
+        SerializerClass = TurboDRFSerializerFactory.create_serializer(
+            ArticleWithCategories, fields, self.admin_user
+        )
+
+        serializer = SerializerClass(self.article)
+        data = serializer.data
+
+        # Admin should see categories as array
+        self.assertIn("categories", data)
+        self.assertIsInstance(data["categories"], list)
+        # Should have 2 categories
+        self.assertEqual(len(data["categories"]), 2)
+        # Each category should have name and description
+        for cat in data["categories"]:
+            self.assertIn("name", cat)
+            self.assertIn("description", cat)
+
+    def test_m2m_serialization_preserves_order(self):
+        """Test that M2M serialization returns items in consistent order."""
+        from tests.test_app.models import ArticleWithCategories
+
+        class TestSerializer(TurboDRFSerializer):
+            class Meta:
+                model = ArticleWithCategories
+                fields = ["title", "categories"]
+                _nested_fields = {"categories": ["categories__name"]}
+
+        # Serialize multiple times
+        data1 = TestSerializer(self.article).data
+        data2 = TestSerializer(self.article).data
+
+        # Order should be consistent
+        names1 = [cat["name"] for cat in data1["categories"]]
+        names2 = [cat["name"] for cat in data2["categories"]]
+        self.assertEqual(names1, names2)
+
+    def test_m2m_with_null_field_values(self):
+        """Test M2M serialization when nested fields have null values."""
+        from tests.test_app.models import Category, ArticleWithCategories
+
+        # Create category with no description (blank field)
+        empty_cat = Category.objects.create(name="Empty Category", description="")
+
+        article = ArticleWithCategories.objects.create(
+            title="Test", author=self.author
+        )
+        article.categories.add(empty_cat)
+
+        class TestSerializer(TurboDRFSerializer):
+            class Meta:
+                model = ArticleWithCategories
+                fields = ["title", "categories"]
+                _nested_fields = {"categories": ["categories__name", "categories__description"]}
+
+        serializer = TestSerializer(article)
+        data = serializer.data
+
+        # Should handle empty description gracefully
+        self.assertEqual(len(data["categories"]), 1)
+        self.assertEqual(data["categories"][0]["name"], "Empty Category")
+        self.assertEqual(data["categories"][0]["description"], "")
+
+    def test_factory_creates_proper_m2m_metadata(self):
+        """Test that SerializerFactory creates proper _nested_fields for M2M."""
+        from tests.test_app.models import ArticleWithCategories
+
+        fields = ["title", "categories__name", "categories__description"]
+
+        SerializerClass = TurboDRFSerializerFactory.create_serializer(
+            ArticleWithCategories, fields, self.admin_user
+        )
+
+        # Check that _nested_fields metadata is created
+        self.assertTrue(hasattr(SerializerClass.Meta, "_nested_fields"))
+
+        # Check that categories is in nested_fields
+        nested_fields = SerializerClass.Meta._nested_fields
+        self.assertIn("categories", nested_fields)
+
+        # Check that it includes both nested field paths
+        self.assertIn("categories__name", nested_fields["categories"])
+        self.assertIn("categories__description", nested_fields["categories"])

@@ -143,10 +143,122 @@ class TestJSONFieldSupport(TestCase):
             filterset_fields["name"], ["exact", "icontains", "istartswith", "iendswith"]
         )
 
-        # JSONField and BinaryField should be excluded
+        # JSONField, BinaryField, FileField, and ImageField should be excluded
+        # (django-filter doesn't support these field types)
         self.assertNotIn("json_data", filterset_fields)
         self.assertNotIn("binary_data", filterset_fields)
+        self.assertNotIn("file_upload", filterset_fields)
+        self.assertNotIn("image_upload", filterset_fields)
 
-        # File fields should have limited lookups
-        self.assertEqual(filterset_fields["file_upload"], ["exact", "isnull"])
-        self.assertEqual(filterset_fields["image_upload"], ["exact", "isnull"])
+    def test_imagefield_with_django_filter_integration(self):
+        """Test that ImageField works correctly with django-filter integration."""
+        from django_filters import FilterSet
+        from turbodrf.mixins import TurboDRFMixin
+
+        class ImageModel(TurboDRFMixin, models.Model):
+            name = models.CharField(max_length=100)
+            photo = models.ImageField(upload_to="photos/")
+            thumbnail = models.ImageField(upload_to="thumbs/", null=True, blank=True)
+
+            class Meta:
+                app_label = "tests"
+
+            @classmethod
+            def turbodrf(cls):
+                return {"fields": ["id", "name", "photo", "thumbnail"]}
+
+        # Test 1: get_filterset_fields should exclude ImageField
+        viewset = TurboDRFViewSet()
+        viewset.model = ImageModel
+
+        filterset_fields = viewset.get_filterset_fields()
+
+        # ImageField should be excluded (django-filter doesn't support it)
+        self.assertNotIn("photo", filterset_fields)
+        self.assertNotIn("thumbnail", filterset_fields)
+
+        # But regular fields should be present
+        self.assertIn("name", filterset_fields)
+        self.assertEqual(
+            filterset_fields["name"], ["exact", "icontains", "istartswith", "iendswith"]
+        )
+
+        # Test 2: Creating FilterSet should not crash (no ImageFields in filterset_fields)
+        try:
+            # Create a dynamic FilterSet class like django-filter does
+            class ImageModelFilterSet(FilterSet):
+                class Meta:
+                    model = ImageModel
+                    fields = filterset_fields
+
+            # This should not raise an error
+            filter_instance = ImageModelFilterSet()
+
+            # Verify name filter was created but not photo
+            self.assertIn("name", filter_instance.filters)
+            self.assertNotIn("photo", filter_instance.filters)
+            self.assertNotIn("thumbnail", filter_instance.filters)
+
+        except Exception as e:
+            self.fail(f"Creating FilterSet with ImageModel failed: {e}")
+
+        # Test 3: Using the FilterSet should not crash
+        try:
+            # Create an empty queryset
+            queryset = ImageModel.objects.none()
+
+            # Apply filters (only on supported fields)
+            filter_instance = ImageModelFilterSet(
+                data={"name__icontains": "test"},
+                queryset=queryset
+            )
+
+            # This should not crash
+            filtered_queryset = filter_instance.qs
+
+        except Exception as e:
+            self.fail(f"Using FilterSet with ImageModel failed: {e}")
+
+    def test_imagefield_serialization_in_rest_output(self):
+        """Test that ImageField can be serialized in REST output without crashing."""
+        from turbodrf.mixins import TurboDRFMixin
+        from rest_framework.test import APIRequestFactory
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+
+        class ImageModel(TurboDRFMixin, models.Model):
+            name = models.CharField(max_length=100)
+            photo = models.ImageField(upload_to="photos/")
+
+            class Meta:
+                app_label = "tests"
+
+            @classmethod
+            def turbodrf(cls):
+                return {"fields": ["id", "name", "photo"]}
+
+        # Create a viewset
+        factory = APIRequestFactory()
+        request = factory.get("/")
+
+        # Create a mock user with admin role
+        user = User(username="testuser", is_superuser=True)
+        user._test_roles = ["admin"]
+        request.user = user
+
+        viewset = TurboDRFViewSet()
+        viewset.model = ImageModel
+        viewset.request = request
+        viewset.action = "list"
+
+        # Test getting serializer class should not crash
+        try:
+            serializer_class = viewset.get_serializer_class()
+
+            # Check that ImageField is in the serializer
+            serializer_instance = serializer_class()
+            self.assertIn("photo", serializer_instance.fields)
+
+        except Exception as e:
+            self.fail(f"Getting serializer with ImageField failed: {e}")

@@ -33,8 +33,9 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         Convert a model instance to a dictionary representation.
 
         This method extends the default serialization to include nested fields
-        that are defined using double-underscore notation. It traverses
-        relationships and adds the resulting values to the output dictionary.
+        that are defined using double-underscore notation. It handles both:
+        - ForeignKey relationships: Flat fields (e.g., author__name → author_name)
+        - ManyToMany relationships: Arrays of objects (e.g., categories__name → categories: [{name: ...}])
 
         Args:
             instance: The model instance to serialize.
@@ -43,41 +44,116 @@ class TurboDRFSerializer(serializers.ModelSerializer):
             dict: The serialized representation including nested fields.
 
         Example:
-            For a field definition 'author__name', this method will:
-            1. Navigate from the instance to instance.author.name
-            2. Add the value to the output as 'author_name'
-            3. Handle None values gracefully without raising exceptions
+            For a FK field 'author__name': adds 'author_name' as flat field
+            For an M2M field 'categories__name': adds 'categories' as array of objects
         """
         data = super().to_representation(instance)
 
         # Handle nested fields if they're defined
         if hasattr(self.Meta, "_nested_fields"):
             for base_field, nested_fields in self.Meta._nested_fields.items():
-                # Process each nested field
-                for nested_field in nested_fields:
-                    # Construct full field path
-                    if "__" in nested_field:
-                        # Already a full path
-                        full_field_path = nested_field
-                    else:
-                        # Partial path, prepend base field
-                        full_field_path = f"{base_field}__{nested_field}"
+                # Check if this is a ManyToMany field
+                is_m2m = self._is_many_to_many_field(instance, base_field)
 
-                    # Navigate through the relationship
-                    value = instance
-                    try:
-                        for part in full_field_path.split("__"):
-                            if value is None:
-                                break
-                            value = getattr(value, part, None)
+                if is_m2m:
+                    # Handle ManyToMany: serialize as array of objects
+                    data[base_field] = self._serialize_m2m_field(
+                        instance, base_field, nested_fields
+                    )
+                else:
+                    # Handle ForeignKey/OneToOne: serialize as flat fields
+                    for nested_field in nested_fields:
+                        # Handle both formats:
+                        # 1. Full path: "author__name" (from factory/views)
+                        # 2. Short form: "name" (manual serializer creation)
+                        if nested_field.startswith(f"{base_field}__"):
+                            full_field_path = nested_field
+                        else:
+                            full_field_path = f"{base_field}__{nested_field}"
 
-                        # Add the nested field value with underscores
-                        field_name = full_field_path.replace("__", "_")
-                        data[field_name] = value
-                    except Exception:
-                        pass
+                        # Navigate through the relationship
+                        value = instance
+                        try:
+                            for part in full_field_path.split("__"):
+                                if value is None:
+                                    break
+                                value = getattr(value, part, None)
+
+                            # Add the nested field value with underscores
+                            field_name = full_field_path.replace("__", "_")
+                            data[field_name] = value
+                        except Exception:
+                            pass
 
         return data
+
+    def _is_many_to_many_field(self, instance, field_name):
+        """
+        Check if a field is a ManyToManyField.
+
+        Args:
+            instance: Model instance
+            field_name: Name of the field to check
+
+        Returns:
+            bool: True if the field is a ManyToManyField
+        """
+        try:
+            field = instance._meta.get_field(field_name)
+            return field.many_to_many
+        except Exception:
+            return False
+
+    def _serialize_m2m_field(self, instance, base_field, nested_fields):
+        """
+        Serialize a ManyToMany field as an array of objects.
+
+        Args:
+            instance: Model instance
+            base_field: Name of the M2M field (e.g., 'categories')
+            nested_fields: List of nested field paths (e.g., ['categories__name', 'categories__id'])
+
+        Returns:
+            list: Array of dictionaries containing the nested field values
+
+        Example:
+            Input: categories__name, categories__id
+            Output: [{"id": 66, "name": "Sales"}, {"id": 72, "name": "Marketing"}]
+        """
+        try:
+            # Get the ManyToMany manager
+            m2m_manager = getattr(instance, base_field, None)
+            if m2m_manager is None:
+                return []
+
+            # Get all related objects (should be prefetched for performance)
+            related_objects = m2m_manager.all()
+
+            # Extract the field names to include (strip the base_field__ prefix)
+            fields_to_extract = set()
+            for nested_field in nested_fields:
+                if nested_field.startswith(f"{base_field}__"):
+                    # Extract the actual field name after the base field
+                    field_parts = nested_field[len(base_field) + 2:].split("__")
+                    fields_to_extract.add(field_parts[0])  # Get first level field
+                else:
+                    fields_to_extract.add(nested_field)
+
+            # Serialize each related object
+            result = []
+            for related_obj in related_objects:
+                obj_data = {}
+                for field_name in fields_to_extract:
+                    try:
+                        obj_data[field_name] = getattr(related_obj, field_name, None)
+                    except Exception:
+                        obj_data[field_name] = None
+                result.append(obj_data)
+
+            return result
+
+        except Exception:
+            return []
 
     def update(self, instance, validated_data):
         """
@@ -85,44 +161,31 @@ class TurboDRFSerializer(serializers.ModelSerializer):
 
         This method filters out fields that the user doesn't have write
         permission for before updating the instance.
+
+        Uses permission snapshots for O(1) field permission checking.
         """
         # Get the request user from context
         request = self.context.get("request")
-        if request and hasattr(request.user, "roles"):
-            # Check field write permissions
-            from django.conf import settings
+        if request and request.user and request.user.is_authenticated:
+            # Use snapshot if attached, otherwise build one
+            if hasattr(self, '_permission_snapshot'):
+                snapshot = self._permission_snapshot
+            else:
+                from .backends import get_snapshot_from_request, build_permission_snapshot
+                snapshot = get_snapshot_from_request(request, instance.__class__)
+                if snapshot is None:
+                    snapshot = build_permission_snapshot(request.user, instance.__class__)
 
-            TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
-            user_permissions = set()
-            for role in request.user.roles:
-                user_permissions.update(TURBODRF_ROLES.get(role, []))
-
-            # Filter out fields without write permission
-            app_label = instance._meta.app_label
-            model_name = instance._meta.model_name
-
+            # Filter out fields without write permission using snapshot
             filtered_data = {}
             for field_name, value in validated_data.items():
-                # Check field write permission
-                field_perm = f"{app_label}.{model_name}.{field_name}.write"
-                model_perm = f"{app_label}.{model_name}.update"
-
-                # Check if field has specific write permission
-                # defined in ANY role
-                has_field_write_perms = any(
-                    perm.startswith(f"{app_label}.{model_name}.{field_name}.")
-                    and perm.endswith(".write")
-                    for role_perms in TURBODRF_ROLES.values()
-                    for perm in role_perms
-                )
-
-                if has_field_write_perms:
-                    # Field-level write permissions exist,
-                    # check user has it
-                    if field_perm in user_permissions:
+                # O(1) check using snapshot
+                if snapshot.has_write_rule(field_name):
+                    # Field has explicit write permission rule
+                    if snapshot.can_write_field(field_name):
                         filtered_data[field_name] = value
-                elif model_perm in user_permissions:
-                    # No field-level write permission defined, use model permission
+                elif snapshot.can_perform_action('update'):
+                    # No explicit field rule, use model-level permission
                     filtered_data[field_name] = value
 
             validated_data = filtered_data
@@ -135,45 +198,32 @@ class TurboDRFSerializer(serializers.ModelSerializer):
 
         This method filters out fields that the user doesn't have write
         permission for before creating the instance.
+
+        Uses permission snapshots for O(1) field permission checking.
         """
         # Get the request user from context
         request = self.context.get("request")
-        if request and hasattr(request.user, "roles"):
-            # Check field write permissions
-            from django.conf import settings
+        if request and request.user and request.user.is_authenticated:
+            # Use snapshot if attached, otherwise build one
+            if hasattr(self, '_permission_snapshot'):
+                snapshot = self._permission_snapshot
+            else:
+                from .backends import get_snapshot_from_request, build_permission_snapshot
+                model = self.Meta.model
+                snapshot = get_snapshot_from_request(request, model)
+                if snapshot is None:
+                    snapshot = build_permission_snapshot(request.user, model)
 
-            TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
-            user_permissions = set()
-            for role in request.user.roles:
-                user_permissions.update(TURBODRF_ROLES.get(role, []))
-
-            # Filter out fields without write permission
-            model = self.Meta.model
-            app_label = model._meta.app_label
-            model_name = model._meta.model_name
-
+            # Filter out fields without write permission using snapshot
             filtered_data = {}
             for field_name, value in validated_data.items():
-                # Check field write permission
-                field_perm = f"{app_label}.{model_name}.{field_name}.write"
-                model_perm = f"{app_label}.{model_name}.create"
-
-                # Check if field has specific write permission
-                # defined in ANY role
-                has_field_write_perms = any(
-                    perm.startswith(f"{app_label}.{model_name}.{field_name}.")
-                    and perm.endswith(".write")
-                    for role_perms in TURBODRF_ROLES.values()
-                    for perm in role_perms
-                )
-
-                if has_field_write_perms:
-                    # Field-level write permissions exist,
-                    # check user has it
-                    if field_perm in user_permissions:
+                # O(1) check using snapshot
+                if snapshot.has_write_rule(field_name):
+                    # Field has explicit write permission rule
+                    if snapshot.can_write_field(field_name):
                         filtered_data[field_name] = value
-                elif model_perm in user_permissions:
-                    # No field-level write permission defined, use model permission
+                elif snapshot.can_perform_action('create'):
+                    # No explicit field rule, use model-level permission
                     filtered_data[field_name] = value
 
             validated_data = filtered_data
@@ -214,13 +264,15 @@ class TurboDRFSerializerFactory:
     """
 
     @classmethod
-    def create_serializer(cls, model, fields, user, view_type="list"):
+    def create_serializer(cls, model, fields, user, view_type="list", snapshot=None):
         """
         Create a dynamic serializer class tailored to user permissions.
 
         This method generates a serializer class at runtime that includes only
         the fields the user has permission to read, and marks fields as
         read-only if the user lacks write permission.
+
+        Uses permission snapshots for O(1) field permission checking.
 
         Args:
             model: The Django model class to serialize.
@@ -229,6 +281,7 @@ class TurboDRFSerializerFactory:
             user: The user object with 'roles' attribute for permission checking.
             view_type: The type of view ('list' or 'detail') for context-specific
                       serialization. Defaults to 'list'.
+            snapshot: Optional PermissionSnapshot to use (for performance)
 
         Returns:
             type: A dynamically created serializer class inheriting from
@@ -249,30 +302,13 @@ class TurboDRFSerializerFactory:
             # 'content' excluded due to lack of read permission
         """
 
-        # Filter fields based on permissions
-        permitted_fields = cls._get_permitted_fields(model, fields, user)
+        # Build snapshot if not provided
+        if snapshot is None:
+            from .backends import build_permission_snapshot
+            snapshot = build_permission_snapshot(user, model)
 
-        # Debug: ensure we have required fields for the model
-        # If 'related' field is required but filtered out due to
-        # permissions,
-        # we need to include it anyway for write operations
-        if hasattr(model, "_meta"):
-            for field in model._meta.fields:
-                if (
-                    not field.null
-                    and field.name not in permitted_fields
-                    and field.name in fields
-                ):
-                    # This is a required field that was filtered out - add it back
-                    if isinstance(field, models.ForeignKey):
-                        # For foreign keys, check if user has
-                        # model-level write permission
-                        model_write_perm = (
-                            f"{model._meta.app_label}.{model._meta.model_name}.create"
-                        )
-                        user_permissions = cls._get_user_permissions_set(user)
-                        if model_write_perm in user_permissions:
-                            permitted_fields.append(field.name)
+        # Filter fields based on permissions using snapshot AND nested permission checking
+        permitted_fields = cls._get_permitted_fields_with_snapshot(model, fields, user)
 
         # Handle nested fields
         nested_fields = {}
@@ -280,24 +316,20 @@ class TurboDRFSerializerFactory:
 
         for field in permitted_fields:
             if "__" in field:
-                base_field, nested_field = field.split("__", 1)
+                base_field = field.split("__")[0]
                 if base_field not in nested_fields:
                     nested_fields[base_field] = []
-                nested_fields[base_field].append(nested_field)
+                # Store full path (not remainder) for consistency with non-factory path
+                # This fixes multi-level nesting: author__parent__title
+                nested_fields[base_field].append(field)
             else:
                 simple_fields.append(field)
 
-        # Create nested serializers
-        nested_serializers = {}
-        for base_field, nested_field_list in nested_fields.items():
-            try:
-                related_model = model._meta.get_field(base_field).related_model
-                nested_serializer = cls._create_nested_serializer(
-                    related_model, nested_field_list, user
-                )
-                nested_serializers[base_field] = nested_serializer
-            except Exception:
-                continue
+        # Add base fields for nested fields if not already present
+        # This ensures FK id fields are included (e.g., 'author' for 'author__name')
+        for base_field in nested_fields:
+            if base_field not in simple_fields:
+                simple_fields.append(base_field)
 
         # Create variables for the closure
         model_class = model
@@ -306,7 +338,7 @@ class TurboDRFSerializerFactory:
         # This prevents issues with writable foreign keys being replaced
         # by read-only nested serializers
         all_fields = simple_fields
-        read_only_fields_list = cls._get_read_only_fields(model, simple_fields, user)
+        read_only_fields_list = cls._get_read_only_fields_with_snapshot(model, simple_fields, snapshot)
         nested_fields_meta = nested_fields if nested_fields else {}
 
         # Generate unique ref_name for swagger schema generation
@@ -314,6 +346,9 @@ class TurboDRFSerializerFactory:
         app_label = model_class._meta.app_label
         model_name = model_class._meta.model_name
         ref_name_value = f"{app_label}_{model_name}_{view_type}_{fields_hash}"
+
+        # Store snapshot for use in create/update methods
+        snapshot_to_use = snapshot
 
         # Create the main serializer class
         class DynamicSerializer(TurboDRFSerializer):
@@ -323,7 +358,10 @@ class TurboDRFSerializerFactory:
                 # The base field should remain writable for
                 # create/update operations
                 # Nested serializers are used for display only
-                pass
+
+                # Attach snapshot to serializer for create/update
+                if snapshot_to_use:
+                    self._permission_snapshot = snapshot_to_use
 
             class Meta:
                 model = model_class
@@ -418,6 +456,46 @@ class TurboDRFSerializerFactory:
         return permitted
 
     @classmethod
+    def _get_permitted_fields_with_snapshot(cls, model, fields, user):
+        """
+        Filter fields based on user's read permissions with nested permission checking.
+
+        This version validates nesting depth and checks permissions at each level
+        of nested field paths.
+
+        Args:
+            model: The Django model class.
+            fields: List of field names to check, may include nested fields.
+            user: Django user object for permission checking
+
+        Returns:
+            list: Filtered list of field names the user can read.
+        """
+        from .validation import validate_nesting_depth, check_nested_field_permissions
+
+        permitted = []
+
+        # First check if we should handle fields as "__all__"
+        if fields == "__all__":
+            # Get all model fields
+            fields = [f.name for f in model._meta.fields]
+
+        for field in fields:
+            # Validate nesting depth
+            try:
+                validate_nesting_depth(field)
+            except Exception as e:
+                # Log and skip fields that exceed nesting depth
+                logger.warning(f"Skipping field '{field}': {str(e)}")
+                continue
+
+            # Check nested permissions (traverses relationships)
+            if check_nested_field_permissions(model, field, user):
+                permitted.append(field)
+
+        return permitted
+
+    @classmethod
     def _get_user_permissions_set(cls, user):
         """Get all permissions for a user as a set."""
         from django.conf import settings
@@ -472,6 +550,30 @@ class TurboDRFSerializerFactory:
             # Check field write permission
             field_perm = f"{app_label}.{model_name}.{field}.write"
             if field_perm not in user_permissions:
+                read_only.append(field)
+
+        return read_only
+
+    @classmethod
+    def _get_read_only_fields_with_snapshot(cls, model, fields, snapshot):
+        """
+        Determine which fields should be read-only based on write permissions.
+
+        This is the optimized version using permission snapshots.
+
+        Args:
+            model: The Django model class.
+            fields: List of field names to check for write permissions.
+            snapshot: PermissionSnapshot with pre-computed permissions
+
+        Returns:
+            list: Field names that should be marked as read-only.
+        """
+        read_only = []
+
+        for field in fields:
+            # Check field write permission using snapshot
+            if not snapshot.can_write_field(field):
                 read_only.append(field)
 
         return read_only

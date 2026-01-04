@@ -206,8 +206,10 @@ class TestGuestRole(TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
+        from django.core.cache import cache
         from tests.test_app.models import RelatedModel
 
+        cache.clear()  # Clear cache to avoid test pollution
         self.client = APIClient()
 
         # Create related model first

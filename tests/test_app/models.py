@@ -107,3 +107,49 @@ class DisabledModel(TurboDRFMixin, models.Model):
     @classmethod
     def turbodrf(cls):
         return {"enabled": False, "fields": ["name"]}
+
+
+class Category(TurboDRFMixin, models.Model):
+    """Category model for testing ManyToMany relationships."""
+
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name_plural = "categories"
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def turbodrf(cls):
+        return {"fields": ["name", "description"]}
+
+
+class ArticleWithCategories(TurboDRFMixin, models.Model):
+    """Test model with ManyToMany relationships."""
+
+    title = models.CharField(max_length=200)
+    content = models.TextField(blank=True)
+    author = models.ForeignKey(
+        RelatedModel, on_delete=models.CASCADE, related_name="articles", null=True
+    )
+    categories = models.ManyToManyField(Category, related_name="articles", blank=True)
+
+    def __str__(self):
+        return self.title
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "fields": {
+                "list": ["title", "author__name", "categories__name"],
+                "detail": [
+                    "title",
+                    "content",
+                    "author__name",
+                    "categories__name",
+                    "categories__description",
+                ],
+            }
+        }

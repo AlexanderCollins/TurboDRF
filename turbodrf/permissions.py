@@ -61,6 +61,8 @@ class TurboDRFPermission(BasePermission):
         """
         Check if the user has permission to perform the requested action.
 
+        Uses permission snapshots for O(1) permission checking.
+
         Args:
             request: The incoming HTTP request.
             view: The view being accessed.
@@ -68,6 +70,8 @@ class TurboDRFPermission(BasePermission):
         Returns:
             bool: True if permission is granted, False otherwise.
         """
+        from .backends import attach_snapshot_to_request
+
         model = view.model
         config = model.turbodrf()
 
@@ -77,22 +81,16 @@ class TurboDRFPermission(BasePermission):
 
         # Allow read access for unauthenticated users if public_access is enabled
         if not request.user or not request.user.is_authenticated:
-            # Only allow GET and OPTIONS requests for unauthenticated users
-            if public_access and request.method in ["GET", "OPTIONS"]:
+            # Only allow GET, HEAD, and OPTIONS requests for unauthenticated users
+            if public_access and request.method in ["GET", "HEAD", "OPTIONS"]:
                 return True
             # For models without public_access, deny all access
             return False
 
-        if not hasattr(request.user, "roles"):
-            return False
-
-        user_permissions = self._get_user_permissions(request.user)
-        app_label = model._meta.app_label
-        model_name = model._meta.model_name
-
         # Map HTTP methods to permission types
         permission_map = {
             "GET": "read",
+            "HEAD": "read",  # HEAD should have same permission as read
             "POST": "create",
             "PUT": "update",
             "PATCH": "update",
@@ -104,9 +102,9 @@ class TurboDRFPermission(BasePermission):
         if not permission_type:
             return False
 
-        # Check model-level permission
-        required_permission = f"{app_label}.{model_name}.{permission_type}"
-        return required_permission in user_permissions
+        # Use snapshot for permission checking (supports all modes)
+        snapshot = attach_snapshot_to_request(request, model)
+        return snapshot.can_perform_action(permission_type)
 
     def _get_user_permissions(self, user):
         """
@@ -180,11 +178,20 @@ class DefaultDjangoPermission(DjangoModelPermissions):
         """
         Check if the user has permission to perform the requested action.
 
-        For unauthenticated users, allows read-only access by default.
+        For unauthenticated users, respects public_access configuration.
         """
-        # Allow read access for unauthenticated users
+        model = view.model
+        config = model.turbodrf()
+
+        # Check if public access is allowed for this model
+        # Default to True for backward compatibility
+        public_access = config.get("public_access", True)
+
+        # Allow read access for unauthenticated users if public_access is enabled
         if not request.user or not request.user.is_authenticated:
-            return request.method in ["GET", "OPTIONS", "HEAD"]
+            if public_access and request.method in ["GET", "HEAD", "OPTIONS"]:
+                return True
+            return False
 
         # For authenticated users, use Django's permission system
         return super().has_permission(request, view)
