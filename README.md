@@ -1,13 +1,26 @@
 # TurboDRF
 
-**Auto-generated Django REST Framework APIs with role-based permissions**
+<div align="center">
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
-[![Django 3.2+](https://img.shields.io/badge/django-3.2%2B-green)](https://www.djangoproject.com/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-purple)](LICENSE)
-[![PyPI](https://img.shields.io/pypi/v/turbodrf)](https://pypi.org/project/turbodrf/)
+[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/downloads/)
+[![Django Version](https://img.shields.io/badge/django-3.2%2B-green)](https://www.djangoproject.com/)
+[![DRF Version](https://img.shields.io/badge/djangorestframework-3.12%2B-red)](https://www.django-rest-framework.org/)
+[![License](https://img.shields.io/badge/license-MIT-purple)](LICENSE)
+[![Tests](https://img.shields.io/github/actions/workflow/status/alexandercollins/turbodrf/tests.yml?branch=main&label=tests)](https://github.com/alexandercollins/turbodrf/actions)
+[![Coverage](https://img.shields.io/badge/coverage-71.33%25-yellowgreen)](https://github.com/alexandercollins/turbodrf)
+[![PyPI Version](https://img.shields.io/pypi/v/turbodrf?label=pypi)](https://pypi.org/project/turbodrf/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/alexandercollins/turbodrf/pulls)
+[![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-Generate complete REST APIs from Django models with minimal configuration.
+**The dead simple Django REST Framework API generator with role-based permissions**
+
+*New project as of May 2025. Built with assistance from [Claude](https://claude.ai).*
+
+Transform your Django models into fully-featured REST APIs with just a mixin and a method. Zero boilerplate, maximum power.
+
+[Features](#-features) • [Quick Start](#-quick-start) • [Documentation](#-documentation) • [Examples](#-examples) • [Contributing](#-contributing)
+
+</div>
 
 ---
 
