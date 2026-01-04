@@ -139,7 +139,12 @@ class TestManyToManyFiltering(TestCase):
         self.assertIn("categories", filterset_fields)
 
 
-@pytest.mark.skip(reason="ProductCategory table not in migrations - use test_nesting_validation.py::TestManyToManyFieldNesting instead")
+@pytest.mark.skip(
+    reason=(
+        "ProductCategory table not in migrations - "
+        "use test_nesting_validation.py::TestManyToManyFieldNesting instead"
+    )
+)
 class TestManyToManyFilteringIntegration(TestCase):
     """Integration tests for M2M filtering with actual filtering."""
 

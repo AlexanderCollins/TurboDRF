@@ -1,5 +1,4 @@
 from django.conf import settings
-from django.db import models
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status
 from rest_framework.filters import OrderingFilter, SearchFilter
@@ -250,9 +249,14 @@ class TurboDRFViewSet(*_viewset_bases):
         # the user doesn't have permission to access
         use_default_perms = getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False)
 
-        if not use_default_perms and user and self.action in ["list", "retrieve", "create", "update", "partial_update"]:
-            from .serializers import TurboDRFSerializerFactory
+        if (
+            not use_default_perms
+            and user
+            and self.action
+            in ["list", "retrieve", "create", "update", "partial_update"]
+        ):
             from .backends import attach_snapshot_to_request
+            from .serializers import TurboDRFSerializerFactory
 
             # Always build snapshot for permission checking
             # This works for all modes: static (via .roles or _test_roles),
@@ -263,9 +267,17 @@ class TurboDRFViewSet(*_viewset_bases):
             # (This handles all modes including database without requiring .roles property)
             if snapshot and (snapshot.allowed_actions or snapshot.readable_fields):
                 # For write operations, pass appropriate view_type
-                view_type = "detail" if self.action in ["create", "update", "partial_update"] else self.action
+                view_type = (
+                    "detail"
+                    if self.action in ["create", "update", "partial_update"]
+                    else self.action
+                )
                 return TurboDRFSerializerFactory.create_serializer(
-                    self.model, original_fields, user, view_type=view_type, snapshot=snapshot
+                    self.model,
+                    original_fields,
+                    user,
+                    view_type=view_type,
+                    snapshot=snapshot,
                 )
 
         # Create serializer class dynamically with unique name per action

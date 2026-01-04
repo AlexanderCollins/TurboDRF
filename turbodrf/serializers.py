@@ -1,7 +1,9 @@
 import hashlib
+import logging
 
-from django.db import models
 from rest_framework import serializers
+
+logger = logging.getLogger(__name__)
 
 
 class TurboDRFSerializer(serializers.ModelSerializer):
@@ -134,7 +136,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
             for nested_field in nested_fields:
                 if nested_field.startswith(f"{base_field}__"):
                     # Extract the actual field name after the base field
-                    field_parts = nested_field[len(base_field) + 2:].split("__")
+                    field_parts = nested_field[len(base_field) + 2 :].split("__")
                     fields_to_extract.add(field_parts[0])  # Get first level field
                 else:
                     fields_to_extract.add(nested_field)
@@ -168,13 +170,19 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if request and request.user and request.user.is_authenticated:
             # Use snapshot if attached, otherwise build one
-            if hasattr(self, '_permission_snapshot'):
+            if hasattr(self, "_permission_snapshot"):
                 snapshot = self._permission_snapshot
             else:
-                from .backends import get_snapshot_from_request, build_permission_snapshot
+                from .backends import (
+                    build_permission_snapshot,
+                    get_snapshot_from_request,
+                )
+
                 snapshot = get_snapshot_from_request(request, instance.__class__)
                 if snapshot is None:
-                    snapshot = build_permission_snapshot(request.user, instance.__class__)
+                    snapshot = build_permission_snapshot(
+                        request.user, instance.__class__
+                    )
 
             # Filter out fields without write permission using snapshot
             filtered_data = {}
@@ -184,7 +192,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                     # Field has explicit write permission rule
                     if snapshot.can_write_field(field_name):
                         filtered_data[field_name] = value
-                elif snapshot.can_perform_action('update'):
+                elif snapshot.can_perform_action("update"):
                     # No explicit field rule, use model-level permission
                     filtered_data[field_name] = value
 
@@ -205,10 +213,14 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if request and request.user and request.user.is_authenticated:
             # Use snapshot if attached, otherwise build one
-            if hasattr(self, '_permission_snapshot'):
+            if hasattr(self, "_permission_snapshot"):
                 snapshot = self._permission_snapshot
             else:
-                from .backends import get_snapshot_from_request, build_permission_snapshot
+                from .backends import (
+                    build_permission_snapshot,
+                    get_snapshot_from_request,
+                )
+
                 model = self.Meta.model
                 snapshot = get_snapshot_from_request(request, model)
                 if snapshot is None:
@@ -222,7 +234,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                     # Field has explicit write permission rule
                     if snapshot.can_write_field(field_name):
                         filtered_data[field_name] = value
-                elif snapshot.can_perform_action('create'):
+                elif snapshot.can_perform_action("create"):
                     # No explicit field rule, use model-level permission
                     filtered_data[field_name] = value
 
@@ -305,6 +317,7 @@ class TurboDRFSerializerFactory:
         # Build snapshot if not provided
         if snapshot is None:
             from .backends import build_permission_snapshot
+
             snapshot = build_permission_snapshot(user, model)
 
         # Filter fields based on permissions using snapshot AND nested permission checking
@@ -338,7 +351,9 @@ class TurboDRFSerializerFactory:
         # This prevents issues with writable foreign keys being replaced
         # by read-only nested serializers
         all_fields = simple_fields
-        read_only_fields_list = cls._get_read_only_fields_with_snapshot(model, simple_fields, snapshot)
+        read_only_fields_list = cls._get_read_only_fields_with_snapshot(
+            model, simple_fields, snapshot
+        )
         nested_fields_meta = nested_fields if nested_fields else {}
 
         # Generate unique ref_name for swagger schema generation
@@ -471,7 +486,7 @@ class TurboDRFSerializerFactory:
         Returns:
             list: Filtered list of field names the user can read.
         """
-        from .validation import validate_nesting_depth, check_nested_field_permissions
+        from .validation import check_nested_field_permissions, validate_nesting_depth
 
         permitted = []
 

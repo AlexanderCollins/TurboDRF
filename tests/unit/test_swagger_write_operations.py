@@ -5,8 +5,6 @@ Tests that TurboDRFSwaggerAutoSchema shows all writable fields in Swagger
 documentation for write operations (create, update, partial_update).
 """
 
-from decimal import Decimal
-
 from django.contrib.auth import get_user_model
 from django.db import models
 from django.test import TestCase
@@ -315,7 +313,7 @@ class TestSwaggerWriteOperationSerializer(TestCase):
         )
 
         # Should fall back to default behavior without errors
-        serializer = schema.get_request_serializer()
+        schema.get_request_serializer()
 
         # May be None or a serializer - just shouldn't raise an exception
         # The important thing is it doesn't crash

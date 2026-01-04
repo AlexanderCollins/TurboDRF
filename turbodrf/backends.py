@@ -6,7 +6,8 @@ policy snapshots once per request and caching them for reuse.
 """
 
 from dataclasses import dataclass, field
-from typing import Set, Optional, Dict
+from typing import Optional, Set
+
 from django.conf import settings
 from django.core.cache import cache
 
@@ -75,7 +76,7 @@ def get_permission_mode() -> str:
     Returns:
         str: One of 'static', 'django', or 'database'
     """
-    return getattr(settings, 'TURBODRF_PERMISSION_MODE', 'static')
+    return getattr(settings, "TURBODRF_PERMISSION_MODE", "static")
 
 
 def get_user_roles(user) -> list:
@@ -92,34 +93,41 @@ def get_user_roles(user) -> list:
     if not user or not user.is_authenticated:
         # Check if guest role is configured
         mode = get_permission_mode()
-        if mode == 'static':
+        if mode == "static":
             from .settings import TURBODRF_ROLES as default_roles
+
             TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", default_roles)
-            if 'guest' in TURBODRF_ROLES:
-                return ['guest']
-        elif mode == 'database':
+            if "guest" in TURBODRF_ROLES:
+                return ["guest"]
+        elif mode == "database":
             from .models import TurboDRFRole
-            if TurboDRFRole.objects.filter(name='guest').exists():
-                return ['guest']
+
+            if TurboDRFRole.objects.filter(name="guest").exists():
+                return ["guest"]
         return []
 
     mode = get_permission_mode()
 
-    if mode == 'database':
+    if mode == "database":
         # Get roles from UserRole table
         from .models import UserRole
+
         role_names = list(
             UserRole.objects.filter(user=user)
-            .select_related('role')
-            .values_list('role__name', flat=True)
+            .select_related("role")
+            .values_list("role__name", flat=True)
         )
         return role_names
-    elif hasattr(user, 'roles'):
+    elif hasattr(user, "roles"):
         # Use existing roles property (static mode or custom)
         return user.roles if isinstance(user.roles, list) else list(user.roles)
-    elif hasattr(user, '_test_roles'):
+    elif hasattr(user, "_test_roles"):
         # Support test users with _test_roles property (for backward compatibility)
-        return user._test_roles if isinstance(user._test_roles, list) else list(user._test_roles)
+        return (
+            user._test_roles
+            if isinstance(user._test_roles, list)
+            else list(user._test_roles)
+        )
     else:
         return []
 
@@ -161,13 +169,13 @@ def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
             if len(parts) == 4 and parts[0] == app_label and parts[1] == model_name:
                 field_name = parts[2]
                 perm_type = parts[3]
-                if perm_type == 'read':
+                if perm_type == "read":
                     all_field_read_rules.add(field_name)
-                elif perm_type == 'write':
+                elif perm_type == "write":
                     all_field_write_rules.add(field_name)
 
     # Build allowed actions
-    for action in ['read', 'create', 'update', 'delete']:
+    for action in ["read", "create", "update", "delete"]:
         perm = f"{app_label}.{model_name}.{action}"
         if perm in user_permissions:
             snapshot.allowed_actions.add(action)
@@ -194,7 +202,7 @@ def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
                 snapshot.readable_fields.add(field_name)
         else:
             # No explicit read rule, fall back to model-level permission
-            if 'read' in snapshot.allowed_actions:
+            if "read" in snapshot.allowed_actions:
                 snapshot.readable_fields.add(field_name)
 
         # Check writable: if explicit write rule exists, check it; else use model-level
@@ -204,7 +212,10 @@ def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
                 snapshot.writable_fields.add(field_name)
         else:
             # No explicit write rule, fall back to model-level permission
-            if 'create' in snapshot.allowed_actions or 'update' in snapshot.allowed_actions:
+            if (
+                "create" in snapshot.allowed_actions
+                or "update" in snapshot.allowed_actions
+            ):
                 snapshot.writable_fields.add(field_name)
 
     return snapshot
@@ -224,7 +235,7 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
     Returns:
         PermissionSnapshot: Computed permission snapshot
     """
-    from .models import RolePermission, UserRole
+    from .models import RolePermission, TurboDRFRole
 
     snapshot = PermissionSnapshot()
     app_label = model._meta.app_label
@@ -237,14 +248,14 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
 
     # Query all permissions for this user's roles and this model
     # Single database query for all permissions
-    from .models import TurboDRFRole, RolePermission
-    role_ids = TurboDRFRole.objects.filter(name__in=user_roles).values_list('id', flat=True)
+
+    role_ids = TurboDRFRole.objects.filter(name__in=user_roles).values_list(
+        "id", flat=True
+    )
 
     permissions = RolePermission.objects.filter(
-        role_id__in=role_ids,
-        app_label=app_label,
-        model_name=model_name
-    ).select_related('role')
+        role_id__in=role_ids, app_label=app_label, model_name=model_name
+    ).select_related("role")
 
     # Track which fields have explicit rules (scan all permissions once)
     all_field_read_rules = set()
@@ -258,10 +269,10 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
             snapshot.allowed_actions.add(perm.action)
         elif perm.field_name and perm.permission_type:
             # Field-level permission
-            if perm.permission_type == 'read':
+            if perm.permission_type == "read":
                 all_field_read_rules.add(perm.field_name)
                 user_field_perms.add(f"{perm.field_name}.read")
-            elif perm.permission_type == 'write':
+            elif perm.permission_type == "write":
                 all_field_write_rules.add(perm.field_name)
                 user_field_perms.add(f"{perm.field_name}.write")
 
@@ -286,7 +297,7 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
                 snapshot.readable_fields.add(field_name)
         else:
             # No explicit read rule, fall back to model-level permission
-            if 'read' in snapshot.allowed_actions:
+            if "read" in snapshot.allowed_actions:
                 snapshot.readable_fields.add(field_name)
 
         # Check writable: if explicit write rule exists, check it; else use model-level
@@ -295,7 +306,10 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
                 snapshot.writable_fields.add(field_name)
         else:
             # No explicit write rule, fall back to model-level permission
-            if 'create' in snapshot.allowed_actions or 'update' in snapshot.allowed_actions:
+            if (
+                "create" in snapshot.allowed_actions
+                or "update" in snapshot.allowed_actions
+            ):
                 snapshot.writable_fields.add(field_name)
 
     return snapshot
@@ -312,19 +326,26 @@ def get_cache_key(user, model) -> str:
     Returns:
         str: Cache key
     """
-    cache_prefix = getattr(settings, 'TURBODRF_PERMISSION_CACHE_PREFIX', 'turbodrf_perm')
-    user_id = getattr(user, 'id', 'mock') if user and user.is_authenticated else 'anonymous'
+    cache_prefix = getattr(
+        settings, "TURBODRF_PERMISSION_CACHE_PREFIX", "turbodrf_perm"
+    )
+    user_id = (
+        getattr(user, "id", "mock") if user and user.is_authenticated else "anonymous"
+    )
     app_label = model._meta.app_label
     model_name = model._meta.model_name
 
     # Include role versions for cache invalidation
     mode = get_permission_mode()
-    if mode == 'database':
-        from .models import TurboDRFRole, UserRole
+    if mode == "database":
+        from .models import TurboDRFRole
+
         # Get version numbers for all user's roles
         user_roles = get_user_roles(user)
         if user_roles:
-            versions = TurboDRFRole.objects.filter(name__in=user_roles).values_list('version', flat=True)
+            versions = TurboDRFRole.objects.filter(name__in=user_roles).values_list(
+                "version", flat=True
+            )
             version_hash = hash(tuple(sorted(versions)))
         else:
             version_hash = 0
@@ -361,7 +382,9 @@ def set_cached_snapshot(user, model, snapshot: PermissionSnapshot):
         snapshot: PermissionSnapshot to cache
     """
     cache_key = get_cache_key(user, model)
-    cache_timeout = getattr(settings, 'TURBODRF_PERMISSION_CACHE_TIMEOUT', 300)  # 5 minutes default
+    cache_timeout = getattr(
+        settings, "TURBODRF_PERMISSION_CACHE_TIMEOUT", 300
+    )  # 5 minutes default
     cache.set(cache_key, snapshot, cache_timeout)
 
 
@@ -396,7 +419,7 @@ def build_permission_snapshot(user, model, use_cache=True) -> PermissionSnapshot
     # Build snapshot based on permission mode
     mode = get_permission_mode()
 
-    if mode == 'database':
+    if mode == "database":
         snapshot = build_permission_snapshot_database(user, model)
     else:
         # static mode (or fallback)
@@ -420,7 +443,7 @@ def attach_snapshot_to_request(request, model):
         request: Django request object
         model: Django model class
     """
-    if not hasattr(request, '_turbodrf_snapshots'):
+    if not hasattr(request, "_turbodrf_snapshots"):
         request._turbodrf_snapshots = {}
 
     cache_key = f"{model._meta.app_label}.{model._meta.model_name}"
@@ -443,7 +466,7 @@ def get_snapshot_from_request(request, model) -> Optional[PermissionSnapshot]:
     Returns:
         PermissionSnapshot or None if not cached on request
     """
-    if not hasattr(request, '_turbodrf_snapshots'):
+    if not hasattr(request, "_turbodrf_snapshots"):
         return None
 
     cache_key = f"{model._meta.app_label}.{model._meta.model_name}"

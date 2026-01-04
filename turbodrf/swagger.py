@@ -429,7 +429,9 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
 
             # Check if we should show all fields regardless of permissions
             # (useful for development/documentation purposes)
-            show_all_fields = getattr(settings, "TURBODRF_SWAGGER_SHOW_ALL_FIELDS", False)
+            show_all_fields = getattr(
+                settings, "TURBODRF_SWAGGER_SHOW_ALL_FIELDS", False
+            )
 
             # Create a serializer with all configured fields
             class WriteOperationSerializer(TurboDRFSerializer):

@@ -65,7 +65,7 @@ class ORFilterBackend(BaseFilterBackend):
         regular_params = {}
 
         # Handle both DRF Request (query_params) and Django Request (GET)
-        query_dict = getattr(request, 'query_params', request.GET)
+        query_dict = getattr(request, "query_params", request.GET)
 
         for key in query_dict.keys():
             # Skip pagination and other special parameters
@@ -77,7 +77,9 @@ class ORFilterBackend(BaseFilterBackend):
                 field_name = key[:-3]
 
                 # Validate field name against valid fields AND permissions
-                if not self._is_valid_filter_field(field_name, valid_fields, queryset.model, request.user):
+                if not self._is_valid_filter_field(
+                    field_name, valid_fields, queryset.model, request.user
+                ):
                     continue  # Skip invalid fields
 
                 # Get all values for this parameter (handles multiple values)
@@ -85,7 +87,9 @@ class ORFilterBackend(BaseFilterBackend):
                 or_params[field_name] = values
             else:
                 # Validate regular filter fields AND permissions
-                if self._is_valid_filter_field(key, valid_fields, queryset.model, request.user):
+                if self._is_valid_filter_field(
+                    key, valid_fields, queryset.model, request.user
+                ):
                     regular_params[key] = query_dict.get(key)
 
         # Build OR queries
@@ -125,7 +129,7 @@ class ORFilterBackend(BaseFilterBackend):
         valid_fields = set()
 
         # Get filterset fields from view if available
-        if hasattr(view, 'filterset_fields'):
+        if hasattr(view, "filterset_fields"):
             filterset_fields = view.filterset_fields
             if callable(filterset_fields):
                 filterset_fields = filterset_fields()
@@ -167,8 +171,9 @@ class ORFilterBackend(BaseFilterBackend):
         Returns:
             bool: True if field is valid and user has permission
         """
-        from django.conf import settings
         import logging
+
+        from django.conf import settings
 
         logger = logging.getLogger(__name__)
 
@@ -178,9 +183,9 @@ class ORFilterBackend(BaseFilterBackend):
             return True
 
         # Check if it's a lookup (e.g., 'price__gte')
-        if '__' in field_name:
+        if "__" in field_name:
             # Get the base field name
-            base_field = field_name.split('__')[0]
+            base_field = field_name.split("__")[0]
             if base_field in valid_fields:
                 # Base field is valid, now check nesting and permissions if enabled
                 pass  # Continue to advanced validation below
@@ -196,7 +201,10 @@ class ORFilterBackend(BaseFilterBackend):
         # Advanced validation with nesting depth and permissions
         # Only run if new validation module is available and permissions are enabled
         try:
-            from .validation import validate_filter_field, check_nested_field_permissions
+            from .validation import (
+                check_nested_field_permissions,
+                validate_filter_field,
+            )
 
             # Parse the filter parameter to separate field path from lookup
             try:
@@ -208,8 +216,10 @@ class ORFilterBackend(BaseFilterBackend):
 
             # Check nested field permissions ONLY if TurboDRF permissions are enabled
             # AND the user has roles configured
-            disable_perms = getattr(settings, 'TURBODRF_DISABLE_PERMISSIONS', False)
-            use_default_perms = getattr(settings, 'TURBODRF_USE_DEFAULT_PERMISSIONS', False)
+            disable_perms = getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False)
+            use_default_perms = getattr(
+                settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False
+            )
 
             if not disable_perms and not use_default_perms:
                 # TurboDRF role-based permissions are active - check if user has roles
@@ -220,7 +230,9 @@ class ORFilterBackend(BaseFilterBackend):
                     # Only check permissions if user has roles
                     if user_roles:
                         if not check_nested_field_permissions(model, field_path, user):
-                            logger.debug(f"Permission denied for filter '{field_name}' (user lacks read permission)")
+                            logger.debug(
+                                f"Permission denied for filter '{field_name}' (user lacks read permission)"
+                            )
                             return False
                 except Exception as e:
                     # Permission check failed - log and allow (backward compatible)

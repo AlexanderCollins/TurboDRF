@@ -77,6 +77,7 @@ class TurboDRFRouter(DefaultRouter):
         defaults to the pluralized model name.
         """
         import logging
+
         from .validation import validate_nesting_depth
 
         logger = logging.getLogger(__name__)
