@@ -5,9 +5,38 @@ This module provides database-backed permission storage that allows
 runtime permission changes without code deployment.
 """
 
+import django
 from django.conf import settings
 from django.contrib.auth.models import Group
 from django.db import models
+
+
+def _get_permission_check_constraint():
+    """
+    Get CheckConstraint with correct parameter name for Django version.
+
+    Django 5.0 changed the parameter from 'check' to 'condition'.
+    """
+    constraint_q = models.Q(
+        action__isnull=False,
+        field_name__isnull=True,
+        permission_type__isnull=True,
+    ) | models.Q(
+        action__isnull=True,
+        field_name__isnull=False,
+        permission_type__isnull=False,
+    )
+
+    if django.VERSION >= (5, 0):
+        return models.CheckConstraint(
+            condition=constraint_q,
+            name="permission_type_check",
+        )
+    else:
+        return models.CheckConstraint(
+            check=constraint_q,
+            name="permission_type_check",
+        )
 
 
 class TurboDRFRole(models.Model):
@@ -210,26 +239,9 @@ class RolePermission(models.Model):
                 condition=models.Q(field_name__isnull=False),
                 name="unique_field_permission",
             ),
-        ]
-
-        # Check constraints to ensure data integrity
-        constraints += [
-            # Either action OR (field_name + permission_type) must be set
-            models.CheckConstraint(
-                check=(
-                    models.Q(
-                        action__isnull=False,
-                        field_name__isnull=True,
-                        permission_type__isnull=True,
-                    )
-                    | models.Q(
-                        action__isnull=True,
-                        field_name__isnull=False,
-                        permission_type__isnull=False,
-                    )
-                ),
-                name="permission_type_check",
-            ),
+            # Check constraint: Either action OR (field_name + permission_type)
+            # Django 5.0 changed parameter from 'check' to 'condition'
+            _get_permission_check_constraint(),
         ]
 
     def __str__(self):
