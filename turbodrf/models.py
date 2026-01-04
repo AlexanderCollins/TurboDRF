@@ -5,7 +5,6 @@ This module provides database-backed permission storage that allows
 runtime permission changes without code deployment.
 """
 
-import django
 from django.conf import settings
 from django.contrib.auth.models import Group
 from django.db import models
@@ -16,6 +15,7 @@ def _get_permission_check_constraint():
     Get CheckConstraint with correct parameter name for Django version.
 
     Django 5.0 changed the parameter from 'check' to 'condition'.
+    Uses try/except for maximum compatibility across Django versions.
     """
     constraint_q = models.Q(
         action__isnull=False,
@@ -27,12 +27,14 @@ def _get_permission_check_constraint():
         permission_type__isnull=False,
     )
 
-    if django.VERSION >= (5, 0):
+    # Try Django 5.0+ syntax first (condition)
+    try:
         return models.CheckConstraint(
             condition=constraint_q,
             name="permission_type_check",
         )
-    else:
+    except TypeError:
+        # Fall back to Django 3.2-4.2 syntax (check)
         return models.CheckConstraint(
             check=constraint_q,
             name="permission_type_check",
