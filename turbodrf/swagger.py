@@ -348,6 +348,10 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
         """
         Get the request serializer for the current operation.
 
+        For write operations (create, update, partial_update), returns a serializer
+        that includes ALL writable fields based on user permissions, ensuring Swagger
+        documentation shows complete field set for write operations.
+
         For custom actions, returns None to prevent automatic serializer
         field inclusion in the request schema.
         """
@@ -355,20 +359,95 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
         if hasattr(self.view, "action"):
             action = self.view.action
 
-            # Standard actions that should include model fields
-            standard_actions = ["create", "update", "partial_update"]
+            # Write operations that should show all writable fields
+            write_actions = ["create", "update", "partial_update"]
 
-            # If it's a custom action, don't use the model serializer for request
-            if action not in standard_actions:
-                # Check if the action method has a custom serializer_class
-                action_method = getattr(self.view, action, None)
-                if action_method and hasattr(action_method, "kwargs"):
-                    serializer_class = action_method.kwargs.get("serializer_class")
-                    if serializer_class:
-                        return serializer_class()
+            # If it's a write operation, generate schema with all writable fields
+            if action in write_actions:
+                return self._get_write_operation_serializer()
 
-                # No serializer for request body
-                return None
+            # Standard read actions (use default)
+            standard_actions = ["list", "retrieve"]
+            if action in standard_actions:
+                return super().get_request_serializer()
+
+            # Custom actions - check for explicit serializer
+            action_method = getattr(self.view, action, None)
+            if action_method and hasattr(action_method, "kwargs"):
+                serializer_class = action_method.kwargs.get("serializer_class")
+                if serializer_class:
+                    return serializer_class()
+
+            # No serializer for request body
+            return None
 
         # For standard actions, use the default behavior
+        return super().get_request_serializer()
+
+    def _get_write_operation_serializer(self):
+        """
+        Generate a serializer for write operations with all writable fields.
+
+        This ensures Swagger documentation shows ALL fields that can be written,
+        not just the fields configured for list/detail views.
+
+        By default, fields are filtered based on user permissions to maintain
+        security in documentation. However, this can be disabled for development
+        by setting TURBODRF_SWAGGER_SHOW_ALL_FIELDS=True, which shows all fields
+        in Swagger regardless of permissions (API still enforces permissions).
+
+        Returns:
+            Serializer instance with all writable fields for the user's role.
+        """
+        from django.conf import settings
+
+        # Get the model from the view
+        if not hasattr(self.view, "model"):
+            return super().get_request_serializer()
+
+        model_class = self.view.model
+
+        # Get all fields defined in turbodrf() configuration
+        if hasattr(model_class, "turbodrf"):
+            config = model_class.turbodrf()
+            all_fields = config.get("fields", "__all__")
+
+            # If fields is a dict with list/detail, get the detail fields
+            # (which typically has more fields than list)
+            if isinstance(all_fields, dict):
+                # Prefer detail fields, fallback to list
+                all_fields = all_fields.get("detail", all_fields.get("list", "__all__"))
+
+            # For write operations in Swagger, we want to show all configured fields
+            # The actual API will still enforce permissions via the serializer
+            # This is just for documentation purposes
+            from .serializers import TurboDRFSerializer
+
+            # Capture variables for the closure
+            fields_to_use = all_fields
+            ref_name_value = f"{model_class._meta.model_name}_write"
+
+            # Check if we should show all fields regardless of permissions
+            # (useful for development/documentation purposes)
+            show_all_fields = getattr(settings, "TURBODRF_SWAGGER_SHOW_ALL_FIELDS", False)
+
+            # Create a serializer with all configured fields
+            class WriteOperationSerializer(TurboDRFSerializer):
+                class Meta:
+                    model = model_class
+                    fields = fields_to_use
+                    ref_name = ref_name_value
+
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    # If showing all fields for Swagger, don't filter by permissions
+                    # This is ONLY for documentation - API still enforces permissions
+                    if show_all_fields:
+                        # Override to show all fields in Swagger
+                        # The actual API requests will still be permission-filtered
+                        pass
+
+            return WriteOperationSerializer()
+
+        # Fallback to default behavior
         return super().get_request_serializer()

@@ -25,6 +25,9 @@ class TestTurboDRFPermission(TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
+        from django.core.cache import cache
+        cache.clear()  # Clear cache to avoid test pollution
+
         self.factory = APIRequestFactory()
         self.permission = TurboDRFPermission()
         self.view = MockView()

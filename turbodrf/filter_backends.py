@@ -57,11 +57,17 @@ class ORFilterBackend(BaseFilterBackend):
         Returns:
             QuerySet: The filtered queryset with OR logic applied.
         """
+        # Get valid filterable fields from the view
+        valid_fields = self._get_valid_filter_fields(view, queryset.model)
+
         # Get all query parameters ending with '_or'
         or_params = {}
         regular_params = {}
 
-        for key in request.query_params.keys():
+        # Handle both DRF Request (query_params) and Django Request (GET)
+        query_dict = getattr(request, 'query_params', request.GET)
+
+        for key in query_dict.keys():
             # Skip pagination and other special parameters
             if key in ["page", "page_size", "search", "ordering", "format"]:
                 continue
@@ -69,11 +75,18 @@ class ORFilterBackend(BaseFilterBackend):
             if key.endswith("_or"):
                 # Remove the '_or' suffix to get the actual field name
                 field_name = key[:-3]
+
+                # Validate field name against valid fields AND permissions
+                if not self._is_valid_filter_field(field_name, valid_fields, queryset.model, request.user):
+                    continue  # Skip invalid fields
+
                 # Get all values for this parameter (handles multiple values)
-                values = request.query_params.getlist(key)
+                values = query_dict.getlist(key)
                 or_params[field_name] = values
             else:
-                regular_params[key] = request.query_params.get(key)
+                # Validate regular filter fields AND permissions
+                if self._is_valid_filter_field(key, valid_fields, queryset.model, request.user):
+                    regular_params[key] = query_dict.get(key)
 
         # Build OR queries
         if or_params:
@@ -96,11 +109,129 @@ class ORFilterBackend(BaseFilterBackend):
                     value = value.split(",")
 
                 queryset = queryset.filter(**{key: value})
-            except Exception:
-                # Skip invalid filters
-                pass
+            except (ValueError, TypeError, Exception):
+                # Skip filters that cause type conversion errors
+                # (e.g., "true" string for a BooleanField)
+                continue
 
         return queryset
+
+    def _get_valid_filter_fields(self, view, model):
+        """
+        Get the set of valid filterable fields for this model/view.
+
+        Returns a set of valid field names including lookups (e.g., 'price__gte').
+        """
+        valid_fields = set()
+
+        # Get filterset fields from view if available
+        if hasattr(view, 'filterset_fields'):
+            filterset_fields = view.filterset_fields
+            if callable(filterset_fields):
+                filterset_fields = filterset_fields()
+
+            # Add base field names and their lookups
+            if isinstance(filterset_fields, dict):
+                for field_name, lookups in filterset_fields.items():
+                    valid_fields.add(field_name)
+                    for lookup in lookups:
+                        valid_fields.add(f"{field_name}__{lookup}")
+            elif isinstance(filterset_fields, list):
+                valid_fields.update(filterset_fields)
+
+        # Also allow direct model field names
+        for field in model._meta.fields:
+            valid_fields.add(field.name)
+
+        # Allow ManyToMany fields
+        for field in model._meta.many_to_many:
+            valid_fields.add(field.name)
+
+        return valid_fields
+
+    def _is_valid_filter_field(self, field_name, valid_fields, model, user):
+        """
+        Check if a field name is valid for filtering with permission checking.
+
+        Validates:
+        1. Exact field names and field lookups (e.g., 'price__gte')
+        2. Nesting depth limits
+        3. Nested field permissions (user must have read permission) - only if TurboDRF permissions enabled
+
+        Args:
+            field_name: Filter parameter (e.g., 'author__name__icontains')
+            valid_fields: Set of valid filterable field names
+            model: Django model class
+            user: User object for permission checking
+
+        Returns:
+            bool: True if field is valid and user has permission
+        """
+        from django.conf import settings
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        # Basic validation - check if field exists
+        # Check exact match
+        if field_name in valid_fields:
+            return True
+
+        # Check if it's a lookup (e.g., 'price__gte')
+        if '__' in field_name:
+            # Get the base field name
+            base_field = field_name.split('__')[0]
+            if base_field in valid_fields:
+                # Base field is valid, now check nesting and permissions if enabled
+                pass  # Continue to advanced validation below
+            # Also check if the full lookup is in valid_fields
+            elif field_name in valid_fields:
+                return True
+            else:
+                return False
+        else:
+            # Simple field not in valid_fields
+            return False
+
+        # Advanced validation with nesting depth and permissions
+        # Only run if new validation module is available and permissions are enabled
+        try:
+            from .validation import validate_filter_field, check_nested_field_permissions
+
+            # Parse the filter parameter to separate field path from lookup
+            try:
+                field_path, lookup = validate_filter_field(model, field_name)
+            except Exception as e:
+                # Nesting depth exceeded or invalid field - use basic validation
+                logger.debug(f"Filter validation failed for '{field_name}': {str(e)}")
+                return False
+
+            # Check nested field permissions ONLY if TurboDRF permissions are enabled
+            # AND the user has roles configured
+            disable_perms = getattr(settings, 'TURBODRF_DISABLE_PERMISSIONS', False)
+            use_default_perms = getattr(settings, 'TURBODRF_USE_DEFAULT_PERMISSIONS', False)
+
+            if not disable_perms and not use_default_perms:
+                # TurboDRF role-based permissions are active - check if user has roles
+                from .backends import get_user_roles
+
+                try:
+                    user_roles = get_user_roles(user)
+                    # Only check permissions if user has roles
+                    if user_roles:
+                        if not check_nested_field_permissions(model, field_path, user):
+                            logger.debug(f"Permission denied for filter '{field_name}' (user lacks read permission)")
+                            return False
+                except Exception as e:
+                    # Permission check failed - log and allow (backward compatible)
+                    logger.debug(f"Permission check error for '{field_name}': {str(e)}")
+                    pass
+
+        except ImportError:
+            # Validation module not available - use basic validation only
+            pass
+
+        return True
 
     def get_schema_operation_parameters(self, view):
         """

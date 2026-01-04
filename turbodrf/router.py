@@ -68,18 +68,44 @@ class TurboDRFRouter(DefaultRouter):
         The method:
         1. Finds all models inheriting from TurboDRFMixin
         2. Checks if the model is enabled (via turbodrf() config)
-        3. Creates a dynamic ViewSet for the model
-        4. Registers the ViewSet with the appropriate endpoint
+        3. Validates field nesting depth
+        4. Creates a dynamic ViewSet for the model
+        5. Registers the ViewSet with the appropriate endpoint
 
         Models can customize their endpoint name via the 'endpoint' key
         in their turbodrf() configuration. If not specified, the endpoint
         defaults to the pluralized model name.
         """
+        import logging
+        from .validation import validate_nesting_depth
+
+        logger = logging.getLogger(__name__)
+
         for model in apps.get_models():
             if issubclass(model, TurboDRFMixin):
                 config = model.turbodrf()
 
                 if config.get("enabled", True):
+                    # Validate nesting depth for configured fields
+                    fields = config.get("fields", [])
+                    if isinstance(fields, dict):
+                        # Check both list and detail fields
+                        all_fields = []
+                        all_fields.extend(fields.get("list", []))
+                        all_fields.extend(fields.get("detail", []))
+                        fields = all_fields
+                    elif fields == "__all__":
+                        fields = []  # Skip validation for __all__
+
+                    # Validate each field
+                    for field in fields:
+                        try:
+                            validate_nesting_depth(field)
+                        except Exception as e:
+                            logger.warning(
+                                f"Model {model.__name__} field '{field}' "
+                                f"validation failed: {str(e)}"
+                            )
                     # Get custom endpoint or use default
                     endpoint = config.get("endpoint", f"{model._meta.model_name}s")
 

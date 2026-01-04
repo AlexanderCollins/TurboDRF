@@ -121,6 +121,28 @@ TURBODRF_ROLES = {
         # CustomEndpointModel fields
         "test_app.customendpointmodel.name.read",
         "test_app.customendpointmodel.name.write",
+        # Category model
+        "test_app.category.read",
+        "test_app.category.create",
+        "test_app.category.update",
+        "test_app.category.delete",
+        "test_app.category.name.read",
+        "test_app.category.name.write",
+        "test_app.category.description.read",
+        "test_app.category.description.write",
+        # ArticleWithCategories model
+        "test_app.articlewithcategories.read",
+        "test_app.articlewithcategories.create",
+        "test_app.articlewithcategories.update",
+        "test_app.articlewithcategories.delete",
+        "test_app.articlewithcategories.title.read",
+        "test_app.articlewithcategories.title.write",
+        "test_app.articlewithcategories.content.read",
+        "test_app.articlewithcategories.content.write",
+        "test_app.articlewithcategories.author.read",
+        "test_app.articlewithcategories.author.write",
+        "test_app.articlewithcategories.categories.read",
+        "test_app.articlewithcategories.categories.write",
     ],
     "editor": [
         # Read and update permissions
