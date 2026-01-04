@@ -21,7 +21,8 @@ class PermissionSnapshot:
     All permission checks are reduced to simple set lookups.
 
     Attributes:
-        allowed_actions: Set of allowed model actions ('read', 'create', 'update', 'delete')
+        allowed_actions: Set of allowed model actions
+            ('read', 'create', 'update', 'delete')
         readable_fields: Set of field names the user can read
         writable_fields: Set of field names the user can write
         fields_with_read_rules: Set of fields that have explicit read rules

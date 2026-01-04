@@ -160,7 +160,8 @@ class ORFilterBackend(BaseFilterBackend):
         Validates:
         1. Exact field names and field lookups (e.g., 'price__gte')
         2. Nesting depth limits
-        3. Nested field permissions (user must have read permission) - only if TurboDRF permissions enabled
+        3. Nested field permissions (user must have read permission)
+           - only if TurboDRF permissions enabled
 
         Args:
             field_name: Filter parameter (e.g., 'author__name__icontains')
@@ -231,7 +232,8 @@ class ORFilterBackend(BaseFilterBackend):
                     if user_roles:
                         if not check_nested_field_permissions(model, field_path, user):
                             logger.debug(
-                                f"Permission denied for filter '{field_name}' (user lacks read permission)"
+                                f"Permission denied for filter '{field_name}' "
+                                f"(user lacks read permission)"
                             )
                             return False
                 except Exception as e:

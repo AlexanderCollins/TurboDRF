@@ -284,7 +284,7 @@ class TestSwaggerWriteOperationSerializer(TestCase):
         self.assertTrue(hasattr(serializer, "Meta"))
 
     def test_write_serializer_fallback_for_model_without_turbodrf(self):
-        """Test that write serializer falls back correctly for models without turbodrf."""
+        """Test write serializer fallback for models without turbodrf."""
         from drf_yasg import openapi
 
         # Create a simple Django model without TurboDRF mixin
@@ -471,7 +471,7 @@ class TestSwaggerShowAllFieldsSetting(TestCase):
             self.assertTrue(getattr(settings, "TURBODRF_SWAGGER_SHOW_ALL_FIELDS"))
 
     def test_swagger_show_all_fields_only_affects_swagger(self):
-        """Test that TURBODRF_SWAGGER_SHOW_ALL_FIELDS only affects Swagger docs, not API."""
+        """Test TURBODRF_SWAGGER_SHOW_ALL_FIELDS affects Swagger only, not API."""
         from django.test import override_settings
 
         # This setting should ONLY affect Swagger documentation generation

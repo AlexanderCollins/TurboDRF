@@ -234,14 +234,20 @@ class RolePermission(models.Model):
 
     def __str__(self):
         if self.field_name:
-            return f"{self.role.name}: {self.app_label}.{self.model_name}.{self.field_name}.{self.permission_type}"
+            return (
+                f"{self.role.name}: {self.app_label}.{self.model_name}."
+                f"{self.field_name}.{self.permission_type}"
+            )
         else:
             return f"{self.role.name}: {self.app_label}.{self.model_name}.{self.action}"
 
     def to_permission_string(self):
         """Convert to TurboDRF permission string format."""
         if self.field_name:
-            return f"{self.app_label}.{self.model_name}.{self.field_name}.{self.permission_type}"
+            return (
+                f"{self.app_label}.{self.model_name}."
+                f"{self.field_name}.{self.permission_type}"
+            )
         else:
             return f"{self.app_label}.{self.model_name}.{self.action}"
 
@@ -279,7 +285,9 @@ class UserRole(models.Model):
         UserRole.objects.create(user=user, role=editor_role)
 
         # Get user roles
-        user_roles = UserRole.objects.filter(user=user).values_list('role__name', flat=True)
+        user_roles = UserRole.objects.filter(user=user).values_list(
+            "role__name", flat=True
+        )
     """
 
     user = models.ForeignKey(
