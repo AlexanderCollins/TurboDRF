@@ -738,6 +738,88 @@ from rest_framework_tracking.models import APIRequestLog
 APIRequestLog.objects.filter(user=user)
 ```
 
+### Keycloak / OpenID Connect
+
+Integrate with Keycloak or any OpenID Connect provider for SSO authentication:
+
+```bash
+pip install social-auth-app-django
+```
+
+**1. Configure Django settings:**
+
+```python
+# settings.py
+INSTALLED_APPS = [
+    'social_django',
+    'turbodrf',
+]
+
+MIDDLEWARE = [
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'turbodrf.integrations.keycloak.KeycloakRoleMiddleware',
+]
+
+# Enable Keycloak integration
+TURBODRF_KEYCLOAK_INTEGRATION = True
+
+# Configure role claim path in ID token
+TURBODRF_KEYCLOAK_ROLE_CLAIM = 'realm_access.roles'  # or 'roles' for simple claims
+
+# Map Keycloak roles to TurboDRF roles
+TURBODRF_KEYCLOAK_ROLE_MAPPING = {
+    'realm-admin': 'admin',
+    'content-editor': 'editor',
+    'basic-user': 'viewer',
+}
+
+# Social auth configuration
+AUTHENTICATION_BACKENDS = [
+    'social_core.backends.keycloak.KeycloakOAuth2',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
+SOCIAL_AUTH_KEYCLOAK_KEY = 'your-client-id'
+SOCIAL_AUTH_KEYCLOAK_SECRET = 'your-client-secret'
+SOCIAL_AUTH_KEYCLOAK_PUBLIC_KEY = 'your-realm-public-key'
+SOCIAL_AUTH_KEYCLOAK_AUTHORIZATION_URL = 'https://your-keycloak/auth/realms/your-realm/protocol/openid-connect/auth'
+SOCIAL_AUTH_KEYCLOAK_ACCESS_TOKEN_URL = 'https://your-keycloak/auth/realms/your-realm/protocol/openid-connect/token'
+```
+
+**2. Common role claim paths:**
+
+```python
+# Simple roles claim
+TURBODRF_KEYCLOAK_ROLE_CLAIM = 'roles'
+# Token: {"roles": ["admin", "editor"]}
+
+# Realm roles
+TURBODRF_KEYCLOAK_ROLE_CLAIM = 'realm_access.roles'
+# Token: {"realm_access": {"roles": ["admin", "editor"]}}
+
+# Client roles
+TURBODRF_KEYCLOAK_ROLE_CLAIM = 'resource_access.my-client.roles'
+# Token: {"resource_access": {"my-client": {"roles": ["admin"]}}}
+```
+
+**3. Role mapping:**
+
+The middleware automatically extracts roles from the ID token and maps them to TurboDRF roles. Unmapped roles pass through unchanged:
+
+```python
+# User logs in with Keycloak roles: ['realm-admin', 'developer']
+# With mapping: {'realm-admin': 'admin'}
+# TurboDRF sees: ['admin', 'developer']
+```
+
+**How it works:**
+1. User authenticates via Keycloak OAuth2
+2. `KeycloakRoleMiddleware` extracts roles from ID token claims
+3. Roles are mapped to TurboDRF roles via `TURBODRF_KEYCLOAK_ROLE_MAPPING`
+4. Mapped roles are assigned to `request.user.roles`
+5. TurboDRF permissions use these roles for access control
+
 ---
 
 ## Testing
