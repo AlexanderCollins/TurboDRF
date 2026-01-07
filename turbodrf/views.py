@@ -6,6 +6,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
 from .filter_backends import ORFilterBackend
+from .metadata import TurboDRFMetadata
 from .permissions import DefaultDjangoPermission, TurboDRFPermission
 from .serializers import TurboDRFSerializer
 from .tracking import get_viewset_base_classes
@@ -139,6 +140,7 @@ class TurboDRFViewSet(*_viewset_bases):
         if not getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False)
         else []
     )
+    metadata_class = TurboDRFMetadata
     pagination_class = TurboDRFPagination
     filter_backends = [
         DjangoFilterBackend,
