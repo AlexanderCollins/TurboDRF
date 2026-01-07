@@ -34,7 +34,7 @@ This automatically creates:
 For more information, see: https://github.com/alexandercollins/turbodrf
 """
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 __author__ = "Alexander Collins"
 __email__ = ""
 __license__ = "MIT"
