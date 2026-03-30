@@ -60,7 +60,7 @@ jobs:
 
     - name: Create coverage badge
       if: matrix.python-version == '3.11' && matrix.django-version == '4.2' && github.ref == 'refs/heads/main'
-      uses: schneegans/dynamic-badges-action@v1.7.0
+      uses: schneegans/dynamic-badges-action@v1.8.0
       with:
         auth: ${{ secrets.GIST_SECRET }}
         gistID: ${{ secrets.GIST_ID }}
