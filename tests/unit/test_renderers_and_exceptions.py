@@ -5,10 +5,10 @@ Tests for TurboDRF renderer and exception handler.
 import json
 from datetime import date, datetime
 from decimal import Decimal
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from rest_framework import status
 from rest_framework.exceptions import (
     NotFound,
@@ -260,9 +260,7 @@ class TestExceptionFormatViaAPIClient(TestCase):
 
     def setUp(self):
         self.client = APIClient()
-        self.related = RelatedModel.objects.create(
-            name="Cat", description="Desc"
-        )
+        self.related = RelatedModel.objects.create(name="Cat", description="Desc")
         SampleModel.objects.create(
             title="Item",
             price=Decimal("10.00"),

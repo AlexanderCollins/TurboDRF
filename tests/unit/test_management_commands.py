@@ -13,8 +13,6 @@ from django.test import TestCase
 
 from tests.test_app.models import (
     Category,
-    CompiledArticle,
-    CompiledSampleModel,
     RelatedModel,
 )
 
@@ -51,7 +49,7 @@ class TurboDRFCheckCommandTest(TestCase):
         # CompiledSampleModel has compiled=True
         # The output has the model name and status on the same line
         lines = out.split("\n")
-        compiled_line = [l for l in lines if "CompiledSampleModel" in l][0]
+        compiled_line = [line for line in lines if "CompiledSampleModel" in line][0]
         self.assertIn("compiled", compiled_line)
 
     def test_field_counts_for_sample_model(self):
@@ -116,8 +114,8 @@ class TurboDRFCheckCommandTest(TestCase):
         """Output models should be sorted by name."""
         out, _ = self._call()
         lines = out.split("\n")
-        model_lines = [l for l in lines if "test_app." in l]
-        model_names = [l.split(".")[1].split()[0] for l in model_lines]
+        model_lines = [line for line in lines if "test_app." in line]
+        model_names = [line.split(".")[1].split()[0] for line in model_lines]
         self.assertEqual(model_names, sorted(model_names))
 
 
@@ -186,16 +184,16 @@ class TurboDRFExplainCommandTest(TestCase):
         """CompiledSampleModel has 1 FK annotation, so JOINs should be 1."""
         out = self._call("CompiledSampleModel")
         lines = out.split("\n")
-        joins_line = [l for l in lines if "JOINs:" in l][0]
+        joins_line = [line for line in lines if "JOINs:" in line][0]
         self.assertIn("1", joins_line)
 
     def test_complexity_m2m_query_count(self):
         """CompiledArticle has 1 M2M, so M2M queries should be 1."""
         out = self._call("CompiledArticle")
         lines = out.split("\n")
-        m2m_line = [l for l in lines if "M2M queries:" in l][0]
+        m2m_line = [line for line in lines if "M2M queries:" in line][0]
         self.assertIn("1", m2m_line)
-        total_line = [l for l in lines if "Total queries:" in l][0]
+        total_line = [line for line in lines if "Total queries:" in line][0]
         self.assertIn("2", total_line)
 
     def test_sql_flag_shows_sql(self):
@@ -288,9 +286,12 @@ class TurboDRFBenchmarkCommandTest(TestCase):
             Category.objects.create(name=f"Cat {i}")
         out = self._call(
             "Category",
-            "--requests", "5",
-            "--warmup", "1",
-            "--page-size", "10",
+            "--requests",
+            "5",
+            "--warmup",
+            "1",
+            "--page-size",
+            "10",
         )
         self.assertIn("Category", out)
         self.assertIn("3 objects", out)
