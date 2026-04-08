@@ -263,6 +263,15 @@ class TurboDRFViewSet(*_viewset_bases):
                 if key == field or key.startswith(field + "_"):
                     requested.add(key)
 
+        # Include base FK fields for any requested FK annotations so that
+        # apply_to_queryset (which filters FK annotations by base field
+        # membership) keeps them in the active plan.
+        for fk_key in plan.fk_annotations:
+            if fk_key in requested:
+                base = plan._fk_base_field(fk_key)
+                if base:
+                    requested.add(base)
+
         # Always include PK if M2M fields are requested (needed for merge)
         if any(f in plan.m2m_specs for f in requested):
             requested.add(plan.pk_field)
