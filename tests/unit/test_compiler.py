@@ -1,30 +1,23 @@
 """Tests for the compiled read path."""
 
-from collections import defaultdict
 from decimal import Decimal
 
 import django
 from django.core.exceptions import ImproperlyConfigured
-from django.db.models import F
 from django.test import TestCase
 
+from tests.test_app.models import (
+    Category,
+    CompiledArticle,
+    CompiledSampleModel,
+    RelatedModel,
+)
 from turbodrf.compiler import (
-    CompiledQueryPlan,
     DictProxy,
     compile_model,
     get_compiled_plan,
     is_compiled,
     register_compiled_plan,
-)
-
-from tests.test_app.models import (
-    ArticleWithCategories,
-    Category,
-    CompiledArticle,
-    CompiledSampleModel,
-    CustomEndpointModel,
-    RelatedModel,
-    SampleModel,
 )
 
 
@@ -139,6 +132,7 @@ class RegistryTests(TestCase):
     def test_not_compiled(self):
         """Models not in the registry return None."""
         from tests.test_app.models import NoTurboDRFModel
+
         self.assertIsNone(get_compiled_plan(NoTurboDRFModel))
         self.assertFalse(is_compiled(NoTurboDRFModel))
 

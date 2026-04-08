@@ -496,7 +496,9 @@ class TurboDRFSerializerFactory:
 
         # Get sensitive fields deny-list
         from django.conf import settings as django_settings
+
         from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
+
         sensitive_fields = set(
             getattr(django_settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
         )

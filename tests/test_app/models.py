@@ -77,7 +77,7 @@ class SampleModel(TurboDRFMixin, models.Model):
                     "updated_at",
                     "published_date",
                 ],
-            }
+            },
         }
 
 
@@ -153,7 +153,7 @@ class ArticleWithCategories(TurboDRFMixin, models.Model):
                     "categories__name",
                     "categories__description",
                 ],
-            }
+            },
         }
 
 

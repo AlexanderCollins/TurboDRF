@@ -219,9 +219,7 @@ class ORFilterBackend(BaseFilterBackend):
                     #   - Unauthenticated without guest role: allow (public_access
                     #     handles model-level gating)
                     if user_roles:
-                        if not check_nested_field_permissions(
-                            model, field_path, user
-                        ):
+                        if not check_nested_field_permissions(model, field_path, user):
                             logger.debug(
                                 f"Permission denied for filter '{field_name}' "
                                 f"(user lacks read permission)"

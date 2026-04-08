@@ -321,9 +321,7 @@ class UserRole(models.Model):
         verbose_name = "User Role Assignment"
         verbose_name_plural = "User Role Assignments"
         constraints = [
-            models.UniqueConstraint(
-                fields=("user", "role"), name="unique_user_role"
-            ),
+            models.UniqueConstraint(fields=("user", "role"), name="unique_user_role"),
         ]
 
     def __str__(self):

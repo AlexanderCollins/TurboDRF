@@ -53,7 +53,9 @@ elif _lib_name == "orjson":
             return orjson.dumps(data, option=orjson.OPT_NON_STR_KEYS)
 
 else:
-    from rest_framework.renderers import JSONRenderer as TurboDRFRenderer  # type: ignore[no-redef] # noqa: F811
+    from rest_framework.renderers import (  # type: ignore[no-redef] # noqa: F811, F401
+        JSONRenderer as TurboDRFRenderer,
+    )
 
 
 FAST_JSON_AVAILABLE = _lib_name in ("msgspec", "orjson")

@@ -17,7 +17,6 @@ from tests.test_app.models import (
     CompiledArticle,
     CompiledSampleModel,
     RelatedModel,
-    SampleModel,
 )
 
 User = get_user_model()
@@ -201,9 +200,7 @@ class RelatedResourceTests(TestCase):
         CompiledSampleModel.objects.create(
             title="Bob Book", price=Decimal("20.00"), related=self.author2
         )
-        resp = self.client.get(
-            f"/api/compiledsamplemodels/?related={self.author1.pk}"
-        )
+        resp = self.client.get(f"/api/compiledsamplemodels/?related={self.author1.pk}")
         data = resp.data["data"]
         self.assertEqual(len(data), 1)
         self.assertEqual(data[0]["title"], "Alice Book")
@@ -234,18 +231,14 @@ class ListFilterOrderTests(TestCase):
 
     @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
     def test_order_by_price_ascending(self):
-        resp = self.client.get(
-            "/api/compiledsamplemodels/?ordering=price&page_size=5"
-        )
+        resp = self.client.get("/api/compiledsamplemodels/?ordering=price&page_size=5")
         data = resp.data["data"]
         prices = [Decimal(d["price"]) for d in data]
         self.assertEqual(prices, sorted(prices))
 
     @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
     def test_order_by_price_descending(self):
-        resp = self.client.get(
-            "/api/compiledsamplemodels/?ordering=-price&page_size=5"
-        )
+        resp = self.client.get("/api/compiledsamplemodels/?ordering=-price&page_size=5")
         data = resp.data["data"]
         prices = [Decimal(d["price"]) for d in data]
         self.assertEqual(prices, sorted(prices, reverse=True))
@@ -271,9 +264,7 @@ class ListFilterOrderTests(TestCase):
     @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
     def test_search_with_pagination(self):
         """Search + paginate."""
-        resp = self.client.get(
-            "/api/compiledsamplemodels/?search=Item&page_size=10"
-        )
+        resp = self.client.get("/api/compiledsamplemodels/?search=Item&page_size=10")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["pagination"]["total_items"], 30)
         self.assertEqual(len(resp.data["data"]), 10)
