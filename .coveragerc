@@ -1,6 +1,6 @@
 [run]
 source = turbodrf
-omit = 
+omit =
     */migrations/*
     */tests/*
     */test_*.py
@@ -8,6 +8,7 @@ omit =
     */venv/*
     */.tox/*
     */setup.py
+    */user_extensions.py
 
 [report]
 exclude_lines =
