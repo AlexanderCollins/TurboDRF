@@ -1,5 +1,6 @@
 # Generated migration for TurboDRF database permissions
 
+import django
 from django.conf import settings
 from django.db import migrations, models
 import django.db.models.deletion
@@ -82,6 +83,8 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name='rolepermission',
-            constraint=models.CheckConstraint(check=models.Q(models.Q(('action__isnull', False), ('field_name__isnull', True), ('permission_type__isnull', True)), models.Q(('action__isnull', True), ('field_name__isnull', False), ('permission_type__isnull', False)), _connector='OR'), name='permission_type_check'),
+            constraint=models.CheckConstraint(**{
+                ('condition' if django.VERSION >= (5, 0) else 'check'): models.Q(models.Q(('action__isnull', False), ('field_name__isnull', True), ('permission_type__isnull', True)), models.Q(('action__isnull', True), ('field_name__isnull', False), ('permission_type__isnull', False)), _connector='OR'),
+            }, name='permission_type_check'),
         ),
     ]
