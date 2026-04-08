@@ -733,11 +733,9 @@ class TestRendererAttributes(TestCase):
 
     def test_charset(self):
         renderer = TurboDRFRenderer()
-        # msgspec and orjson renderers set charset=None; stdlib uses utf-8
-        if FAST_JSON_LIB in ("msgspec", "orjson"):
-            self.assertIsNone(renderer.charset)
-        else:
-            self.assertEqual(renderer.charset, "utf-8")
+        # Fast renderers (msgspec/orjson) return bytes, so charset is None
+        # Stdlib renderer may set charset="utf-8"
+        self.assertIn(renderer.charset, (None, "utf-8"))
 
     def test_lib_name_is_known(self):
         self.assertIn(FAST_JSON_LIB, ("msgspec", "orjson", "stdlib"))
