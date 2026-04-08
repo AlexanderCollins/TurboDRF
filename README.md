@@ -1,7 +1,7 @@
 # TurboDRF
 
 [![PyPI Version](https://img.shields.io/pypi/v/turbodrf?label=pypi)](https://pypi.org/project/turbodrf/)
-[![Tests](https://img.shields.io/github/actions/workflow/status/alexandercollins/turbodrf/tests.yml?branch=main&label=tests)](https://github.com/alexandercollins/turbodrf/actions)
+[![Tests](https://img.shields.io/github/actions/workflow/status/alexandercollins/turbodrf/ci.yml?branch=main&label=tests)](https://github.com/alexandercollins/turbodrf/actions)
 [![Coverage](https://img.shields.io/badge/coverage-69%25-yellow)](https://github.com/alexandercollins/turbodrf)
 [![License](https://img.shields.io/badge/license-MIT-purple)](LICENSE)
 
