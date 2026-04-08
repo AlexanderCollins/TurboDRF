@@ -11,12 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
         django-version: ["4.2", "5.2"]
-        include:
-          # Also test latest Django dev on latest Python
-          - python-version: "3.13"
-            django-version: "5.2"
 
     steps:
     - uses: actions/checkout@v6
@@ -37,14 +33,14 @@ jobs:
         pytest -v --cov=turbodrf --cov-report=term --cov-report=json
 
     - name: Extract coverage percentage
-      if: matrix.python-version == '3.12' && matrix.django-version == '5.2'
+      if: matrix.python-version == '3.13' && matrix.django-version == '5.2'
       run: |
         COVERAGE=$(python -c "import json; print(json.load(open('coverage.json'))['totals']['percent_covered_display'])")
         echo "COVERAGE=$COVERAGE" >> $GITHUB_ENV
         echo "Coverage: $COVERAGE%"
 
     - name: Create coverage badge
-      if: matrix.python-version == '3.12' && matrix.django-version == '5.2' && github.ref == 'refs/heads/main'
+      if: matrix.python-version == '3.13' && matrix.django-version == '5.2' && github.ref == 'refs/heads/main'
       uses: schneegans/dynamic-badges-action@v1.7.0
       with:
         auth: ${{ secrets.GIST_SECRET }}
