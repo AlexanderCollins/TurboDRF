@@ -185,9 +185,7 @@ class ClientFieldSelectionPermissionTests(TestCase):
     )
     def test_fields_respects_permissions(self):
         """?fields=title,price still excludes price if viewer can't see it."""
-        response = self.client.get(
-            "/api/compiledsamplemodels/?fields=title,price"
-        )
+        response = self.client.get("/api/compiledsamplemodels/?fields=title,price")
         self.assertEqual(response.status_code, 200)
         data = response.data["data"]
         row = data[0]

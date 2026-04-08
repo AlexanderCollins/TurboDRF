@@ -23,7 +23,6 @@ from tests.test_app.models import RelatedModel, SampleModel
 from turbodrf.backends import (
     attach_snapshot_to_request,
     build_permission_snapshot,
-    build_permission_snapshot_database,
     get_cache_key,
     get_user_roles,
 )
@@ -280,7 +279,9 @@ class TestFieldLevelWritePermissions(TestCase):
         readonly_user = User.objects.create_user(username="readonly_user")
         UserRole.objects.create(user=readonly_user, role=readonly_role)
 
-        snapshot = build_permission_snapshot(readonly_user, SampleModel, use_cache=False)
+        snapshot = build_permission_snapshot(
+            readonly_user, SampleModel, use_cache=False
+        )
         self.assertEqual(snapshot.writable_fields, set())
 
     def test_patch_permitted_field_succeeds(self):
