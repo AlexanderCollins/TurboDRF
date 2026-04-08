@@ -194,9 +194,7 @@ class CompiledQueryPlan:
                 k: v for k, v in self.m2m_specs.items() if k in readable_fields
             }
             active_props = {
-                k: v
-                for k, v in self.property_fields.items()
-                if k in readable_fields
+                k: v for k, v in self.property_fields.items() if k in readable_fields
             }
 
         # Always keep PK if we have M2M to merge
@@ -287,12 +285,15 @@ def compile_model(model):
 
     # Strip sensitive fields
     from django.conf import settings as django_settings
+
     from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
+
     sensitive_fields = set(
         getattr(django_settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
     )
     list_fields = [
-        f for f in list_fields
+        f
+        for f in list_fields
         if (f.split("__")[0] if "__" in f else f) not in sensitive_fields
     ]
 

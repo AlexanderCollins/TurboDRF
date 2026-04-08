@@ -78,9 +78,7 @@ class Command(BaseCommand):
                     if isinstance(attr, property):
                         field_summary["property"] += 1
                     else:
-                        issues.append(
-                            f"  '{field_name}' is not a DB field or property"
-                        )
+                        issues.append(f"  '{field_name}' is not a DB field or property")
             else:
                 parts = field_name.split("__")
                 try:
@@ -90,9 +88,7 @@ class Command(BaseCommand):
                     elif hasattr(base_field, "related_model"):
                         field_summary["fk"] += 1
                     else:
-                        issues.append(
-                            f"  '{field_name}' traverses non-relation field"
-                        )
+                        issues.append(f"  '{field_name}' traverses non-relation field")
                 except FieldDoesNotExist:
                     issues.append(f"  '{parts[0]}' base field does not exist")
 

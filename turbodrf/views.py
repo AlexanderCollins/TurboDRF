@@ -151,7 +151,7 @@ class TurboDRFViewSet(*_viewset_bases):
 
     # Use fast JSON renderer if available (msgspec > orjson > stdlib)
     try:
-        from .renderers import TurboDRFRenderer, FAST_JSON_AVAILABLE
+        from .renderers import FAST_JSON_AVAILABLE, TurboDRFRenderer
 
         if FAST_JSON_AVAILABLE:
             from rest_framework.renderers import BrowsableAPIRenderer
@@ -350,6 +350,7 @@ class TurboDRFViewSet(*_viewset_bases):
         if isinstance(fields_to_use, list):
             # Strip sensitive fields
             from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
+
             sensitive_fields = set(
                 getattr(settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
             )
@@ -679,6 +680,7 @@ class TurboDRFViewSet(*_viewset_bases):
 
         # Get sensitive fields deny-list
         from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
+
         sensitive_fields = set(
             getattr(settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
         )

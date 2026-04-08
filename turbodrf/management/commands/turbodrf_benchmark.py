@@ -11,12 +11,9 @@ import time
 
 from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError
-from django.test import RequestFactory
-from rest_framework.request import Request
 
-from turbodrf.compiler import compile_model, get_compiled_plan, is_compiled
+from turbodrf.compiler import compile_model
 from turbodrf.mixins import TurboDRFMixin
-from turbodrf.views import TurboDRFViewSet
 
 
 class Command(BaseCommand):
@@ -61,26 +58,21 @@ class Command(BaseCommand):
 
         count = model.objects.count()
         if count == 0:
-            raise CommandError(
-                f"{model_name} has no data. Create some objects first."
-            )
+            raise CommandError(f"{model_name} has no data. Create some objects first.")
 
-        self.stdout.write(f"\nBenchmarking {model_name} ({count} objects, page_size={page_size})")
+        self.stdout.write(
+            f"\nBenchmarking {model_name} ({count} objects, page_size={page_size})"
+        )
         self.stdout.write(f"Requests: {num_requests} (+ {warmup} warmup)\n")
 
-        factory = RequestFactory()
-
         # Benchmark DRF path
-        drf_times = self._benchmark_drf(
-            model, factory, num_requests, warmup, page_size
-        )
+        drf_times = self._benchmark_drf(model, num_requests, warmup, page_size)
 
         # Benchmark compiled path
         plan = compile_model(model)
         if plan is None:
             # Temporarily compile it for the benchmark
             config = model.turbodrf()
-            original_compiled = config.get("compiled", False)
             config["compiled"] = True
             # Monkey-patch temporarily
             original_turbodrf = model.turbodrf
@@ -92,7 +84,7 @@ class Command(BaseCommand):
             raise CommandError(f"Could not compile {model_name}.")
 
         compiled_times = self._benchmark_compiled(
-            model, plan, factory, num_requests, warmup, page_size
+            model, plan, num_requests, warmup, page_size
         )
 
         # Results
@@ -110,7 +102,7 @@ class Command(BaseCommand):
         )
         self.stdout.write(f"\nSpeedup: {self.style.SUCCESS(f'{speedup:.1f}x')}")
 
-    def _benchmark_drf(self, model, factory, num_requests, warmup, page_size):
+    def _benchmark_drf(self, model, num_requests, warmup, page_size):
         """Benchmark the DRF serializer path."""
         from turbodrf.serializers import TurboDRFSerializer
 
@@ -124,7 +116,10 @@ class Command(BaseCommand):
         queryset = model.objects.all()[:page_size]
 
         # Create serializer class
-        meta_attrs = {"model": model, "fields": "__all__" if list_fields == "__all__" else list_fields}
+        meta_attrs = {
+            "model": model,
+            "fields": "__all__" if list_fields == "__all__" else list_fields,
+        }
         SerializerClass = type(
             f"{model.__name__}BenchSerializer",
             (TurboDRFSerializer,),
@@ -146,7 +141,7 @@ class Command(BaseCommand):
 
         return times
 
-    def _benchmark_compiled(self, model, plan, factory, num_requests, warmup, page_size):
+    def _benchmark_compiled(self, model, plan, num_requests, warmup, page_size):
         """Benchmark the compiled read path."""
         queryset = model.objects.all()
 

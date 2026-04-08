@@ -147,9 +147,7 @@ class TurboDRFRouter(DefaultRouter):
                             plan = compile_model(model)
                             if plan is not None:
                                 register_compiled_plan(model, plan)
-                                logger.info(
-                                    f"Compiled read path for {model.__name__}"
-                                )
+                                logger.info(f"Compiled read path for {model.__name__}")
                         except Exception as e:
                             # If compilation fails, fall back to DRF path silently
                             logger.warning(

@@ -76,13 +76,13 @@ class Command(BaseCommand):
         # Field tree
         self.stdout.write(f"\n  {self.style.NOTICE('Simple fields:')}")
         for f in plan.simple_fields:
-            coerced = f" (→ str)" if f in plan.type_coercers else ""
+            coerced = " (→ str)" if f in plan.type_coercers else ""
             self.stdout.write(f"    {f}{coerced}")
 
         if plan.fk_annotations:
             self.stdout.write(f"\n  {self.style.NOTICE('FK annotations:')}")
             for output_key, f_expr in plan.fk_annotations.items():
-                coerced = f" (→ str)" if output_key in plan.type_coercers else ""
+                coerced = " (→ str)" if output_key in plan.type_coercers else ""
                 self.stdout.write(f"    {output_key} ← {f_expr.name}{coerced}")
 
         if plan.m2m_specs:
@@ -125,6 +125,7 @@ class Command(BaseCommand):
 
     def _show_role_filtering(self, model, plan, role_name):
         from django.conf import settings
+
         from turbodrf.settings import TURBODRF_ROLES as default_roles
 
         roles_config = getattr(settings, "TURBODRF_ROLES", default_roles)
@@ -145,7 +146,9 @@ class Command(BaseCommand):
 
         snapshot = build_permission_snapshot_static(MockUser(), model)
 
-        self.stdout.write(f"\n  {self.style.NOTICE(f'Permission filtering (role: {role_name}):')}")
+        self.stdout.write(
+            f"\n  {self.style.NOTICE(f'Permission filtering (role: {role_name}):')}"
+        )
         self.stdout.write(f"    Actions: {snapshot.allowed_actions or 'none'}")
 
         if snapshot.readable_fields:
@@ -159,16 +162,12 @@ class Command(BaseCommand):
             pruned = all_fields - snapshot.readable_fields
 
             if pruned:
+                self.stdout.write(f"    Permitted: {', '.join(sorted(permitted))}")
                 self.stdout.write(
-                    f"    Permitted: {', '.join(sorted(permitted))}"
-                )
-                self.stdout.write(
-                    self.style.ERROR(
-                        f"    Pruned: {', '.join(sorted(pruned))}"
-                    )
+                    self.style.ERROR(f"    Pruned: {', '.join(sorted(pruned))}")
                 )
             else:
-                self.stdout.write(f"    All fields permitted")
+                self.stdout.write("    All fields permitted")
 
     def _show_sql(self, model, plan):
         queryset = model.objects.all()
