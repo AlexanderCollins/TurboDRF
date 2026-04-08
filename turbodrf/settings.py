@@ -9,6 +9,20 @@ Format: role_name -> list of permissions
 # security risks, and unexpected behavior. Increase at your own risk.
 TURBODRF_MAX_NESTING_DEPTH = 3
 
+# Fields that are NEVER exposed via the API, regardless of configuration.
+# These are always stripped from responses and cannot be filtered on.
+# Override in your settings.py to customise.
+TURBODRF_SENSITIVE_FIELDS = [
+    "password",
+    "password_hash",
+    "secret_key",
+    "api_key",
+    "token",
+    "access_token",
+    "refresh_token",
+    "session_key",
+]
+
 TURBODRF_ROLES = {
     "super_admin": [
         # Model-level permissions (all models)
