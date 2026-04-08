@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="turbodrf",
-    version="0.2.1",
+    version="0.3.0",
     author="Alexander Collins",
     author_email="",
     description="Dead simple Django REST API generator with role-based permissions",
@@ -41,6 +41,9 @@ setup(
         "django-filter>=2.0",
     ],
     extras_require={
+        "fast": [
+            "msgspec>=0.18.0",
+        ],
         "dev": [
             "pytest>=6.0",
             "pytest-django>=4.0",
@@ -49,6 +52,7 @@ setup(
             "flake8>=4.0",
             "isort>=5.0",
             "mypy>=0.9",
+            "msgspec>=0.18.0",
         ],
     },
     include_package_data=True,

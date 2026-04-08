@@ -494,12 +494,25 @@ class TurboDRFSerializerFactory:
 
         permitted = []
 
+        # Get sensitive fields deny-list
+        from django.conf import settings as django_settings
+        from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
+        sensitive_fields = set(
+            getattr(django_settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
+        )
+
         # First check if we should handle fields as "__all__"
         if fields == "__all__":
             # Get all model fields
             fields = [f.name for f in model._meta.fields]
 
         for field in fields:
+            # Strip sensitive fields
+            base_field = field.split("__")[0] if "__" in field else field
+            if base_field in sensitive_fields:
+                logger.debug(f"Stripping sensitive field '{field}'")
+                continue
+
             # Validate nesting depth
             try:
                 validate_nesting_depth(field)

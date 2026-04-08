@@ -318,9 +318,13 @@ class UserRole(models.Model):
 
     class Meta:
         db_table = "turbodrf_user_role"
-        unique_together = [["user", "role"]]
         verbose_name = "User Role Assignment"
         verbose_name_plural = "User Role Assignments"
+        constraints = [
+            models.UniqueConstraint(
+                fields=("user", "role"), name="unique_user_role"
+            ),
+        ]
 
     def __str__(self):
         return f"{self.user} -> {self.role.name}"

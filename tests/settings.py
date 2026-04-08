@@ -201,6 +201,7 @@ REST_FRAMEWORK = {
         "rest_framework.authentication.SessionAuthentication",
     ],
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
+    "EXCEPTION_HANDLER": "turbodrf.exceptions.turbodrf_exception_handler",
 }
 
 # drf-yasg settings - silence deprecation warning
