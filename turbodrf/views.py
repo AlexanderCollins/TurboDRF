@@ -149,6 +149,17 @@ class TurboDRFViewSet(*_viewset_bases):
         ORFilterBackend,
     ]
 
+    # Use fast JSON renderer if available (msgspec > orjson > stdlib)
+    try:
+        from .renderers import TurboDRFRenderer, FAST_JSON_AVAILABLE
+
+        if FAST_JSON_AVAILABLE:
+            from rest_framework.renderers import BrowsableAPIRenderer
+
+            renderer_classes = [TurboDRFRenderer, BrowsableAPIRenderer]
+    except ImportError:
+        pass
+
     # Set custom swagger schema class for better OpenAPI documentation
     # This prevents custom actions from incorrectly showing all model fields
     try:
@@ -160,6 +171,121 @@ class TurboDRFViewSet(*_viewset_bases):
         pass
 
     model = None  # Will be set by the router
+
+    def list(self, request, *args, **kwargs):
+        """List action with optional compiled read path.
+
+        If the model has a compiled query plan, bypasses DRF serialization
+        and uses .values() + F() annotations for significantly faster reads.
+        """
+        if self._should_use_compiled_path(request):
+            return self._compiled_list(request)
+        return super().list(request, *args, **kwargs)
+
+    def _should_use_compiled_path(self, request):
+        from .compiler import is_compiled
+
+        if not is_compiled(self.model):
+            return False
+        # Don't use compiled path for browsable API
+        if (
+            hasattr(request, "accepted_renderer")
+            and getattr(request.accepted_renderer, "format", None) == "api"
+        ):
+            return False
+        return True
+
+    def _compiled_list(self, request):
+        from .compiler import get_compiled_plan
+
+        plan = get_compiled_plan(self.model)
+
+        # Get base queryset (preserves tenant scoping, custom managers)
+        queryset = self.get_queryset()
+
+        # Apply filter backends (search, filtering, ordering, OR filters)
+        # Filters operate on the normal queryset before .values() is applied
+        queryset = self.filter_queryset(queryset)
+
+        # Get readable fields from permission snapshot
+        readable_fields = self._get_compiled_readable_fields(request)
+
+        # Client-driven field selection via ?fields= parameter
+        # Only fields already in the model's turbodrf() config are allowed
+        requested_fields = self._parse_client_fields(request, plan)
+        if requested_fields is not None:
+            # Intersect with permission-allowed fields
+            if readable_fields is not None:
+                readable_fields = readable_fields & requested_fields
+            else:
+                readable_fields = requested_fields
+
+        # Apply .values() + F() annotations
+        compiled_qs, active_plan = plan.apply_to_queryset(queryset, readable_fields)
+
+        # Paginate the .values() queryset (works because it's still a queryset)
+        page = self.paginate_queryset(compiled_qs)
+        if page is not None:
+            data = plan.post_process(list(page), active_plan)
+            return self.get_paginated_response(data)
+
+        data = plan.post_process(list(compiled_qs), active_plan)
+        return Response(data)
+
+    def _parse_client_fields(self, request, plan):
+        """Parse ?fields= parameter and validate against model config.
+
+        Returns a set of allowed field names, or None if no ?fields= param.
+        Client can use dot notation (author.name) or underscore (author_name).
+        Only fields in the model's turbodrf() config are allowed.
+        """
+        fields_param = request.query_params.get("fields")
+        if not fields_param:
+            return None
+
+        # Build the set of all configured field names (output keys)
+        allowed = set(plan.simple_fields)
+        allowed.update(plan.fk_annotations.keys())  # e.g. 'related_name'
+        allowed.update(plan.m2m_specs.keys())  # e.g. 'categories'
+        allowed.update(plan.property_fields.keys())
+
+        # Parse client request — accept both dot and underscore notation
+        requested = set()
+        for field in fields_param.split(","):
+            field = field.strip()
+            # Convert dot notation to underscore: author.name → author_name
+            field = field.replace(".", "_")
+            if field in allowed:
+                requested.add(field)
+            # Also check if it's a base field for FK/M2M
+            # e.g. "author" should include the FK ID field
+            for key in allowed:
+                if key == field or key.startswith(field + "_"):
+                    requested.add(key)
+
+        # Always include PK if M2M fields are requested (needed for merge)
+        if any(f in plan.m2m_specs for f in requested):
+            requested.add(plan.pk_field)
+
+        return requested if requested else None
+
+    def _get_compiled_readable_fields(self, request):
+        """Get the set of readable fields for permission filtering."""
+        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
+            return None
+        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+            return None
+
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return None
+
+        from .backends import attach_snapshot_to_request
+
+        snapshot = attach_snapshot_to_request(request, self.model)
+        if snapshot and snapshot.readable_fields:
+            return snapshot.readable_fields
+        return None
 
     def get_serializer_class(self):
         """
@@ -222,13 +348,21 @@ class TurboDRFViewSet(*_viewset_bases):
 
         # Process fields to separate simple and nested fields
         if isinstance(fields_to_use, list):
+            # Strip sensitive fields
+            from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
+            sensitive_fields = set(
+                getattr(settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
+            )
+
             simple_fields = []
             nested_fields = {}
 
             for field in fields_to_use:
+                base_field = field.split("__")[0] if "__" in field else field
+                if base_field in sensitive_fields:
+                    continue
                 if "__" in field:
                     # This is a nested field
-                    base_field = field.split("__")[0]
                     if base_field not in nested_fields:
                         nested_fields[base_field] = []
                     nested_fields[base_field].append(field)
@@ -543,19 +677,68 @@ class TurboDRFViewSet(*_viewset_bases):
                 # Default to exact lookup
                 return ["exact"]
 
+        # Get sensitive fields deny-list
+        from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
+        sensitive_fields = set(
+            getattr(settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
+        )
+
+        # Get readable fields from permission snapshot (if available)
+        readable_fields = self._get_filterable_fields()
+
         # Get all regular fields from the model
         for field in self.model._meta.fields:
+            if field.name in sensitive_fields:
+                continue
+            if readable_fields is not None and field.name not in readable_fields:
+                continue
             lookups = get_field_lookups(field)
             if lookups:
                 filterset_fields[field.name] = lookups
 
         # Get all ManyToMany fields
         for field in self.model._meta.many_to_many:
+            if field.name in sensitive_fields:
+                continue
+            if readable_fields is not None and field.name not in readable_fields:
+                continue
             # ManyToMany fields support filtering by ID and null checks
             # They also support filtering through related model fields via __ notation
             filterset_fields[field.name] = ["exact", "in", "isnull"]
 
         return filterset_fields
+
+    def _get_filterable_fields(self):
+        """Get the set of fields the current user can filter on.
+
+        Returns None if permissions are disabled (all fields filterable),
+        or a set of field names the user has read access to.
+        """
+        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
+            return None
+        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+            return None
+
+        request = getattr(self, "request", None)
+        if not request:
+            return None
+
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            # Unauthenticated users — check if guest role has field restrictions
+            from .backends import build_permission_snapshot
+
+            snapshot = build_permission_snapshot(user, self.model)
+            if snapshot and snapshot.readable_fields:
+                return snapshot.readable_fields
+            return None
+
+        from .backends import attach_snapshot_to_request
+
+        snapshot = attach_snapshot_to_request(request, self.model)
+        if snapshot and snapshot.readable_fields:
+            return snapshot.readable_fields
+        return None
 
     @property
     def filterset_fields(self):

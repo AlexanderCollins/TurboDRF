@@ -178,29 +178,16 @@ class ORFilterBackend(BaseFilterBackend):
 
         logger = logging.getLogger(__name__)
 
-        # Basic validation - check if field exists
-        # Check exact match
-        if field_name in valid_fields:
-            return True
-
-        # Check if it's a lookup (e.g., 'price__gte')
+        # Basic validation - check if field exists in the model
         if "__" in field_name:
-            # Get the base field name
             base_field = field_name.split("__")[0]
-            if base_field in valid_fields:
-                # Base field is valid, now check nesting and permissions if enabled
-                pass  # Continue to advanced validation below
-            # Also check if the full lookup is in valid_fields
-            elif field_name in valid_fields:
-                return True
-            else:
+            if base_field not in valid_fields and field_name not in valid_fields:
                 return False
         else:
-            # Simple field not in valid_fields
-            return False
+            if field_name not in valid_fields:
+                return False
 
-        # Advanced validation with nesting depth and permissions
-        # Only run if new validation module is available and permissions are enabled
+        # Permission check — runs for ALL filter fields, not just nested ones
         try:
             from .validation import (
                 check_nested_field_permissions,
@@ -211,38 +198,44 @@ class ORFilterBackend(BaseFilterBackend):
             try:
                 field_path, lookup = validate_filter_field(model, field_name)
             except Exception as e:
-                # Nesting depth exceeded or invalid field - use basic validation
                 logger.debug(f"Filter validation failed for '{field_name}': {str(e)}")
                 return False
 
-            # Check nested field permissions ONLY if TurboDRF permissions are enabled
-            # AND the user has roles configured
+            # Check field permissions if TurboDRF role-based permissions are active
             disable_perms = getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False)
             use_default_perms = getattr(
                 settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False
             )
 
             if not disable_perms and not use_default_perms:
-                # TurboDRF role-based permissions are active - check if user has roles
                 from .backends import get_user_roles
 
                 try:
                     user_roles = get_user_roles(user)
-                    # Only check permissions if user has roles
+                    # If user has roles, enforce field-level permissions on filters
+                    # If user has NO roles:
+                    #   - Authenticated: denied at has_permission() already
+                    #   - Unauthenticated with guest role: check permissions
+                    #   - Unauthenticated without guest role: allow (public_access
+                    #     handles model-level gating)
                     if user_roles:
-                        if not check_nested_field_permissions(model, field_path, user):
+                        if not check_nested_field_permissions(
+                            model, field_path, user
+                        ):
                             logger.debug(
                                 f"Permission denied for filter '{field_name}' "
                                 f"(user lacks read permission)"
                             )
                             return False
                 except Exception as e:
-                    # Permission check failed - log and allow (backward compatible)
-                    logger.debug(f"Permission check error for '{field_name}': {str(e)}")
-                    pass
+                    # Fail closed — deny access on permission check error
+                    logger.warning(
+                        f"Permission check error for filter '{field_name}': "
+                        f"{str(e)} — denying access"
+                    )
+                    return False
 
         except ImportError:
-            # Validation module not available - use basic validation only
             pass
 
         return True
