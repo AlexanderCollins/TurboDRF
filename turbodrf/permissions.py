@@ -76,8 +76,8 @@ class TurboDRFPermission(BasePermission):
         config = model.turbodrf()
 
         # Check if public access is allowed for this model
-        # Default to True for backward compatibility
-        public_access = config.get("public_access", True)
+        # Default to False (secure by default)
+        public_access = config.get("public_access", False)
 
         # Allow read access for unauthenticated users if public_access is enabled
         if not request.user or not request.user.is_authenticated:
@@ -87,15 +87,22 @@ class TurboDRFPermission(BasePermission):
             # For models without public_access, deny all access
             return False
 
+        # Authenticated users must have at least one role
+        from .backends import get_user_roles
+
+        user_roles = get_user_roles(request.user)
+        if not user_roles:
+            return False
+
         # Map HTTP methods to permission types
         permission_map = {
             "GET": "read",
-            "HEAD": "read",  # HEAD should have same permission as read
+            "HEAD": "read",
             "POST": "create",
             "PUT": "update",
             "PATCH": "update",
             "DELETE": "delete",
-            "OPTIONS": "read",  # OPTIONS should have same permission as read
+            "OPTIONS": "read",
         }
 
         permission_type = permission_map.get(request.method)
@@ -184,8 +191,8 @@ class DefaultDjangoPermission(DjangoModelPermissions):
         config = model.turbodrf()
 
         # Check if public access is allowed for this model
-        # Default to True for backward compatibility
-        public_access = config.get("public_access", True)
+        # Default to False (secure by default)
+        public_access = config.get("public_access", False)
 
         # Allow read access for unauthenticated users if public_access is enabled
         if not request.user or not request.user.is_authenticated:

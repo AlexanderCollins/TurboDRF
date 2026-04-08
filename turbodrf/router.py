@@ -139,6 +139,22 @@ class TurboDRFRouter(DefaultRouter):
                         endpoint, viewset_class, basename=model._meta.model_name
                     )
 
+                    # Compile read path (on by default, opt out with compiled=False)
+                    if config.get("compiled", True):
+                        from .compiler import compile_model, register_compiled_plan
+
+                        try:
+                            plan = compile_model(model)
+                            if plan is not None:
+                                register_compiled_plan(model, plan)
+                                logger.info(f"Compiled read path for {model.__name__}")
+                        except Exception as e:
+                            # If compilation fails, fall back to DRF path silently
+                            logger.warning(
+                                f"Could not compile {model.__name__}: {e}. "
+                                f"Falling back to DRF serializer path."
+                            )
+
     def get_urls(self):
         """
         Generate URL patterns that work with or without trailing slashes.
