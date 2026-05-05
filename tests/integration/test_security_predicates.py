@@ -547,21 +547,27 @@ class TestParseConfigAndRegistration(SecurityBase):
 
     def test_unregistered_model_returns_defaults_and_clear_predicates(self):
         """Unregistered model → ([], None). clear_predicates() wipes the
-        registry; restore via register + router rehydrate."""
+        registry; restore via full snapshot."""
+        from turbodrf.predicates import _model_predicates, _model_tenant_fields
         from turbodrf.router import TurboDRFRouter
 
         self.assertEqual(get_predicates(SampleModel), [])
         self.assertIsNone(get_tenant_field(SampleModel))
 
-        orig_preds = list(get_predicates(Deal))
-        orig_tf = get_tenant_field(Deal)
+        # Snapshot the FULL registry — restoring only Deal would leave
+        # every other model unregistered for subsequent tests on this
+        # xdist worker (FK injection guards stop firing).
+        saved_p = dict(_model_predicates)
+        saved_t = dict(_model_tenant_fields)
         try:
             clear_predicates()
             self.assertEqual(get_predicates(Deal), [])
             self.assertIsNone(get_tenant_field(Deal))
         finally:
-            register_predicates(Deal, orig_preds)
-            register_tenant_field(Deal, orig_tf)
+            _model_predicates.clear()
+            _model_predicates.update(saved_p)
+            _model_tenant_fields.clear()
+            _model_tenant_fields.update(saved_t)
             TurboDRFRouter()
 
 
