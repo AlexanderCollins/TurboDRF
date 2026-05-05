@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="turbodrf",
-    version="0.3.0",
+    version="0.4.0",
     author="Alexander Collins",
     author_email="",
     description="Dead simple Django REST API generator with role-based permissions",
@@ -29,13 +29,14 @@ setup(
         "Framework :: Django",
         "Framework :: Django :: 4.2",
         "Framework :: Django :: 5.2",
+        "Framework :: Django :: 6.0",
     ],
     python_requires=">=3.10",
     install_requires=[
         "Django>=4.2",
-        "djangorestframework>=3.12.0",
-        "drf-yasg>=1.20.0",
-        "django-filter>=2.0",
+        "djangorestframework>=3.14.0",
+        "drf-yasg>=1.21.0",
+        "django-filter>=23.0",
     ],
     extras_require={
         "fast": [
@@ -45,6 +46,7 @@ setup(
             "pytest>=6.0",
             "pytest-django>=4.0",
             "pytest-cov>=2.0",
+            "pytest-xdist>=3.0",
             "black>=22.0",
             "flake8>=4.0",
             "isort>=5.0",

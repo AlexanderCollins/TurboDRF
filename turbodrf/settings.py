@@ -9,6 +9,32 @@ Format: role_name -> list of permissions
 # security risks, and unexpected behavior. Increase at your own risk.
 TURBODRF_MAX_NESTING_DEPTH = 3
 
+# ---------------------------------------------------------------------------
+# Row-level access control (predicate system)
+# ---------------------------------------------------------------------------
+# The tenant model that owns rows in your application (e.g. 'accounts.Brokerage').
+# When set, every TurboDRF model must declare its relationship to this model
+# via 'tenant_field', 'visibility', or 'tenancy': 'shared' — otherwise the
+# router refuses to register the endpoint at startup.
+TURBODRF_TENANT_MODEL = None
+
+# Attribute on request.user that resolves to the user's tenant (object or PK).
+# Required when TURBODRF_TENANT_MODEL is set. Example: 'brokerage' (so
+# request.user.brokerage returns the Brokerage instance).
+TURBODRF_TENANT_USER_FIELD = None
+
+# When True, the router refuses to register a model that has neither a tenancy
+# declaration ('tenant_field' / 'visibility') nor an explicit
+# 'tenancy': 'shared' opt-out. Forces deliberate decisions about row scope.
+# Recommended for new projects.
+TURBODRF_REQUIRE_TENANCY = True
+
+# When True, the router walks the FK graph at startup to fill in 'tenant_field'
+# automatically when not declared. Ambiguous paths (multiple shortest routes
+# to the tenant model) raise loudly rather than guessing. Default False —
+# explicit declarations are easier to reason about; opt in if you want it.
+TURBODRF_AUTODETECT_TENANT = False
+
 # Fields that are NEVER exposed via the API, regardless of configuration.
 # These are always stripped from responses and cannot be filtered on.
 # Override in your settings.py to customise.

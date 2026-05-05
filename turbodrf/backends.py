@@ -120,15 +120,14 @@ def get_user_roles(user) -> list:
         )
         return role_names
     elif hasattr(user, "roles"):
-        # Use existing roles property (static mode or custom)
-        return user.roles if isinstance(user.roles, list) else list(user.roles)
+        # `user.roles` may be None (custom user models that haven't set
+        # it), a list, or any iterable. Coerce defensively — downstream
+        # set ops and serialization assume a list.
+        roles = user.roles or []
+        return roles if isinstance(roles, list) else list(roles)
     elif hasattr(user, "_test_roles"):
-        # Support test users with _test_roles property (for backward compatibility)
-        return (
-            user._test_roles
-            if isinstance(user._test_roles, list)
-            else list(user._test_roles)
-        )
+        roles = user._test_roles or []
+        return roles if isinstance(roles, list) else list(roles)
     else:
         return []
 
@@ -351,9 +350,19 @@ def get_cache_key(user, model) -> str:
         else:
             version_hash = 0
     else:
-        # For static mode, use a simple hash of TURBODRF_ROLES
-        # This doesn't change at runtime, so version is always 1
-        version_hash = 1
+        # Static mode: hash TURBODRF_ROLES so the cache key changes when
+        # the role configuration changes — including when tests use
+        # override_settings(TURBODRF_ROLES=...). Without this, a snapshot
+        # built under restricted roles in one test pollutes the cache for
+        # later tests reusing the same user.pk.
+        roles = getattr(settings, "TURBODRF_ROLES", {})
+        try:
+            roles_signature = tuple(
+                sorted((role, tuple(sorted(perms))) for role, perms in roles.items())
+            )
+            version_hash = hash(roles_signature)
+        except (TypeError, AttributeError):
+            version_hash = 1
 
     return f"{cache_prefix}:{user_id}:{app_label}:{model_name}:{version_hash}"
 

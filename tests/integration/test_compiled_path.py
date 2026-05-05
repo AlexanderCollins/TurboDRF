@@ -95,6 +95,12 @@ class CompiledPathBasicTests(TestCase):
                 "test_app.compiledsamplemodel.create",
                 "test_app.compiledsamplemodel.update",
                 "test_app.compiledsamplemodel.delete",
+                # The configured detail fields include `related__name`
+                # which requires read perms on the related model — without
+                # this the nested traversal strips it, and the FK base
+                # (`related`) is then excluded from the writable serializer
+                # → required FK missing on POST → IntegrityError.
+                "test_app.relatedmodel.read",
             ]
         },
     )

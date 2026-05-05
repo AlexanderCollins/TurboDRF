@@ -113,35 +113,6 @@ class TurboDRFPermission(BasePermission):
         snapshot = attach_snapshot_to_request(request, model)
         return snapshot.can_perform_action(permission_type)
 
-    def _get_user_permissions(self, user):
-        """
-        Get all permissions for a user based on their roles.
-
-        This method aggregates permissions from all roles assigned to a user.
-
-        Args:
-            user: The user object, which must have a 'roles' property.
-
-        Returns:
-            set: Set of permission strings the user has.
-
-        Example:
-            If a user has roles ['admin', 'editor'], this method returns
-            the union of all permissions defined for both roles.
-        """
-        from django.conf import settings
-
-        from .settings import TURBODRF_ROLES as default_roles
-
-        # Use Django settings if available, otherwise fall back to defaults
-        TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", default_roles)
-
-        permissions = set()
-        for role in user.roles:
-            permissions.update(TURBODRF_ROLES.get(role, []))
-
-        return permissions
-
 
 class DefaultDjangoPermission(DjangoModelPermissions):
     """

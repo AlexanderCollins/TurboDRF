@@ -63,6 +63,26 @@ class TurboDRFMixin:
                   When True, unauthenticated users can read (GET) the model.
                   You can configure different fields for anonymous users using
                   the 'guest' role in your permission configuration.
+                - 'tenant_field' (str): FK path on this model to the tenant
+                  declared in TURBODRF_TENANT_MODEL. Supports '__' traversal
+                  (e.g. 'bank_account__deal__brokerage'). Filters every
+                  queryset to rows where this resolves to the calling user's
+                  tenant. Auto-detected from the FK graph when TURBODRF_AUTODETECT_TENANT
+                  is True. Mandatory wall — cannot be bypassed.
+                - 'owner_field' (str | list[str]): FK path(s) on this model
+                  to the owner user. List = OR (any column matching the user
+                  grants visibility). Within-tenant scope only.
+                - 'bypass_owner_roles' (list[str]): Roles that ignore the
+                  owner check (still subject to tenant scope).
+                - 'tenancy' (str): Use 'shared' to declare the model is not
+                  tenant-scoped (reference data like currencies, categories).
+                  Required when TURBODRF_REQUIRE_TENANCY is True and no
+                  tenant_field / visibility is declared.
+                - 'visibility' (list[Predicate]): Power form. A list of
+                  Predicate instances (Tenant, Owner, Members, Group,
+                  Conditional, Either, Custom) that compose with AND.
+                  Use this when sugar form (tenant_field/owner_field) doesn't
+                  fit the access pattern.
 
         Example:
             >>> @classmethod

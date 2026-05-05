@@ -84,7 +84,15 @@ class SearchEndpointTests(TestCase):
             "test_app.compiledsamplemodel.create",
             "test_app.compiledsamplemodel.update",
             "test_app.compiledsamplemodel.delete",
-        ]
+        ],
+        # The router validates `bypass_owner_roles` against TURBODRF_ROLES
+        # at startup. Test-app models (Deal, Project, Workspace) declare
+        # 'manager' as a bypass role, so the override must include it
+        # even though this test only exercises CompiledSampleModel.
+        # Without this, parallel workers that happen to run this test
+        # first will trip the validation.
+        "manager": [],
+        "underwriter": [],
     }
 )
 class CRUDResourceTests(TestCase):

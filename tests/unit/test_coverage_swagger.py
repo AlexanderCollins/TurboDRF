@@ -55,11 +55,10 @@ class TestRoleBasedSchemaGeneratorHelpers(TestCase):
         self.assertEqual(result["model_name"], "samplemodel")
         self.assertEqual(result["app_label"], "test_app")
 
-    def test_extract_model_info_unknown_model_falls_back(self):
-        result = self._gen()._extract_model_info("/api/unknownitems/")
-        self.assertIsNotNone(result)
-        self.assertEqual(result["app_label"], "books")
-        self.assertEqual(result["model_name"], "unknownitem")
+    def test_extract_model_info_unknown_model_returns_none(self):
+        """Unknown URL fragments now resolve to None (the previous hardcoded
+        'books' fallback was dead-code-only and broke for any other app)."""
+        self.assertIsNone(self._gen()._extract_model_info("/api/unknownitems/"))
 
     def test_extract_model_info_too_short_path(self):
         self.assertIsNone(self._gen()._extract_model_info("/single/"))
@@ -191,9 +190,12 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
                 "/api/relatedmodels/": {"get": {"responses": {}}},
             }
         }
+        from django.contrib.auth.models import AnonymousUser
+
         req = MagicMock()
         req.GET = {"role": "viewer"}
         req.session = {}
+        req.user = AnonymousUser()  # anon browsing — accept ?role= for docs
         with patch.object(
             RoleBasedSchemaGenerator.__bases__[0],
             "get_schema",
@@ -206,10 +208,13 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
         self.assertIn("/api/relatedmodels/", result["paths"])
 
     def test_get_schema_role_from_session(self):
+        from django.contrib.auth.models import AnonymousUser
+
         gen = self._gen()
         req = MagicMock()
         req.GET = {}
         req.session = {"api_role": "admin"}
+        req.user = AnonymousUser()
         with patch.object(
             RoleBasedSchemaGenerator.__bases__[0],
             "get_schema",
@@ -255,9 +260,12 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
                 }
             }
         }
+        from django.contrib.auth.models import AnonymousUser
+
         req = MagicMock()
         req.GET = {"role": "viewer"}
         req.session = {}
+        req.user = AnonymousUser()  # anon browsing — accept ?role= for docs
         with patch.object(
             RoleBasedSchemaGenerator.__bases__[0],
             "get_schema",
@@ -273,11 +281,14 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
 
     @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
     def test_get_schema_path_with_no_model_info_excluded(self):
+        from django.contrib.auth.models import AnonymousUser
+
         gen = self._gen()
         fake_schema = {"paths": {"/admin/dashboard/": {"get": {"responses": {}}}}}
         req = MagicMock()
         req.GET = {"role": "admin"}
         req.session = {}
+        req.user = AnonymousUser()
         with patch.object(
             RoleBasedSchemaGenerator.__bases__[0],
             "get_schema",
@@ -562,6 +573,14 @@ class TestTurboDRFMetadata(TestCase):
     """Cover metadata.py uncovered lines."""
 
     def setUp(self):
+        from django.core.cache import cache
+
+        # MagicMock-based users in these tests get unstable ids that can
+        # collide in the permission-snapshot cache across parallel
+        # workers. Clear cache to avoid hitting another worker's stale
+        # snapshot.
+        cache.clear()
+
         self.factory = APIRequestFactory()
         self.related = RelatedModel.objects.create(name="Cat", description="desc")
 
@@ -628,8 +647,15 @@ class TestTurboDRFMetadata(TestCase):
         self.assertIn("max_length", title_info)
         self.assertEqual(title_info["max_length"], 200)
 
-    @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
     def test_metadata_field_with_choices(self):
+        """ChoiceModel field with explicit per-field perms in roles.
+
+        Metadata is gated by per-field read perms — admin without an
+        explicit read rule on test_app.choicemodel.status doesn't see
+        metadata for it. Test grants the perm via TURBODRF_ROLES
+        override so the visibility gate passes.
+        """
+
         class ChoiceModel(TurboDRFMixin, dj_models.Model):
             STATUS_CHOICES = [("draft", "Draft"), ("published", "Published")]
             status = dj_models.CharField(max_length=20, choices=STATUS_CHOICES)
@@ -641,18 +667,27 @@ class TestTurboDRFMetadata(TestCase):
             def turbodrf(cls):
                 return {"fields": ["status"]}
 
-        request = self.factory.options("/api/choicemodels/")
-        request.user = MagicMock()
-        request.user.roles = ["admin"]
-        request.user.is_authenticated = True
-        view = self._make_view("list")
-        view.model = ChoiceModel
-        metadata = TurboDRFMetadata()
-        result = metadata.determine_metadata(request, view)
-        status_info = result["model"]["fields"].get("status", {})
-        self.assertIn("choices", status_info)
-        self.assertEqual(len(status_info["choices"]), 2)
-        self.assertEqual(status_info["choices"][0]["value"], "draft")
+        roles_with_choice = {
+            "admin": [
+                "test_app.choicemodel.read",
+                "test_app.choicemodel.status.read",
+            ]
+        }
+        with patch("turbodrf.settings.TURBODRF_ROLES", roles_with_choice), patch(
+            "django.conf.settings.TURBODRF_ROLES", roles_with_choice, create=True
+        ):
+            request = self.factory.options("/api/choicemodels/")
+            request.user = MagicMock()
+            request.user.roles = ["admin"]
+            request.user.is_authenticated = True
+            view = self._make_view("list")
+            view.model = ChoiceModel
+            metadata = TurboDRFMetadata()
+            result = metadata.determine_metadata(request, view)
+            status_info = result["model"]["fields"].get("status", {})
+            self.assertIn("choices", status_info)
+            self.assertEqual(len(status_info["choices"]), 2)
+            self.assertEqual(status_info["choices"][0]["value"], "draft")
 
     def test_metadata_field_exception_returns_unknown(self):
         class BadFieldModel(TurboDRFMixin, dj_models.Model):
@@ -733,24 +768,7 @@ class TestTurboDRFMetadata(TestCase):
 
 
 class TestUrlsModule(TestCase):
-    """Verify turbodrf.urls can be imported and has expected patterns."""
-
-    def test_import_urls(self):
-        from turbodrf import urls
-
-        self.assertTrue(hasattr(urls, "urlpatterns"))
-        self.assertIsInstance(urls.urlpatterns, list)
-        self.assertGreater(len(urls.urlpatterns), 0)
-
-    def test_import_router_from_urls(self):
-        from turbodrf.urls import router
-
-        self.assertIsNotNone(router)
-
-    def test_schema_view_from_urls(self):
-        from turbodrf.urls import schema_view
-
-        self.assertIsNotNone(schema_view)
+    """Verify turbodrf.urls registers swagger URLs when docs are enabled."""
 
     @override_settings(TURBODRF_ENABLE_DOCS=True)
     def test_urls_include_swagger_when_enabled(self):

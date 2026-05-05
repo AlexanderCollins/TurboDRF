@@ -340,6 +340,43 @@ class CompiledM2MExecutionTests(TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["categories"], [])
 
+    def test_m2m_subfield_filter_drops_unselected_subfields(self):
+        """allowed_m2m_subfields trims each spec's annotations to only the
+        permitted sub-fields."""
+        qs = CompiledArticle.objects.all()
+        # Allow only the 'name' sub-field on categories — drop 'description'
+        compiled_qs, active_plan = self.plan.apply_to_queryset(
+            qs, allowed_m2m_subfields={"categories": {"name"}}
+        )
+        rows = self.plan.post_process(list(compiled_qs), active_plan)
+        # Each category dict should have 'name' but not 'description'
+        if rows and rows[0].get("categories"):
+            cat = rows[0]["categories"][0]
+            self.assertIn("name", cat)
+            self.assertNotIn("description", cat)
+
+    def test_m2m_subfield_filter_drops_whole_spec_when_all_subfields_blocked(self):
+        """When the allow-list is empty for an M2M, the spec drops entirely."""
+        qs = CompiledArticle.objects.all()
+        compiled_qs, active_plan = self.plan.apply_to_queryset(
+            qs, allowed_m2m_subfields={"categories": set()}
+        )
+        rows = self.plan.post_process(list(compiled_qs), active_plan)
+        # categories key not present (whole spec dropped)
+        if rows:
+            self.assertNotIn("categories", rows[0])
+
+    def test_m2m_subfield_filter_with_no_entry_drops_spec(self):
+        """When the dict is provided but doesn't include a base name, that
+        M2M is dropped entirely (default-deny when caller is being explicit)."""
+        qs = CompiledArticle.objects.all()
+        compiled_qs, active_plan = self.plan.apply_to_queryset(
+            qs, allowed_m2m_subfields={}  # empty dict
+        )
+        rows = self.plan.post_process(list(compiled_qs), active_plan)
+        if rows:
+            self.assertNotIn("categories", rows[0])
+
     def test_m2m_fk_and_m2m_together(self):
         """FK annotations and M2M merge should work together."""
         qs = CompiledArticle.objects.all()

@@ -84,7 +84,7 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name='rolepermission',
             constraint=models.CheckConstraint(**{
-                ('condition' if django.VERSION >= (5, 0) else 'check'): models.Q(models.Q(('action__isnull', False), ('field_name__isnull', True), ('permission_type__isnull', True)), models.Q(('action__isnull', True), ('field_name__isnull', False), ('permission_type__isnull', False)), _connector='OR'),
+                ('condition' if django.VERSION >= (5, 1) else 'check'): models.Q(models.Q(('action__isnull', False), ('field_name__isnull', True), ('permission_type__isnull', True)), models.Q(('action__isnull', True), ('field_name__isnull', False), ('permission_type__isnull', False)), _connector='OR'),
             }, name='permission_type_check'),
         ),
     ]

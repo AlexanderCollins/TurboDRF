@@ -49,7 +49,6 @@ class TestPackageStructure(unittest.TestCase):
         import turbodrf.router
         import turbodrf.serializers
         import turbodrf.swagger
-        import turbodrf.swagger_ui
         import turbodrf.views
 
         # Verify modules are loaded

@@ -195,13 +195,23 @@ class TestKeycloakRoleMapping(TestCase):
             "realm-admin": "admin",
         }
     )
-    def test_map_roles_partial_mapping(self):
-        """Test role mapping with partial mapping (some unmapped)."""
+    def test_map_roles_partial_mapping_strict_default(self):
+        """With STRICT_ROLES=True (default), unmapped roles are dropped.
+        Otherwise a Keycloak role like `realm-admin` would pass through
+        unmapped and grant unintended access if `realm-admin` happens to
+        match a TurboDRF role name elsewhere."""
         keycloak_roles = ["realm-admin", "unknown-role"]
-
         mapped = map_keycloak_roles_to_turbodrf(keycloak_roles)
+        self.assertEqual(mapped, ["admin"])
 
-        # Mapped role gets converted, unmapped role passes through
+    @override_settings(
+        TURBODRF_KEYCLOAK_ROLE_MAPPING={"realm-admin": "admin"},
+        TURBODRF_KEYCLOAK_STRICT_ROLES=False,
+    )
+    def test_map_roles_partial_mapping_legacy_passthrough(self):
+        """With STRICT_ROLES=False, unmapped roles pass through (legacy)."""
+        keycloak_roles = ["realm-admin", "unknown-role"]
+        mapped = map_keycloak_roles_to_turbodrf(keycloak_roles)
         self.assertEqual(mapped, ["admin", "unknown-role"])
 
     @override_settings(TURBODRF_KEYCLOAK_ROLE_MAPPING={})

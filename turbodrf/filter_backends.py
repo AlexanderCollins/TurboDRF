@@ -5,8 +5,12 @@ This module provides advanced filtering capabilities beyond what
 django-filter provides out of the box.
 """
 
+import logging
+
 from django.db.models import Q
 from rest_framework.filters import BaseFilterBackend
+
+logger = logging.getLogger(__name__)
 
 
 class ORFilterBackend(BaseFilterBackend):
@@ -67,10 +71,23 @@ class ORFilterBackend(BaseFilterBackend):
         # Handle both DRF Request (query_params) and Django Request (GET)
         query_dict = getattr(request, "query_params", request.GET)
 
+        # Bound filter value length. Beyond this, SQLite raises "LIKE
+        # pattern too complex" and Postgres burns CPU O(N×len) — both DoS
+        # vectors. 1000 covers normal use (UUIDs, long titles, multi-word
+        # search) and the framework would not run an unbounded
+        # icontains scan in practice.
+        from django.conf import settings as _s
+
+        max_filter_value_len = getattr(_s, "TURBODRF_MAX_FILTER_VALUE_LENGTH", 1000)
+
         for key in query_dict.keys():
             # Skip pagination and other special parameters
             if key in ["page", "page_size", "search", "ordering", "format"]:
                 continue
+            # Reject excessively long filter values (DoS guard).
+            for v in query_dict.getlist(key):
+                if v is not None and len(str(v)) > max_filter_value_len:
+                    return queryset.none()
 
             if key.endswith("_or"):
                 # Remove the '_or' suffix to get the actual field name
@@ -80,7 +97,16 @@ class ORFilterBackend(BaseFilterBackend):
                 if not self._is_valid_filter_field(
                     field_name, valid_fields, queryset.model, request.user
                 ):
-                    continue  # Skip invalid fields
+                    # Silent drop (intentional — noisy 400s leak the field
+                    # universe to scanners), but log so operators can spot
+                    # scan attempts in their logs.
+                    logger.info(
+                        "turbodrf.filter.dropped: %s (invalid or "
+                        "unauthorized) on %s",
+                        key,
+                        queryset.model.__name__,
+                    )
+                    continue
 
                 # Get all values for this parameter (handles multiple values)
                 values = query_dict.getlist(key)
@@ -91,6 +117,13 @@ class ORFilterBackend(BaseFilterBackend):
                     key, valid_fields, queryset.model, request.user
                 ):
                     regular_params[key] = query_dict.get(key)
+                else:
+                    logger.info(
+                        "turbodrf.filter.dropped: %s (invalid or "
+                        "unauthorized) on %s",
+                        key,
+                        queryset.model.__name__,
+                    )
 
         # Build OR queries
         if or_params:
@@ -111,6 +144,14 @@ class ORFilterBackend(BaseFilterBackend):
                 # Handle __in lookups specially
                 if "__in" in key:
                     value = value.split(",")
+                # Coerce isnull values to bool — Django's ORM rejects
+                # strings here, so a malformed `?x__isnull=garbage` raises
+                # at SQL-build time and surfaces as a 500.
+                elif key.endswith("__isnull"):
+                    coerced = self._parse_bool(value)
+                    if coerced is None:
+                        continue  # silently drop malformed isnull values
+                    value = coerced
 
                 queryset = queryset.filter(**{key: value})
             except (ValueError, TypeError, Exception):
@@ -119,6 +160,20 @@ class ORFilterBackend(BaseFilterBackend):
                 continue
 
         return queryset
+
+    @staticmethod
+    def _parse_bool(value):
+        """Coerce a string to a bool for __isnull lookups, or None if invalid."""
+        if isinstance(value, bool):
+            return value
+        if not isinstance(value, str):
+            return None
+        v = value.strip().lower()
+        if v in ("true", "1", "yes", "y"):
+            return True
+        if v in ("false", "0", "no", "n"):
+            return False
+        return None
 
     def _get_valid_filter_fields(self, view, model):
         """

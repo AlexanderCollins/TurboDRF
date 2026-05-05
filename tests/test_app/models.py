@@ -212,6 +212,97 @@ class CompiledSampleModel(TurboDRFMixin, models.Model):
         }
 
 
+class Brokerage(models.Model):
+    """Tenant model for predicate tests. Plain Django model — not TurboDRF-exposed."""
+
+    name = models.CharField(max_length=100)
+
+    def __str__(self):
+        return self.name
+
+
+class Deal(TurboDRFMixin, models.Model):
+    """Tenant-scoped model with owner. Used by predicate / IDOR tests."""
+
+    title = models.CharField(max_length=200)
+    brokerage = models.ForeignKey(
+        Brokerage, on_delete=models.CASCADE, related_name="deals"
+    )
+    assigned_broker = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        related_name="assigned_deals",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return self.title
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "tenant_field": "brokerage",
+            "owner_field": "assigned_broker",
+            "bypass_owner_roles": ["manager", "admin"],
+            "fields": ["id", "title", "brokerage", "assigned_broker"],
+            "compiled": False,
+        }
+
+
+class BankAccount(TurboDRFMixin, models.Model):
+    """Bank account chained to a Deal. Tests __ traversal in tenant_field."""
+
+    name = models.CharField(max_length=100)
+    deal = models.ForeignKey(
+        Deal, on_delete=models.CASCADE, related_name="bank_accounts"
+    )
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "tenant_field": "deal__brokerage",
+            "fields": ["id", "name", "deal"],
+            "compiled": False,
+        }
+
+
+class Transaction(TurboDRFMixin, models.Model):
+    """Transaction chained to a BankAccount.
+
+    Tests two-hop tenant traversal (bank_account__deal__brokerage) and
+    filter chaining (?bank_account=X must be filtered by tenant scope).
+    """
+
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    bank_account = models.ForeignKey(
+        BankAccount, on_delete=models.CASCADE, related_name="transactions"
+    )
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.amount}"
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "tenant_field": "bank_account__deal__brokerage",
+            "fields": ["id", "amount", "bank_account"],
+            "compiled": False,
+        }
+
+
 class CompiledArticle(TurboDRFMixin, models.Model):
     """Test model with compiled read path and M2M relationships."""
 
