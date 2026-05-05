@@ -190,10 +190,23 @@ class TestTurboDRFSerializerFactory(TestCase):
         """Test field permission filtering."""
         fields = ["title", "price", "secret_field"]
 
+        # Diagnostic: prove what state we're in
+        from django.conf import settings as _s
+
+        roles = getattr(_s, "TURBODRF_ROLES", "MISSING")
+        keys = list(roles.keys()) if hasattr(roles, "keys") else "no keys"
+        admin_perms = roles.get("admin", "MISSING") if hasattr(roles, "get") else "??"
+        admin_count = len(admin_perms) if isinstance(admin_perms, list) else admin_perms
+        print(f"\n[DIAG] roles type={type(roles).__name__} keys={keys}")
+        print(f"[DIAG] admin perm count={admin_count}")
+        print(f"[DIAG] user.roles={list(self.admin_user.roles)}")
+        print(f"[DIAG] _test_roles set={hasattr(self.admin_user, '_test_roles')}")
+
         # Admin should get all fields
         admin_fields = TurboDRFSerializerFactory._get_permitted_fields(
             SampleModel, fields, self.admin_user
         )
+        print(f"[DIAG] admin_fields={admin_fields}")
         self.assertEqual(set(admin_fields), set(fields))
 
         # Editor should get title and price (read permission)
