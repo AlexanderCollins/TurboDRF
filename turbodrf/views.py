@@ -511,13 +511,6 @@ class TurboDRFViewSet(*_viewset_bases):
 
         # Process fields to separate simple and nested fields
         if isinstance(fields_to_use, list):
-            # Strip sensitive fields
-            from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
-
-            sensitive_fields = set(
-                getattr(settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
-            )
-
             simple_fields = []
             nested_fields = {}
 
@@ -744,9 +737,7 @@ class TurboDRFViewSet(*_viewset_bases):
                 if f.name not in sensitive_fields
             ]
 
-        return [
-            name for name in readable if name not in sensitive_fields
-        ]
+        return [name for name in readable if name not in sensitive_fields]
 
     def get_filterset_fields(self):
         """

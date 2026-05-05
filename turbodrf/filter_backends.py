@@ -78,9 +78,7 @@ class ORFilterBackend(BaseFilterBackend):
         # icontains scan in practice.
         from django.conf import settings as _s
 
-        max_filter_value_len = getattr(
-            _s, "TURBODRF_MAX_FILTER_VALUE_LENGTH", 1000
-        )
+        max_filter_value_len = getattr(_s, "TURBODRF_MAX_FILTER_VALUE_LENGTH", 1000)
 
         for key in query_dict.keys():
             # Skip pagination and other special parameters

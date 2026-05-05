@@ -191,6 +191,7 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
             }
         }
         from django.contrib.auth.models import AnonymousUser
+
         req = MagicMock()
         req.GET = {"role": "viewer"}
         req.session = {}
@@ -208,6 +209,7 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
 
     def test_get_schema_role_from_session(self):
         from django.contrib.auth.models import AnonymousUser
+
         gen = self._gen()
         req = MagicMock()
         req.GET = {}
@@ -259,6 +261,7 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
             }
         }
         from django.contrib.auth.models import AnonymousUser
+
         req = MagicMock()
         req.GET = {"role": "viewer"}
         req.session = {}
@@ -279,6 +282,7 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
     @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
     def test_get_schema_path_with_no_model_info_excluded(self):
         from django.contrib.auth.models import AnonymousUser
+
         gen = self._gen()
         fake_schema = {"paths": {"/admin/dashboard/": {"get": {"responses": {}}}}}
         req = MagicMock()
@@ -643,6 +647,7 @@ class TestTurboDRFMetadata(TestCase):
         metadata for it. Test grants the perm via TURBODRF_ROLES
         override so the visibility gate passes.
         """
+
         class ChoiceModel(TurboDRFMixin, dj_models.Model):
             STATUS_CHOICES = [("draft", "Draft"), ("published", "Published")]
             status = dj_models.CharField(max_length=20, choices=STATUS_CHOICES)
@@ -660,8 +665,9 @@ class TestTurboDRFMetadata(TestCase):
                 "test_app.choicemodel.status.read",
             ]
         }
-        with patch("turbodrf.settings.TURBODRF_ROLES", roles_with_choice), \
-             patch("django.conf.settings.TURBODRF_ROLES", roles_with_choice, create=True):
+        with patch("turbodrf.settings.TURBODRF_ROLES", roles_with_choice), patch(
+            "django.conf.settings.TURBODRF_ROLES", roles_with_choice, create=True
+        ):
             request = self.factory.options("/api/choicemodels/")
             request.user = MagicMock()
             request.user.roles = ["admin"]

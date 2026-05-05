@@ -34,12 +34,8 @@ class TestCompiledPathRespectsTenantPredicate(TestCase):
         self.user_a._test_roles = ["manager"]
         self.user_a._test_brokerage = self.brokerage_a
 
-        self.deal_a = Deal.objects.create(
-            title="A's deal", brokerage=self.brokerage_a
-        )
-        self.deal_b = Deal.objects.create(
-            title="B's deal", brokerage=self.brokerage_b
-        )
+        self.deal_a = Deal.objects.create(title="A's deal", brokerage=self.brokerage_a)
+        self.deal_b = Deal.objects.create(title="B's deal", brokerage=self.brokerage_b)
         self.bank_a = BankAccount.objects.create(name="A's bank", deal=self.deal_a)
         self.bank_b = BankAccount.objects.create(name="B's bank", deal=self.deal_b)
         Transaction.objects.create(amount=Decimal("100"), bank_account=self.bank_a)

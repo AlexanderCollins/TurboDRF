@@ -20,8 +20,6 @@ User = get_user_model()
 class MockView:
     """Mock view for testing filter backend."""
 
-    pass
-
 
 class TestORFilterBackend(TestCase):
     """Test OR filter backend functionality."""

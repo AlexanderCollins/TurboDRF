@@ -3,8 +3,6 @@ Tests to improve coverage for turbodrf/mixins.py, turbodrf/utils.py,
 and turbodrf/validation.py.
 """
 
-from unittest.mock import MagicMock, patch
-
 from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.test import TestCase, override_settings
 

@@ -71,9 +71,7 @@ class TestChainedListing(ChainedPredicateTestBase):
 
     def test_filter_by_own_bank_account(self):
         self._login(self.user_a)
-        response = self.client.get(
-            f"/api/transactions/?bank_account={self.bank_a.id}"
-        )
+        response = self.client.get(f"/api/transactions/?bank_account={self.bank_a.id}")
         ids = sorted(t["id"] for t in response.data["data"])
         expected = sorted([self.tx_a1.id, self.tx_a2.id])
         self.assertEqual(ids, expected)
@@ -81,9 +79,7 @@ class TestChainedListing(ChainedPredicateTestBase):
     def test_filter_by_foreign_bank_account_returns_empty(self):
         # User can ASK for B's bank but predicate filters → empty list, NOT 403
         self._login(self.user_a)
-        response = self.client.get(
-            f"/api/transactions/?bank_account={self.bank_b.id}"
-        )
+        response = self.client.get(f"/api/transactions/?bank_account={self.bank_b.id}")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data["data"]), 0)
 
@@ -112,9 +108,7 @@ class TestChainedWrites(ChainedPredicateTestBase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         # Confirm not created
-        self.assertFalse(
-            Transaction.objects.filter(amount=Decimal("5.00")).exists()
-        )
+        self.assertFalse(Transaction.objects.filter(amount=Decimal("5.00")).exists())
 
     def test_create_transaction_on_own_bank(self):
         self._login(self.user_a)

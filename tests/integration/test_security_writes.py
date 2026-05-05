@@ -348,12 +348,8 @@ class TestWritePathSurface(WriteSecurityBase):
     def test_bulk_array_post_rejected_no_partial_writes(self):
         """JSON array POST body — must reject (or 500 in current code)
         without persisting any rows on either tenant."""
-        before_attacker = Deal.objects.filter(
-            brokerage=self.brokerage_attacker
-        ).count()
-        before_victim = Deal.objects.filter(
-            brokerage=self.brokerage_victim
-        ).count()
+        before_attacker = Deal.objects.filter(brokerage=self.brokerage_attacker).count()
+        before_victim = Deal.objects.filter(brokerage=self.brokerage_victim).count()
         r = self.client.post(
             "/api/deals/",
             [
@@ -574,9 +570,7 @@ class TestPayloadShapes(WriteSecurityBase):
                 self.assertNotEqual(r.status_code, 500, getattr(r, "data", None))
                 if r.status_code == 201:
                     d = Deal.objects.get(title=payload["title"])
-                    self.assertEqual(
-                        d.brokerage_id, self.brokerage_attacker.id
-                    )
+                    self.assertEqual(d.brokerage_id, self.brokerage_attacker.id)
                     # Read-only fields can't be honored
                     self.assertNotEqual(d.id, 999999)
                     self.assertNotEqual(d.id, 888888)
@@ -632,9 +626,7 @@ class TestPayloadShapes(WriteSecurityBase):
                 {
                     "id": self.brokerage_attacker.id,
                     "name": "PWNED",
-                    "deals": [
-                        {"id": self.victim_deal.id, "title": "OWNED"}
-                    ],
+                    "deals": [{"id": self.victim_deal.id, "title": "OWNED"}],
                 },
             ),
         ]
@@ -676,9 +668,7 @@ class TestPayloadShapes(WriteSecurityBase):
         ]
         for payload in tx_payloads:
             with self.subTest(tx_payload=str(payload["bank_account"])[:30]):
-                r = self.client.post(
-                    "/api/transactions/", payload, format="json"
-                )
+                r = self.client.post("/api/transactions/", payload, format="json")
                 self.assertNotEqual(r.status_code, 500, getattr(r, "data", None))
                 self.assertNotIn(r.status_code, (200, 201))
 
@@ -800,9 +790,7 @@ class TestPayloadShapes(WriteSecurityBase):
         self.assertNotIn(r.status_code, (200, 201))
 
         # empty body on own
-        r = self.client.patch(
-            f"/api/deals/{self.attacker_deal.id}/", {}, format="json"
-        )
+        r = self.client.patch(f"/api/deals/{self.attacker_deal.id}/", {}, format="json")
         self.assertNotEqual(r.status_code, 500)
         self._victim_unchanged()
 
@@ -843,16 +831,8 @@ class TestPayloadShapes(WriteSecurityBase):
         body, PATCH on collection, DELETE with body — none persist
         cross-tenant rows or 500."""
         envelope_payloads = [
-            {
-                "data": [
-                    {"title": "envelope", "brokerage": self.brokerage_victim.id}
-                ]
-            },
-            {
-                "objects": [
-                    {"title": "obj-env", "brokerage": self.brokerage_victim.id}
-                ]
-            },
+            {"data": [{"title": "envelope", "brokerage": self.brokerage_victim.id}]},
+            {"objects": [{"title": "obj-env", "brokerage": self.brokerage_victim.id}]},
         ]
         for payload in envelope_payloads:
             with self.subTest(envelope=list(payload.keys())[0]):
@@ -1140,9 +1120,7 @@ class TestPayloadShapes(WriteSecurityBase):
         r = self.client.delete(f"/api/deals/{self.attacker_deal.id}/")
         self.assertNotEqual(r.status_code, 500)
         self.assertEqual(
-            BankAccount.objects.filter(
-                deal__brokerage=self.brokerage_victim
-            ).count(),
+            BankAccount.objects.filter(deal__brokerage=self.brokerage_victim).count(),
             before_victim_bank,
         )
         self._victim_unchanged()
@@ -1352,9 +1330,7 @@ class TestSerializerInternals(TestCase):
                 with override_settings(TURBODRF_ROLES=cfg):
                     cache.clear()
                     role = list(cfg.keys())[0]
-                    u = User.objects.create_user(
-                        username=f"perm_{i}", password="x"
-                    )
+                    u = User.objects.create_user(username=f"perm_{i}", password="x")
                     u._test_roles = [role]
                     snap = build_permission_snapshot_static(u, Deal)
                     self.assertNotIn("title", snap.readable_fields)
@@ -1385,9 +1361,7 @@ class TestSerializerInternals(TestCase):
         from tests.test_app.models import CompiledSampleModel
 
         # Extra dict attr
-        SerCls = self._build_serializer(
-            Deal, ["id", "title"], self.attacker_manager
-        )
+        SerCls = self._build_serializer(Deal, ["id", "title"], self.attacker_manager)
         deal = self.attacker_deal
         deal._victim_payload = "VICTIM_SECRET_DEAL"
         out = SerCls(deal, context={"request": None}).data
@@ -1649,22 +1623,18 @@ class TestSerializerInternals(TestCase):
         # Depth limits
         with override_settings(TURBODRF_MAX_NESTING_DEPTH=3):
             cache.clear()
-            permitted = (
-                TurboDRFSerializerFactory._get_permitted_fields_with_snapshot(
-                    Deal,
-                    ["id", "title", "a__b__c__d__e"],
-                    self._make_admin_user("k1adm"),
-                )
+            permitted = TurboDRFSerializerFactory._get_permitted_fields_with_snapshot(
+                Deal,
+                ["id", "title", "a__b__c__d__e"],
+                self._make_admin_user("k1adm"),
             )
             self.assertNotIn("a__b__c__d__e", permitted)
         with override_settings(TURBODRF_MAX_NESTING_DEPTH=0):
             cache.clear()
-            permitted = (
-                TurboDRFSerializerFactory._get_permitted_fields_with_snapshot(
-                    Deal,
-                    ["id", "title", "brokerage__name"],
-                    self.attacker,
-                )
+            permitted = TurboDRFSerializerFactory._get_permitted_fields_with_snapshot(
+                Deal,
+                ["id", "title", "brokerage__name"],
+                self.attacker,
             )
             self.assertNotIn("brokerage__name", permitted)
             self.assertIn("title", permitted)
@@ -1746,9 +1716,7 @@ class TestSerializerInternals(TestCase):
         'passwordhash' (concat)."""
         # NOT stripped
         for path in ("PASSWORD", "user_password", "passwordhash"):
-            self.assertFalse(
-                is_field_path_sensitive(path), f"{path} should NOT match"
-            )
+            self.assertFalse(is_field_path_sensitive(path), f"{path} should NOT match")
 
         # Stripped
         for path in (
@@ -1758,9 +1726,7 @@ class TestSerializerInternals(TestCase):
             "a__token__b",
             "config__secret_key",
         ):
-            self.assertTrue(
-                is_field_path_sensitive(path), f"{path} should match"
-            )
+            self.assertTrue(is_field_path_sensitive(path), f"{path} should match")
 
     # ----- Read-only / write filtering -----------------------------------
 
@@ -1907,9 +1873,7 @@ class TestSerializerInternals(TestCase):
             )
 
         # No request — no-op
-        out = _apply_predicate_writes(
-            Deal, {"title": "x"}, None, None
-        )
+        out = _apply_predicate_writes(Deal, {"title": "x"}, None, None)
         self.assertEqual(out, {"title": "x"})
 
         # End-to-end: assigned_broker = cross-tenant user → 400

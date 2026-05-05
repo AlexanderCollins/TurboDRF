@@ -329,9 +329,7 @@ class TestSugarParser(TestCase):
         self.assertIsInstance(preds[0], Owner)
 
     def test_owner_field_list_multiple_becomes_either(self):
-        tf, preds = parse_config(
-            {"owner_field": ["author", "editor", "reviewer"]}
-        )
+        tf, preds = parse_config({"owner_field": ["author", "editor", "reviewer"]})
         self.assertEqual(len(preds), 1)
         self.assertIsInstance(preds[0], Either)
         self.assertEqual(len(preds[0].predicates), 3)
@@ -501,6 +499,7 @@ class TestPredicateDefensiveBranches(TestCase):
     def test_owner_no_fields_at_all_after_init(self):
         """Edge: Owner('x') with bypass actually checks bypass first."""
         from unittest.mock import Mock
+
         from django.db.models import Q
 
         # User with bypass — returns Q() unconditionally

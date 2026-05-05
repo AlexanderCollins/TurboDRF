@@ -13,7 +13,6 @@ from tests.test_app.models import (
     Transaction,
 )
 from turbodrf.tenancy import (
-    AmbiguousTenantPath,
     find_tenant_path,
     validate_field_path,
 )
@@ -146,9 +145,10 @@ class TestResolveTenancyForModel(TestCase):
         self.assertFalse(autodetected)
 
     def test_visibility_form_with_tenant_extracted(self):
+        import warnings
+
         from turbodrf.predicates import Owner, Tenant
         from turbodrf.tenancy import resolve_tenancy_for_model
-        import warnings
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -221,9 +221,10 @@ class TestPredicatePathValidation(TestCase):
 
     def test_custom_skipped(self):
         """Custom predicates have arbitrary q_funcs — path validation skips."""
+        from django.db.models import Q
+
         from turbodrf.predicates import Custom
         from turbodrf.tenancy import _validate_predicate_paths
-        from django.db.models import Q
 
         # Should not raise
         _validate_predicate_paths(Deal, Custom(lambda r, u: Q()))

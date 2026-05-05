@@ -265,9 +265,9 @@ class TestTenantFilterAttacks(_BaseFixture):
             with self.subTest(u=u):
                 r = self.client.get(u)
                 self.assertNotEqual(r.status_code, 200)
-                body = (
-                    getattr(r, "content", b"") or b""
-                ).decode("utf-8", errors="ignore")
+                body = (getattr(r, "content", b"") or b"").decode(
+                    "utf-8", errors="ignore"
+                )
                 for secret in SECRETS:
                     self.assertNotIn(secret, body)
 
@@ -357,11 +357,15 @@ class TestOrFilterCombinations(_BaseFixture):
     def test_or_filter_combinations_no_leak(self):
         for q in (
             "&".join(f"id_or={i}" for i in range(1, 11)),
-            (f"brokerage_or={self.brokerage_attacker.id}"
-             f"&brokerage_or={self.brokerage_victim.id}"),
+            (
+                f"brokerage_or={self.brokerage_attacker.id}"
+                f"&brokerage_or={self.brokerage_victim.id}"
+            ),
             "title_or=VICTIM_SECRET_DEAL&title_or=ATTACKER_DEAL",
-            (f"assigned_broker_or={self.attacker.id}"
-             f"&assigned_broker_or={self.victim.id}"),
+            (
+                f"assigned_broker_or={self.attacker.id}"
+                f"&assigned_broker_or={self.victim.id}"
+            ),
         ):
             with self.subTest(q=q[:40]):
                 r = self.client.get(f"/api/deals/?{q}")
@@ -399,14 +403,16 @@ class TestBooleanNullExploits(_BaseFixture):
         """`?<fk>__isnull=<truthy_str>` must not surface secrets even if
         the ORM raises (which currently 500s — open finding)."""
         for q in (
-            "id__isnull=1", "id__isnull=yes", "id__isnull=t",
-            "assigned_broker__isnull=1", "assigned_broker__isnull=True",
+            "id__isnull=1",
+            "id__isnull=yes",
+            "id__isnull=t",
+            "assigned_broker__isnull=1",
+            "assigned_broker__isnull=True",
         ):
             with self.subTest(q=q):
                 r = self.client.get(f"/api/deals/?{q}")
                 blob = (
-                    str(getattr(r, "data", "")) + " "
-                    + str(getattr(r, "content", b""))
+                    str(getattr(r, "data", "")) + " " + str(getattr(r, "content", b""))
                 )
                 for secret in SECRETS:
                     self.assertNotIn(secret, blob)
@@ -485,28 +491,44 @@ class _OrderingFixture(_BaseFixture):
         super().setUpTestData()
 
         # Extra attacker deals so ordering has rows to permute.
-        Deal.objects.bulk_create([
-            Deal(title=f"ATTACKER_DEAL_{i}",
-                 brokerage=cls.brokerage_attacker,
-                 assigned_broker=cls.attacker)
-            for i in range(2, 4)
-        ])
+        Deal.objects.bulk_create(
+            [
+                Deal(
+                    title=f"ATTACKER_DEAL_{i}",
+                    brokerage=cls.brokerage_attacker,
+                    assigned_broker=cls.attacker,
+                )
+                for i in range(2, 4)
+            ]
+        )
 
         # SampleModel rows for inference probes. Viewer has no read on
         # `secret_field` or `price`; ordering by them must be silently
         # dropped to avoid binary-search inference.
         cls._related = RelatedModel.objects.create(name="r")
         SampleModel.objects.create(
-            title="row_zzz", description="d", price=Decimal("1.00"),
-            quantity=10, related=cls._related, secret_field="ZZZ",
+            title="row_zzz",
+            description="d",
+            price=Decimal("1.00"),
+            quantity=10,
+            related=cls._related,
+            secret_field="ZZZ",
         )
         SampleModel.objects.create(
-            title="row_aaa", description="d", price=Decimal("999.00"),
-            quantity=20, related=cls._related, secret_field="AAA",
+            title="row_aaa",
+            description="d",
+            price=Decimal("999.00"),
+            quantity=20,
+            related=cls._related,
+            secret_field="AAA",
         )
         SampleModel.objects.create(
-            title="row_mmm", description="d", price=Decimal("50.00"),
-            quantity=15, related=cls._related, secret_field="MMM",
+            title="row_mmm",
+            description="d",
+            price=Decimal("50.00"),
+            quantity=15,
+            related=cls._related,
+            secret_field="MMM",
         )
 
     def setUp(self):
@@ -531,20 +553,22 @@ class TestOrderingHiddenAndSensitive(_OrderingFixture):
     def test_hidden_fields_no_perturbation(self):
         """Sweep: ordering by hidden fields must equal default order."""
         r_default = self.viewer_client.get("/api/samplemodels/")
-        for f in ("secret_field", "-secret_field", "price", "-price",
-                  "price__abs"):
+        for f in ("secret_field", "-secret_field", "price", "-price", "price__abs"):
             with self.subTest(f=f):
                 r = self.viewer_client.get(f"/api/samplemodels/?ordering={f}")
                 assert_no_secrets(self, r)
                 self.assertEqual(
-                    get_ids(r_default), get_ids(r),
+                    get_ids(r_default),
+                    get_ids(r),
                     f"VULN: ordering by hidden {f!r} perturbed row order",
                 )
 
     def test_sensitive_field_names_dropped(self):
         """Deny-listed sensitive field names — must not surface anything."""
         for f in (
-            "password", "token", "session_key",
+            "password",
+            "token",
+            "session_key",
             "assigned_broker__password",
             "-assigned_broker__date_joined",
             "assigned_broker__last_login",
@@ -562,9 +586,7 @@ class TestOrderingMultiFieldAndSyntax(_OrderingFixture):
     def test_mixed_hidden_visible_keeps_default(self):
         """secret_field is dropped → effective ordering is just `title`."""
         r_default = self.viewer_client.get("/api/samplemodels/?ordering=title")
-        r_mix = self.viewer_client.get(
-            "/api/samplemodels/?ordering=secret_field,title"
-        )
+        r_mix = self.viewer_client.get("/api/samplemodels/?ordering=secret_field,title")
         self.assertEqual(get_ids(r_default), get_ids(r_mix))
 
     def test_csv_separator_variants(self):
@@ -595,13 +617,29 @@ class TestOrderingMultiFieldAndSyntax(_OrderingFixture):
         """Spaces, +/-, dots, wildcards, dunder, F(), backticks, SQL
         injection shapes, null bytes, newline, lookup suffix in ordering."""
         for o in (
-            "%20title", "title%20", "%2Btitle", "--title",
-            "null", "undefined", "*", "__all__", "...",
-            "%3F", "F(title)", "%60title%60",
-            "title%3B%20DROP%20TABLE%20deals--", "-",
-            "__class__", "_meta", "1234567",
-            "ti%00tle", "title%0Aprice", "title__icontains",
-            ",", "", "id%00brokerage",
+            "%20title",
+            "title%20",
+            "%2Btitle",
+            "--title",
+            "null",
+            "undefined",
+            "*",
+            "__all__",
+            "...",
+            "%3F",
+            "F(title)",
+            "%60title%60",
+            "title%3B%20DROP%20TABLE%20deals--",
+            "-",
+            "__class__",
+            "_meta",
+            "1234567",
+            "ti%00tle",
+            "title%0Aprice",
+            "title__icontains",
+            ",",
+            "",
+            "id%00brokerage",
         ):
             with self.subTest(o=o):
                 r = self.client.get(f"/api/deals/?ordering={o}")
@@ -640,9 +678,7 @@ class TestOrderingCrossModelAndCombo(_OrderingFixture):
     def test_secret_ordering_with_pagination_and_search(self):
         """page=1&page_size=1 + hidden ordering must not change which row
         appears at position 1."""
-        r_default = self.viewer_client.get(
-            "/api/samplemodels/?page=1&page_size=1"
-        )
+        r_default = self.viewer_client.get("/api/samplemodels/?page=1&page_size=1")
         r_secret = self.viewer_client.get(
             "/api/samplemodels/?page=1&page_size=1&ordering=secret_field"
         )
@@ -655,8 +691,7 @@ class TestOrderingCrossModelAndCombo(_OrderingFixture):
 
     def test_filter_and_order_same_hidden_field(self):
         r = self.viewer_client.get(
-            "/api/samplemodels/"
-            "?secret_field__icontains=A&ordering=secret_field"
+            "/api/samplemodels/" "?secret_field__icontains=A&ordering=secret_field"
         )
         assert_no_secrets(self, r)
 
@@ -671,9 +706,7 @@ class TestOrderingCrossModelAndCombo(_OrderingFixture):
         admin_client = APIClient()
         admin_client.force_authenticate(user=admin)
         r_admin = admin_client.get("/api/samplemodels/?ordering=secret_field")
-        r_viewer = self.viewer_client.get(
-            "/api/samplemodels/?ordering=secret_field"
-        )
+        r_viewer = self.viewer_client.get("/api/samplemodels/?ordering=secret_field")
         assert_no_secrets(self, r_admin)
         assert_no_secrets(self, r_viewer)
         self.assertEqual(set(get_ids(r_admin)), set(get_ids(r_viewer)))
@@ -715,38 +748,59 @@ class _PaginationFixture(_BaseFixture):
     def setUpTestData(cls):
         super().setUpTestData()
 
-        cls.victim_extras = list(Deal.objects.bulk_create([
-            Deal(title=f"VICTIM_EXTRA_{i}",
-                 brokerage=cls.brokerage_victim,
-                 assigned_broker=cls.victim)
-            for i in range(7)
-        ]))
+        cls.victim_extras = list(
+            Deal.objects.bulk_create(
+                [
+                    Deal(
+                        title=f"VICTIM_EXTRA_{i}",
+                        brokerage=cls.brokerage_victim,
+                        assigned_broker=cls.victim,
+                    )
+                    for i in range(7)
+                ]
+            )
+        )
 
         # 25 attacker deals total (1 from base + 24 here).
-        new_attacker = list(Deal.objects.bulk_create([
-            Deal(title=f"ATTACKER_DEAL_{i}",
-                 brokerage=cls.brokerage_attacker,
-                 assigned_broker=cls.attacker)
-            for i in range(24)
-        ]))
+        new_attacker = list(
+            Deal.objects.bulk_create(
+                [
+                    Deal(
+                        title=f"ATTACKER_DEAL_{i}",
+                        brokerage=cls.brokerage_attacker,
+                        assigned_broker=cls.attacker,
+                    )
+                    for i in range(24)
+                ]
+            )
+        )
         cls.attacker_deals = [cls.attacker_deal] + new_attacker
 
         cls._related = RelatedModel.objects.create(name="r", description="d")
-        SampleModel.objects.bulk_create([
-            SampleModel(title=f"PublicSample{i}",
-                        price=Decimal("1.00"), quantity=i,
-                        related=cls._related)
-            for i in range(30)
-        ])
-        CompiledSampleModel.objects.bulk_create([
-            CompiledSampleModel(title=f"CompiledSample{i}",
-                                price=Decimal("1.00"),
-                                related=cls._related)
-            for i in range(30)
-        ])
-        CompiledArticle.objects.bulk_create([
-            CompiledArticle(title=f"CompiledArticle{i}") for i in range(15)
-        ])
+        SampleModel.objects.bulk_create(
+            [
+                SampleModel(
+                    title=f"PublicSample{i}",
+                    price=Decimal("1.00"),
+                    quantity=i,
+                    related=cls._related,
+                )
+                for i in range(30)
+            ]
+        )
+        CompiledSampleModel.objects.bulk_create(
+            [
+                CompiledSampleModel(
+                    title=f"CompiledSample{i}",
+                    price=Decimal("1.00"),
+                    related=cls._related,
+                )
+                for i in range(30)
+            ]
+        )
+        CompiledArticle.objects.bulk_create(
+            [CompiledArticle(title=f"CompiledArticle{i}") for i in range(15)]
+        )
 
 
 class TestPageAndPageSizeAbuse(_PaginationFixture):
@@ -754,9 +808,23 @@ class TestPageAndPageSizeAbuse(_PaginationFixture):
 
     def test_page_garbage_values(self):
         for v in (
-            "0", "-1", "99", "99999999", "null", "true", "undefined", "",
-            "1.5", "1e10", "NaN", "Infinity", "01", "%2B1", "-0",
-            "1.5", "1&page=99999",  # repeated page
+            "0",
+            "-1",
+            "99",
+            "99999999",
+            "null",
+            "true",
+            "undefined",
+            "",
+            "1.5",
+            "1e10",
+            "NaN",
+            "Infinity",
+            "01",
+            "%2B1",
+            "-0",
+            "1.5",
+            "1&page=99999",  # repeated page
         ):
             with self.subTest(v=v):
                 r = self.client.get(f"/api/deals/?page={v}")
@@ -768,10 +836,22 @@ class TestPageAndPageSizeAbuse(_PaginationFixture):
         """Garbage values must not 500; values > max_page_size (100) must
         clamp; victim row must never appear regardless."""
         for v in (
-            "0", "-1", "999999", "", "1.5", "null", "true",
-            "1e10", "abc", "Infinity", "NaN", "999999999",
+            "0",
+            "-1",
+            "999999",
+            "",
+            "1.5",
+            "null",
+            "true",
+            "1e10",
+            "abc",
+            "Infinity",
+            "NaN",
+            "999999999",
             "%EF%BC%91",  # full-width 1
-            "100", "101", "10&page_size=999999",  # clamp probes
+            "100",
+            "101",
+            "10&page_size=999999",  # clamp probes
         ):
             with self.subTest(v=v):
                 r = self.client.get(f"/api/deals/?page_size={v}")
@@ -829,8 +909,9 @@ class TestPaginationCounters(_PaginationFixture):
         )
         # Repeated identical calls produce identical counts.
         counts = [
-            get_pagination(self.client.get("/api/deals/?page_size=100"))
-            .get("total_items")
+            get_pagination(self.client.get("/api/deals/?page_size=100")).get(
+                "total_items"
+            )
             for _ in range(3)
         ]
         self.assertEqual(set(counts), {25})
@@ -861,8 +942,10 @@ class TestPaginationCounters(_PaginationFixture):
 
     def test_chained_tenant_count_excludes_victim(self):
         """Transactions / BankAccounts: attacker has 1 of each."""
-        for url in ("/api/transactions/?page_size=100",
-                    "/api/bankaccounts/?page_size=100"):
+        for url in (
+            "/api/transactions/?page_size=100",
+            "/api/bankaccounts/?page_size=100",
+        ):
             with self.subTest(url=url):
                 r = self.client.get(url)
                 assert_no_secrets(self, r)
@@ -888,8 +971,7 @@ class TestNextPreviousLinks(_PaginationFixture):
         self.assertIsNone(get_pagination(r1).get("previous"))
         self.assertIsNone(get_pagination(r3).get("next"))
         nxt = (get_pagination(r1).get("next") or "").lower()
-        for forbidden in ("authorization", "bearer", "token", "sessionid",
-                          "csrftoken"):
+        for forbidden in ("authorization", "bearer", "token", "sessionid", "csrftoken"):
             self.assertNotIn(forbidden, nxt)
 
         r = self.client.get("/api/deals/?page=1&page_size=5")
@@ -1118,9 +1200,7 @@ class TestSearchPayloads(_BaseFixture):
                     self.fail(f"5xx on payload: {r.status_code}")
                 assert_no_secrets(self, r)
 
-        r = self.client.get(
-            "/api/deals/?search=ATTACKER&search=VICTIM_SECRET_DEAL"
-        )
+        r = self.client.get("/api/deals/?search=ATTACKER&search=VICTIM_SECRET_DEAL")
         assert_no_secrets(self, r)
         victim_id_absent(self, r, self.victim_deal.id)
 
@@ -1228,8 +1308,10 @@ class TestSearchCrossCutting(_BaseFixture, _SearchableFieldsInjector):
     def test_disable_or_default_permissions_tenant_holds(self):
         prior = self._inject(Deal, ["title"])
         try:
-            for s in ({"TURBODRF_DISABLE_PERMISSIONS": True},
-                      {"TURBODRF_USE_DEFAULT_PERMISSIONS": True}):
+            for s in (
+                {"TURBODRF_DISABLE_PERMISSIONS": True},
+                {"TURBODRF_USE_DEFAULT_PERMISSIONS": True},
+            ):
                 with self.subTest(s=s), override_settings(**s):
                     r = self.client.get("/api/deals/?search=VICTIM_SECRET_DEAL")
                     if r.status_code >= 500:
@@ -1283,15 +1365,19 @@ class TestSearchCacheAndPathological(_BaseFixture, _SearchableFieldsInjector):
         """Deep / broken / non-string / circular / sensitive-at-segment
         searchable_fields must not 500."""
         cases = [
-            (Transaction,
-             ["bank_account__deal__brokerage__name__icontains__value"],
-             "/api/transactions/?search=Victim"),
-            (Deal, ["title__nonexistent_lookup"],
-             "/api/deals/?search=VICTIM"),
+            (
+                Transaction,
+                ["bank_account__deal__brokerage__name__icontains__value"],
+                "/api/transactions/?search=Victim",
+            ),
+            (Deal, ["title__nonexistent_lookup"], "/api/deals/?search=VICTIM"),
             (Deal, [123], "/api/deals/?search=VICTIM"),
             (Deal, ["password__hash__value"], "/api/deals/?search=secret"),
-            (Deal, ["assigned_broker__assigned_deals__title"],
-             "/api/deals/?search=VICTIM"),
+            (
+                Deal,
+                ["assigned_broker__assigned_deals__title"],
+                "/api/deals/?search=VICTIM",
+            ),
         ]
         for model, fields, url in cases:
             with self.subTest(fields=fields):
@@ -1361,12 +1447,21 @@ class TestLargePayloads(_BaseFixture):
 
     def test_post_body_many_keys_or_huge_array(self):
         for body in (
-            {**{f"k_{i}": i for i in range(1000)},
-             "title": "x", "brokerage": self.brokerage_attacker.id},
-            {"title": "x", "brokerage": self.brokerage_attacker.id,
-             "description": "B" * 1_000_000},
-            {"title": "x", "brokerage": self.brokerage_attacker.id,
-             "tags": list(range(100_000))},
+            {
+                **{f"k_{i}": i for i in range(1000)},
+                "title": "x",
+                "brokerage": self.brokerage_attacker.id,
+            },
+            {
+                "title": "x",
+                "brokerage": self.brokerage_attacker.id,
+                "description": "B" * 1_000_000,
+            },
+            {
+                "title": "x",
+                "brokerage": self.brokerage_attacker.id,
+                "tags": list(range(100_000)),
+            },
         ):
             with self.subTest(keys=len(body)):
                 r, t = time_request(
@@ -1384,8 +1479,10 @@ class TestLargePayloads(_BaseFixture):
         ):
             with self.subTest(shape=raw[:5]):
                 r, t = time_request(
-                    self.client.post, "/api/deals/",
-                    data=raw, content_type="application/json",
+                    self.client.post,
+                    "/api/deals/",
+                    data=raw,
+                    content_type="application/json",
                 )
                 assert_no_secrets(self, r)
                 self.assertLess(t, DOS_BUDGET)
@@ -1434,13 +1531,16 @@ class TestFilterAndSearchDos(_BaseFixture):
             "/api/deals/?title=x\x00\x00\x00",
             "/api/deals/?metadata__path__key=x",
             "/api/deals/?a__b__c__d__e__f__g__h__i__j=x",
-            "/api/transactions/?" + "&".join([
-                "bank_account__deal__brokerage__name__icontains=Victim",
-                "bank_account__deal__title__icontains=SECRET",
-                "bank_account__deal__assigned_broker__username=victim",
-                "bank_account__name__icontains=BANK",
-                "amount__gt=0",
-            ]),
+            "/api/transactions/?"
+            + "&".join(
+                [
+                    "bank_account__deal__brokerage__name__icontains=Victim",
+                    "bank_account__deal__title__icontains=SECRET",
+                    "bank_account__deal__assigned_broker__username=victim",
+                    "bank_account__name__icontains=BANK",
+                    "amount__gt=0",
+                ]
+            ),
         ]
         for url in cases:
             with self.subTest(url=url[:50]):
@@ -1457,9 +1557,7 @@ class TestFilterAndSearchDos(_BaseFixture):
             " ".join(f"-t{i}" for i in range(100)),
         ):
             with self.subTest(s=s[:40]):
-                r, t = time_request(
-                    self.client.get, f"/api/deals/?search={s}"
-                )
+                r, t = time_request(self.client.get, f"/api/deals/?search={s}")
                 assert_no_secrets(self, r)
                 self.assertLess(t, DOS_BUDGET)
 
@@ -1487,12 +1585,16 @@ class TestPaginationAndOrderingDos(_BaseFixture):
                     self.assertLessEqual(len(rows), 100)
 
     def test_pagination_with_1000_attacker_rows(self):
-        Deal.objects.bulk_create([
-            Deal(title=f"attacker_{i}",
-                 brokerage=self.brokerage_attacker,
-                 assigned_broker=self.attacker)
-            for i in range(1000)
-        ])
+        Deal.objects.bulk_create(
+            [
+                Deal(
+                    title=f"attacker_{i}",
+                    brokerage=self.brokerage_attacker,
+                    assigned_broker=self.attacker,
+                )
+                for i in range(1000)
+            ]
+        )
         r, t = time_request(self.client.get, "/api/deals/?page_size=100")
         assert_no_secrets(self, r)
         self.assertLess(t, DOS_BUDGET)
@@ -1533,9 +1635,7 @@ class TestPaginationAndOrderingDos(_BaseFixture):
             ",".join(f"f{i}" for i in range(50)),
         ):
             with self.subTest(o=o):
-                r, t = time_request(
-                    self.client.get, f"/api/deals/?ordering={o}"
-                )
+                r, t = time_request(self.client.get, f"/api/deals/?ordering={o}")
                 assert_no_secrets(self, r)
                 self.assertLess(t, NORMAL_BUDGET)
 
@@ -1556,24 +1656,29 @@ class TestRecursionAndMemory(_BaseFixture):
 
     def test_post_giant_flat_dict_or_dup_keys(self):
         for body in (
-            {**{f"k_{i}": i for i in range(10_000)},
-             "title": "x", "brokerage": self.brokerage_attacker.id},
+            {
+                **{f"k_{i}": i for i in range(10_000)},
+                "title": "x",
+                "brokerage": self.brokerage_attacker.id,
+            },
         ):
-            r, t = time_request(
-                self.client.post, "/api/deals/", body, format="json"
-            )
+            r, t = time_request(self.client.post, "/api/deals/", body, format="json")
             assert_no_secrets(self, r)
             self.assertLess(t, DOS_BUDGET)
 
         kvs = ",".join(['"a":1'] * 5000)
         raw = (
-            "{" + kvs
+            "{"
+            + kvs
             + ',"title":"x","brokerage":'
-            + str(self.brokerage_attacker.id) + "}"
+            + str(self.brokerage_attacker.id)
+            + "}"
         )
         r, t = time_request(
-            self.client.post, "/api/deals/",
-            data=raw, content_type="application/json",
+            self.client.post,
+            "/api/deals/",
+            data=raw,
+            content_type="application/json",
         )
         assert_no_secrets(self, r)
         self.assertLess(t, DOS_BUDGET)
@@ -1582,12 +1687,19 @@ class TestRecursionAndMemory(_BaseFixture):
         """fields= many names / 100KB blob in body / wide-row response /
         very long per-row strings."""
         rel = RelatedModel.objects.create(name="r")
-        SampleModel.objects.bulk_create([
-            SampleModel(title=f"t{i}", description="d" * 1000,
-                        price=Decimal("1.00"), quantity=1,
-                        related=rel, secret_field="x")
-            for i in range(50)
-        ])
+        SampleModel.objects.bulk_create(
+            [
+                SampleModel(
+                    title=f"t{i}",
+                    description="d" * 1000,
+                    price=Decimal("1.00"),
+                    quantity=1,
+                    related=rel,
+                    secret_field="x",
+                )
+                for i in range(50)
+            ]
+        )
         Deal.objects.create(
             title="LONG_" + "x" * 50_000,
             brokerage=self.brokerage_attacker,
@@ -1616,11 +1728,17 @@ class TestRecursionAndMemory(_BaseFixture):
     def test_list_query_count_bounded(self):
         """N+1 detection: list endpoint must not balloon query count."""
         from django.db import connection as conn
-        Deal.objects.bulk_create([
-            Deal(title=f"t{i}", brokerage=self.brokerage_attacker,
-                 assigned_broker=self.attacker)
-            for i in range(50)
-        ])
+
+        Deal.objects.bulk_create(
+            [
+                Deal(
+                    title=f"t{i}",
+                    brokerage=self.brokerage_attacker,
+                    assigned_broker=self.attacker,
+                )
+                for i in range(50)
+            ]
+        )
         before = len(conn.queries_log)
         with self.settings(DEBUG=True):
             r = self.client.get("/api/deals/?page_size=100")
@@ -1628,15 +1746,17 @@ class TestRecursionAndMemory(_BaseFixture):
         assert_no_secrets(self, r)
         self.assertLess(after - before, 200)
 
-        Transaction.objects.bulk_create([
-            Transaction(
-                amount=Decimal("1.00"),
-                bank_account=BankAccount.objects.create(
-                    name=f"bank_{i}", deal=self.attacker_deal
-                ),
-            )
-            for i in range(20)
-        ])
+        Transaction.objects.bulk_create(
+            [
+                Transaction(
+                    amount=Decimal("1.00"),
+                    bank_account=BankAccount.objects.create(
+                        name=f"bank_{i}", deal=self.attacker_deal
+                    ),
+                )
+                for i in range(20)
+            ]
+        )
         before = len(conn.queries_log)
         with self.settings(DEBUG=True):
             r2 = self.client.get("/api/transactions/?page_size=100")

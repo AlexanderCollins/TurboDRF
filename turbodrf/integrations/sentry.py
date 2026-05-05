@@ -78,9 +78,7 @@ def set_request_context(request):
     from turbodrf.predicates import get_user_tenant
 
     tenant = get_user_tenant(user)
-    tenant_id = (
-        getattr(tenant, "pk", tenant) if tenant is not None else None
-    )
+    tenant_id = getattr(tenant, "pk", tenant) if tenant is not None else None
     roles = list(get_user_roles(user))
 
     try:

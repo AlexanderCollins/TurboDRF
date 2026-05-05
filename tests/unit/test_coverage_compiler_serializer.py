@@ -749,8 +749,6 @@ class TestRendererAttributes(TestCase):
 class MockView:
     """Mock view for testing filter backend."""
 
-    pass
-
 
 class TestORFilterBackendInLookup(TestCase):
     """Cover line 113: __in lookup splits value by comma."""

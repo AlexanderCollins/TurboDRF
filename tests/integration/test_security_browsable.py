@@ -21,8 +21,6 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient, APIRequestFactory
 
-from turbodrf.swagger import TurboDRFSwaggerAutoSchema
-
 from tests.test_app.apps import _test_user_brokerages, set_test_brokerage
 from tests.test_app.models import (
     ArticleWithCategories,
@@ -37,6 +35,7 @@ from tests.test_app.models import (
     SampleModel,
     Transaction,
 )
+from turbodrf.swagger import TurboDRFSwaggerAutoSchema
 
 User = get_user_model()
 
@@ -79,9 +78,7 @@ def _assert_clean(testcase, response, label=""):
                 f"[{label}] Secret {s!r} leaked. status={response.status_code}"
             )
     if response.status_code >= 500:
-        testcase.fail(
-            f"[{label}] 5xx ({response.status_code}). body={blob[:600]!r}"
-        )
+        testcase.fail(f"[{label}] 5xx ({response.status_code}). body={blob[:600]!r}")
 
 
 def _no_secret_leak(testcase, response, label=""):
@@ -293,13 +290,17 @@ class CompiledVsDrf(SecBase):
 
     def test_compiled_fields_param_full_combo_no_leak(self):
         for f in [
-            "title", "price", "related_name", "is_active", "display_title",
+            "title",
+            "price",
+            "related_name",
+            "is_active",
+            "display_title",
             "title,price",
             "title,price,related_name,is_active,display_title",
-            "id",                  # non-configured, dropped
-            "secret_field",        # non-configured
+            "id",  # non-configured, dropped
+            "secret_field",  # non-configured
             "related_author_name",  # property accessing FK — would crash
-            "related",             # base FK only
+            "related",  # base FK only
         ]:
             r = self.client.get(f"/api/compiledsamplemodels/?fields={f}")
             self.assert_no_5xx(r, f"compiled fields={f}")
@@ -311,9 +312,7 @@ class CompiledVsDrf(SecBase):
         r_l = self.client.get("/api/compiledarticles/")
         self.assert_no_5xx(r_l, "compiled article m2m")
         self.assert_no_victim_leak(r_l)
-        r_d = self.client.get(
-            f"/api/compiledarticles/{self.compiled_article_a.id}/"
-        )
+        r_d = self.client.get(f"/api/compiledarticles/{self.compiled_article_a.id}/")
         self.assert_no_5xx(r_d, "compiled article detail")
         self.assert_no_victim_leak(r_d)
 
@@ -343,12 +342,12 @@ class RendererEdges(SecBase):
     def test_unicode_filter_inputs_no_leak(self):
         # Emoji, RTL override, ZWJ/ZWSP/BOM, combining diaeresis.
         for q in (
-            "title__icontains=%F0%9F%98%80",     # emoji
-            "search=%E2%80%AE",                    # RTL override
-            "search=%E2%80%8B",                    # ZWSP
-            "search=%E2%80%8D",                    # ZWJ
-            "search=%EF%BB%BF",                    # BOM
-            "title__icontains=VICTIM%CC%88",       # combining diaeresis
+            "title__icontains=%F0%9F%98%80",  # emoji
+            "search=%E2%80%AE",  # RTL override
+            "search=%E2%80%8B",  # ZWSP
+            "search=%E2%80%8D",  # ZWJ
+            "search=%EF%BB%BF",  # BOM
+            "title__icontains=VICTIM%CC%88",  # combining diaeresis
         ):
             r = self.client.get(f"/api/deals/?{q}")
             self.assert_no_5xx(r, q)
@@ -361,8 +360,7 @@ class RendererEdges(SecBase):
             self.assert_no_victim_leak(r)
 
     def test_overflow_integer_in_pk_no_500(self):
-        for val in ("9999999999999999999999999999",
-                    "-9999999999999999999999999999"):
+        for val in ("9999999999999999999999999999", "-9999999999999999999999999999"):
             r = self.client.get(f"/api/deals/{val}/")
             self.assert_no_5xx(r, f"overflow int {val}")
             self.assert_no_victim_leak(r)
@@ -427,14 +425,23 @@ class OptionsMetadata(SecBase):
     def test_options_no_victim_leak_across_endpoints_and_classes_hidden(self):
         # OPTIONS on every router endpoint must not echo victim tokens
         # nor framework internal class names.
-        for ep in ("/api/deals/", "/api/bankaccounts/", "/api/transactions/",
-                   "/api/compiledsamplemodels/", "/api/compiledarticles/"):
+        for ep in (
+            "/api/deals/",
+            "/api/bankaccounts/",
+            "/api/transactions/",
+            "/api/compiledsamplemodels/",
+            "/api/compiledarticles/",
+        ):
             r = self.client.options(ep)
             self.assert_no_5xx(r, f"OPTIONS {ep}")
             self.assert_no_victim_leak(r)
         body = str(getattr(self.client.options("/api/deals/"), "data", ""))
-        for tok in ("TurboDRFViewSet", "TurboDRFSerializerFactory",
-                    "Traceback", "ImproperlyConfigured"):
+        for tok in (
+            "TurboDRFViewSet",
+            "TurboDRFSerializerFactory",
+            "Traceback",
+            "ImproperlyConfigured",
+        ):
             self.assertNotIn(tok, body)
         # Same OPTIONS under text/html negotiation.
         r_html = self.client.options("/api/deals/", HTTP_ACCEPT="text/html")
@@ -477,7 +484,7 @@ class OptionsMetadata(SecBase):
             self.assertEqual(tenancy.get("tenant_field"), "brokerage")
             fields = (r.data.get("model") or {}).get("fields", {}) or {}
             for finfo in fields.values():
-                for c in (finfo.get("choices") or []):
+                for c in finfo.get("choices") or []:
                     self.assertNotIn("VICTIM", str(c))
 
 
@@ -539,14 +546,11 @@ class ErrorMessageInference(SecBase):
             ("}}}}", "raw"),
         ]
         for body, _ in cases:
-            r = self.client.post(
-                "/api/deals/", body, content_type="application/json"
-            )
+            r = self.client.post("/api/deals/", body, content_type="application/json")
             self.assert_no_5xx(r, f"invalid json {body!r}")
             self.assert_no_victim_leak(r)
             content = str(r.content)
-            for tok in ("/Users/", "site-packages", "Traceback",
-                        "msgspec", "orjson"):
+            for tok in ("/Users/", "site-packages", "Traceback", "msgspec", "orjson"):
                 self.assertNotIn(tok, content)
 
         for payload in (
@@ -558,9 +562,14 @@ class ErrorMessageInference(SecBase):
             self.assert_no_5xx(r, f"POST {payload}")
             self.assert_no_victim_leak(r)
             body = str(r.content)
-            for tok in ("TurboDRFViewSet", "TurboDRFSerializerFactory",
-                        "Traceback", "/Users/", "site-packages",
-                        "ImproperlyConfigured"):
+            for tok in (
+                "TurboDRFViewSet",
+                "TurboDRFSerializerFactory",
+                "Traceback",
+                "/Users/",
+                "site-packages",
+                "ImproperlyConfigured",
+            ):
                 self.assertNotIn(tok, body)
 
     def test_cross_tenant_fk_vs_nonexistent_fk_indistinguishable(self):
@@ -586,22 +595,23 @@ class ErrorMessageInference(SecBase):
                     format="json",
                 )
                 body = str(r.content)
-                for tok in ("Traceback", "/Users/", "site-packages",
-                            "_prefill_required_fields", "VICTIM"):
+                for tok in (
+                    "Traceback",
+                    "/Users/",
+                    "site-packages",
+                    "_prefill_required_fields",
+                    "VICTIM",
+                ):
                     self.assertNotIn(tok, body)
             except Exception as e:
                 for tok in VICTIM_TOKENS:
                     self.assertNotIn(tok, str(e))
 
     def test_oversized_and_null_byte_field_no_500(self):
-        r1 = self.client.post(
-            "/api/deals/", {"title": "x" * 100000}, format="json"
-        )
+        r1 = self.client.post("/api/deals/", {"title": "x" * 100000}, format="json")
         self.assert_no_5xx(r1, "huge field")
         self.assert_no_victim_leak(r1)
-        r2 = self.client.post(
-            "/api/deals/", {"title": "a\x00b"}, format="json"
-        )
+        r2 = self.client.post("/api/deals/", {"title": "a\x00b"}, format="json")
         self.assert_no_5xx(r2, "null byte")
         self.assert_no_victim_leak(r2)
 
@@ -703,13 +713,14 @@ class BrowsableHtml(SecBase):
         if r.status_code == 200:
             idx = body.find('name="brokerage"')
             if idx > 0:
-                snippet = body[idx: idx + 4000]
+                snippet = body[idx : idx + 4000]
                 close_idx = snippet.find("</select>")
                 if close_idx > 0:
                     snippet = snippet[:close_idx]
                 opt_count = snippet.count("<option")
                 self.assertLess(
-                    opt_count, 3,
+                    opt_count,
+                    3,
                     f"inference: {opt_count} <option> tags reveals "
                     f">=3 brokerages exist",
                 )
@@ -718,12 +729,12 @@ class BrowsableHtml(SecBase):
         # Deal, BankAccount (2-hop), Transaction (3-hop) — each detail must
         # 404 without the victim token in the response.
         for path, tok in (
-            (f"/api/deals/{self.victim_deal.id}/?format=api",
-             "VICTIM_SECRET_DEAL"),
-            (f"/api/bankaccounts/{self.victim_bank.id}/?format=api",
-             "VICTIM_BANK_ACCOUNT"),
-            (f"/api/transactions/{self.victim_tx.id}/?format=api",
-             "999999.99"),
+            (f"/api/deals/{self.victim_deal.id}/?format=api", "VICTIM_SECRET_DEAL"),
+            (
+                f"/api/bankaccounts/{self.victim_bank.id}/?format=api",
+                "VICTIM_BANK_ACCOUNT",
+            ),
+            (f"/api/transactions/{self.victim_tx.id}/?format=api", "999999.99"),
         ):
             r = self.client.get(path)
             self.assertEqual(r.status_code, 404, path)
@@ -733,9 +744,7 @@ class BrowsableHtml(SecBase):
     def test_own_deal_detail_html_no_filters_panel_leak(self):
         # Own-deal detail must NOT echo Victim Co / victim username; the
         # list filters panel must not surface secret_field.
-        r_d = self.client.get(
-            f"/api/deals/{self.attacker_deal.id}/?format=api"
-        )
+        r_d = self.client.get(f"/api/deals/{self.attacker_deal.id}/?format=api")
         self.assert_no_5xx(r_d, "own deal detail HTML")
         self.assert_no_victim_data_leak(r_d, "own deal HTML")
         body_d = r_d.content.decode("utf-8", errors="ignore")
@@ -773,9 +782,11 @@ class BrowsableHtml(SecBase):
         # the POST itself must be rejected by Layer-3 write check.
         r = self.client.post(
             "/api/deals/",
-            data={"title": "ATTEMPT",
-                  "brokerage": self.brokerage_victim.id,
-                  "assigned_broker": self.victim.id},
+            data={
+                "title": "ATTEMPT",
+                "brokerage": self.brokerage_victim.id,
+                "assigned_broker": self.victim.id,
+            },
             format="json",
         )
         self.assertNotEqual(r.status_code, 201)
@@ -786,10 +797,14 @@ class BrowsableHtml(SecBase):
         # Cross-cutting matrix: search/ordering/brokerage-filter on the
         # browsable endpoint, plus content-negotiation Accept variants on
         # the JSON list. None must leak the victim deal title.
-        cases = [f"format=api&{q}" for q in (
-            "search=VICTIM", "ordering=-id",
-            f"brokerage={self.brokerage_victim.id}",
-        )]
+        cases = [
+            f"format=api&{q}"
+            for q in (
+                "search=VICTIM",
+                "ordering=-id",
+                f"brokerage={self.brokerage_victim.id}",
+            )
+        ]
         for q in cases:
             r = self.client.get(f"/api/deals/?{q}")
             self.assert_no_5xx(r, f"browsable {q}")
@@ -862,21 +877,27 @@ class XssReflection(SecBase):
         # Canonical script-tag also gets the nosniff header.
         r0 = self.admin_client.post(
             "/api/samplemodels/",
-            {"title": "<script>alert('XSS_T1')</script>", "description": "x",
-             "price": "1.00", "quantity": 1, "related": self.related.pk},
+            {
+                "title": "<script>alert('XSS_T1')</script>",
+                "description": "x",
+                "price": "1.00",
+                "quantity": 1,
+                "related": self.related.pk,
+            },
             format="json",
         )
-        self.assertEqual(
-            r0.get("X-Content-Type-Options", "").lower(), "nosniff"
-        )
+        self.assertEqual(r0.get("X-Content-Type-Options", "").lower(), "nosniff")
 
     def test_pre_encoded_payload_is_not_decoded_unsafely(self):
         encoded = "&lt;script&gt;alert(1)&lt;/script&gt;"
         r = self.admin_client.post(
             "/api/samplemodels/",
             {
-                "title": encoded, "description": "x",
-                "price": "1.00", "quantity": 1, "related": self.related.pk,
+                "title": encoded,
+                "description": "x",
+                "price": "1.00",
+                "quantity": 1,
+                "related": self.related.pk,
             },
             format="json",
         )
@@ -887,17 +908,17 @@ class XssReflection(SecBase):
 
     def test_xss_payload_in_browsable_html_is_escaped(self):
         # Detail and list HTML.
-        for path in (f"/api/samplemodels/{self.xss_sample.pk}/?format=api",
-                     "/api/samplemodels/?format=api"):
+        for path in (
+            f"/api/samplemodels/{self.xss_sample.pk}/?format=api",
+            "/api/samplemodels/?format=api",
+        ):
             r = self.admin_client.get(path)
             self.assertEqual(r.status_code, 200)
             body = r.content.decode("utf-8", errors="replace")
             self.assertNotIn("<script>alert('XSSTITLE')</script>", body)
             self.assertNotIn("<img src=x onerror=alert('XSSDESC')>", body)
         # Detail HTML must surface an escaped form somewhere.
-        r = self.admin_client.get(
-            f"/api/samplemodels/{self.xss_sample.pk}/?format=api"
-        )
+        r = self.admin_client.get(f"/api/samplemodels/{self.xss_sample.pk}/?format=api")
         body = r.content.decode("utf-8", errors="replace")
         self.assertTrue(
             "&lt;script&gt;" in body or "\\u003c" in body,
@@ -937,9 +958,7 @@ class XssReflection(SecBase):
             r3.content.decode("utf-8", errors="replace"),
         )
 
-        r4 = self.client.get(
-            "/api/samplemodels/<script>alert(1)</script>/"
-        )
+        r4 = self.client.get("/api/samplemodels/<script>alert(1)</script>/")
         if r4.status_code in (404, 400):
             self.assertNotIn(
                 "<script>alert(1)</script>",
@@ -957,7 +976,9 @@ class BrowserHeaders(SecBase):
     Referrer-Policy on every response. Verify they land on every shape."""
 
     SECURITY_HEADERS = (
-        "X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy",
+        "X-Content-Type-Options",
+        "X-Frame-Options",
+        "Referrer-Policy",
     )
 
     def _assert_all(self, r, label):
@@ -973,15 +994,22 @@ class BrowserHeaders(SecBase):
         cases = []
 
         cases.append(("list", self.client.get("/api/samplemodels/")))
-        cases.append((
-            "detail",
-            self.client.get(f"/api/samplemodels/{self.xss_sample.pk}/"),
-        ))
+        cases.append(
+            (
+                "detail",
+                self.client.get(f"/api/samplemodels/{self.xss_sample.pk}/"),
+            )
+        )
 
         r_201 = self.admin_client.post(
             "/api/samplemodels/",
-            {"title": "ok", "description": "x", "price": "1.00",
-             "quantity": 1, "related": self.related.pk},
+            {
+                "title": "ok",
+                "description": "x",
+                "price": "1.00",
+                "quantity": 1,
+                "related": self.related.pk,
+            },
             format="json",
         )
         self.assertIn(r_201.status_code, (200, 201))
@@ -1002,17 +1030,21 @@ class BrowserHeaders(SecBase):
             cases.append(("405", r_405))
 
         cases.append(("options", self.client.options("/api/samplemodels/")))
-        cases.append((
-            "browsable-html",
-            self.client.get("/api/samplemodels/?format=api"),
-        ))
+        cases.append(
+            (
+                "browsable-html",
+                self.client.get("/api/samplemodels/?format=api"),
+            )
+        )
 
         anon = APIClient()
         cases.append(("anon-get", anon.get("/api/samplemodels/")))
-        cases.append((
-            "anon-browsable",
-            anon.get("/api/samplemodels/?format=api"),
-        ))
+        cases.append(
+            (
+                "anon-browsable",
+                anon.get("/api/samplemodels/?format=api"),
+            )
+        )
 
         r_sw = self.client.get("/swagger/")
         if not _is_5xx(r_sw):
@@ -1027,8 +1059,7 @@ class BrowserHeaders(SecBase):
         csp = self.get_header(r, "Content-Security-Policy") or ""
         xfo = self.get_header(r, "X-Frame-Options") or ""
         self.assertTrue(
-            "frame-ancestors" in csp.lower()
-            or xfo.upper() in ("DENY", "SAMEORIGIN"),
+            "frame-ancestors" in csp.lower() or xfo.upper() in ("DENY", "SAMEORIGIN"),
         )
 
     def test_referrer_policy_is_safe(self):
@@ -1039,9 +1070,13 @@ class BrowserHeaders(SecBase):
             if rp:
                 self.assertIn(
                     rp,
-                    ("same-origin", "strict-origin",
-                     "strict-origin-when-cross-origin", "no-referrer",
-                     "no-referrer-when-downgrade"),
+                    (
+                        "same-origin",
+                        "strict-origin",
+                        "strict-origin-when-cross-origin",
+                        "no-referrer",
+                        "no-referrer-when-downgrade",
+                    ),
                 )
 
     def test_json_response_starts_with_application_json(self):
@@ -1059,9 +1094,12 @@ class BrowserHeaders(SecBase):
 
 class Cors(SecBase):
     def test_no_acao_on_cross_origin_get(self):
-        for origin in ("http://evil.example", "null",
-                       "http://attacker.example, http://evil.example",
-                       "http://evil.example/<script>"):
+        for origin in (
+            "http://evil.example",
+            "null",
+            "http://attacker.example, http://evil.example",
+            "http://evil.example/<script>",
+        ):
             r = self.client.get("/api/samplemodels/", HTTP_ORIGIN=origin)
             self.assertIsNone(self.get_header(r, "Access-Control-Allow-Origin"))
             for k, v in r.items():
@@ -1097,8 +1135,13 @@ class Cors(SecBase):
     def test_cross_origin_post_no_acao(self):
         r = self.admin_client.post(
             "/api/samplemodels/",
-            {"title": "ok", "description": "x", "price": "1.00",
-             "quantity": 1, "related": self.related.pk},
+            {
+                "title": "ok",
+                "description": "x",
+                "price": "1.00",
+                "quantity": 1,
+                "related": self.related.pk,
+            },
             format="json",
             HTTP_ORIGIN="http://evil.example",
         )
@@ -1132,7 +1175,7 @@ class CsrfCookies(SecBase):
         r = c.post(
             "/api/samplemodels/",
             data='{"title":"x","description":"x","price":"1","quantity":1,'
-                 f'"related":{self.related.pk}}}',
+            f'"related":{self.related.pk}}}',
             content_type="application/json",
         )
         self.assertIn(r.status_code, (401, 403))
@@ -1175,9 +1218,7 @@ class CsrfCookies(SecBase):
             self.skipTest("No csrftoken cookie in browsable API")
         self.assertTrue(csrf.get("secure"))
 
-    @override_settings(
-        SESSION_COOKIE_SAMESITE="Strict", CSRF_COOKIE_SAMESITE="Strict"
-    )
+    @override_settings(SESSION_COOKIE_SAMESITE="Strict", CSRF_COOKIE_SAMESITE="Strict")
     def test_strict_samesite_when_configured(self):
         c = APIClient(enforce_csrf_checks=True)
         r = c.get("/api/samplemodels/?format=api")
@@ -1206,9 +1247,7 @@ class Hsts(SecBase):
     )
     def test_hsts_emitted_only_over_https(self):
         # With config + HTTPS signal → emitted with all directives.
-        r = self.client.get(
-            "/api/samplemodels/", HTTP_X_FORWARDED_PROTO="https"
-        )
+        r = self.client.get("/api/samplemodels/", HTTP_X_FORWARDED_PROTO="https")
         hsts = self.get_header(r, "Strict-Transport-Security")
         self.assertIsNotNone(hsts)
         for directive in ("max-age=", "includeSubDomains", "preload"):
@@ -1228,11 +1267,17 @@ class OpenRedirect(SecBase):
         # 1. Pagination next must not reflect attacker Host / X-Forwarded-Host.
         for i in range(3):
             SampleModel.objects.create(
-                title=f"row{i}", description="x", price=Decimal("1"),
-                quantity=1, related=self.related,
+                title=f"row{i}",
+                description="x",
+                price=Decimal("1"),
+                quantity=1,
+                related=self.related,
             )
-        for hdr in ({}, {"HTTP_HOST": "evil.example"},
-                    {"HTTP_X_FORWARDED_HOST": "evil.example"}):
+        for hdr in (
+            {},
+            {"HTTP_HOST": "evil.example"},
+            {"HTTP_X_FORWARDED_HOST": "evil.example"},
+        ):
             r = self.admin_client.get("/api/samplemodels/?page_size=2", **hdr)
             if r.status_code == 200:
                 next_url = r.data.get("pagination", {}).get("next") or ""
@@ -1240,9 +1285,7 @@ class OpenRedirect(SecBase):
                 self.assertNotIn("//evil", next_url)
 
         # 2. Browsable + next param must not 302 to evil.example or echo it.
-        r = self.client.get(
-            "/api/samplemodels/?format=api&next=https://evil.example/"
-        )
+        r = self.client.get("/api/samplemodels/?format=api&next=https://evil.example/")
         self.assertNotEqual(r.status_code, 302)
         self.assertNotIn(
             "evil.example",
@@ -1252,8 +1295,13 @@ class OpenRedirect(SecBase):
         # 3. POST with ?next= must not produce a redirect Location either.
         r2 = self.admin_client.post(
             "/api/samplemodels/?next=https://evil.example/",
-            {"title": "ok", "description": "x", "price": "1.00",
-             "quantity": 1, "related": self.related.pk},
+            {
+                "title": "ok",
+                "description": "x",
+                "price": "1.00",
+                "quantity": 1,
+                "related": self.related.pk,
+            },
             format="json",
         )
         self.assertNotIn(r2.status_code, (301, 302, 303, 307, 308))
@@ -1319,7 +1367,7 @@ class SwaggerHttp(SecBase):
             (self.client, "/swagger.json"),
             (self.client, "/redoc/"),
             (self.client, "/redoc/?role=admin"),
-            (self.client, "/swagger/?format=xml"),     # unknown format
+            (self.client, "/swagger/?format=xml"),  # unknown format
             (self.client, "/swagger/?format=yaml"),
             (self.client, "/swagger/?format=.json"),
             (self.client, "/swagger/?format=openapi&format=yaml"),  # double
@@ -1365,11 +1413,16 @@ class SwaggerHttp(SecBase):
 
         # Default + custom args produce a view.
         self.assertIsNotNone(get_turbodrf_schema_view())
-        self.assertIsNotNone(get_turbodrf_schema_view(
-            title="My API", version="2.0", description="custom",
-            terms_of_service="https://example.com/tos",
-            contact_email="a@b.com", license_name="GPL",
-        ))
+        self.assertIsNotNone(
+            get_turbodrf_schema_view(
+                title="My API",
+                version="2.0",
+                description="custom",
+                terms_of_service="https://example.com/tos",
+                contact_email="a@b.com",
+                license_name="GPL",
+            )
+        )
         # Disabled → None.
         with override_settings(TURBODRF_ENABLE_DOCS=False):
             self.assertIsNone(get_turbodrf_schema_view())
@@ -1399,8 +1452,8 @@ class SwaggerRoleParam(SecBase):
             "?role=admin&role=viewer",
             "?role=admin\nviewer",
             f"?role={'A' * 100_000}",
-            "?role=аdmin",            # Cyrillic 'а'
-            "?role=%61dmin",          # url-encoded a → "admin" but attacker
+            "?role=аdmin",  # Cyrillic 'а'
+            "?role=%61dmin",  # url-encoded a → "admin" but attacker
             "?role=1",
             "?role[]=admin",
             "?role.0=admin",
@@ -1412,7 +1465,8 @@ class SwaggerRoleParam(SecBase):
             req = _direct_request(f"/swagger/{q}", user=self.attacker)
             _attempt_role(gen, req)
             self.assertNotEqual(
-                gen.current_role, "admin",
+                gen.current_role,
+                "admin",
                 f"escalation via {q!r}: current_role={gen.current_role!r}",
             )
             self.assertNotEqual(gen.current_role, "manager")
@@ -1445,15 +1499,15 @@ class SwaggerRoleParam(SecBase):
         # body doesn't leak DB rows — covered elsewhere). Authenticated
         # user with empty roles list + ?role=admin → falls through to None.
         gen = _gen()
-        _attempt_role(gen, _direct_request(
-            "/swagger/?role=admin", user=AnonymousUser()
-        ))
+        _attempt_role(
+            gen, _direct_request("/swagger/?role=admin", user=AnonymousUser())
+        )
         self.assertEqual(gen.current_role, "admin")
 
         gen2 = _gen()
-        _attempt_role(gen2, _direct_request(
-            "/swagger/?role=admin", user=self.no_role_user
-        ))
+        _attempt_role(
+            gen2, _direct_request("/swagger/?role=admin", user=self.no_role_user)
+        )
         self.assertIsNone(gen2.current_role)
 
 
@@ -1499,9 +1553,13 @@ class SwaggerFieldMetadata(SecBase):
             return
         paths = list((r.data.get("paths") or {}).keys())
         for forbidden in (
-            "/api/samplemodels", "/api/relatedmodels", "/api/categorys",
-            "/api/articlewithcategoriess", "/api/compiledsamplemodels",
-            "/api/compiledarticles", "/api/customendpointmodels",
+            "/api/samplemodels",
+            "/api/relatedmodels",
+            "/api/categorys",
+            "/api/articlewithcategoriess",
+            "/api/compiledsamplemodels",
+            "/api/compiledarticles",
+            "/api/customendpointmodels",
             "/api/custom-items",
         ):
             for p in paths:
@@ -1512,9 +1570,7 @@ class SwaggerFieldMetadata(SecBase):
         # OpenAPI doc — even if a Category or extra row is created.
         Category.objects.create(name=VICTIM_DEAL_TITLE)
         rel = RelatedModel.objects.create(name="rel-c9")
-        SampleModel.objects.create(
-            title="row-c9", price=Decimal("1.00"), related=rel
-        )
+        SampleModel.objects.create(title="row-c9", price=Decimal("1.00"), related=rel)
         r = self.client.get("/swagger/?format=openapi")
         _assert_clean(self, r, "schema enumeration")
         body = _blob(r)
@@ -1530,7 +1586,7 @@ class SwaggerFieldMetadata(SecBase):
             for method, op in (methods or {}).items():
                 if not isinstance(op, dict) or method != "get":
                     continue
-                for p in (op.get("parameters") or []):
+                for p in op.get("parameters") or []:
                     if isinstance(p, dict) and p.get("in") == "body":
                         self.fail(f"GET {path} has in:body param: {p}")
 
@@ -1543,7 +1599,7 @@ class SwaggerFieldMetadata(SecBase):
         _assert_clean(self, r, "attacker exclusion")
         if r.status_code != 200 or not isinstance(r.data, dict):
             return
-        paths = (r.data.get("paths") or {})
+        paths = r.data.get("paths") or {}
         if any("deal" in p for p in paths.keys()):
             return
         self.assertEqual(len(paths), 0)
@@ -1558,9 +1614,7 @@ class SwaggerRefAndAutoSchema(SecBase):
     def test_no_ref_name_collision_or_invalid_refs(self):
         try:
             r = self.client.get("/swagger/?format=openapi")
-            self.assertNotEqual(
-                r.status_code, 500, f"5xx: {r.content[:200]}"
-            )
+            self.assertNotEqual(r.status_code, 500, f"5xx: {r.content[:200]}")
             _assert_clean(self, r, "ref_name collision")
             if r.status_code == 200:
                 body = json.dumps(r.data, default=str)
@@ -1573,9 +1627,7 @@ class SwaggerRefAndAutoSchema(SecBase):
                     for s in SECRETS:
                         self.assertNotIn(s, k)
         except Exception as exc:
-            self.assertNotIn(
-                "Two schemas with the same ref name", str(exc)
-            )
+            self.assertNotIn("Two schemas with the same ref name", str(exc))
             self.assertNotIn("VICTIM", str(exc))
 
     def test_role_pivot_does_not_alter_ref_names(self):
@@ -1591,6 +1643,7 @@ class SwaggerRefAndAutoSchema(SecBase):
 
     def test_autoschema_handles_unknown_actions_and_views(self):
         from rest_framework.viewsets import ViewSet
+
         from turbodrf.views import TurboDRFViewSet
 
         class CustomVS(ViewSet):
@@ -1599,8 +1652,12 @@ class SwaggerRefAndAutoSchema(SecBase):
         v = CustomVS()
         v.action = "custom_export"
         insp = TurboDRFSwaggerAutoSchema(
-            view=v, path="/x", method="GET",
-            components=None, request=None, overrides={},
+            view=v,
+            path="/x",
+            method="GET",
+            components=None,
+            request=None,
+            overrides={},
         )
         self.assertEqual(
             insp.get_request_body_parameters(consumes=["application/json"]),
@@ -1611,11 +1668,16 @@ class SwaggerRefAndAutoSchema(SecBase):
         # _get_write_operation_serializer (or if it does, no leak).
         class FakeView(ViewSet):
             pass
+
         fake = FakeView()
         fake.action = "create"
         insp2 = TurboDRFSwaggerAutoSchema(
-            view=fake, path="/x", method="POST",
-            components=None, request=None, overrides={},
+            view=fake,
+            path="/x",
+            method="POST",
+            components=None,
+            request=None,
+            overrides={},
         )
         try:
             insp2._get_write_operation_serializer()
@@ -1638,8 +1700,12 @@ class SwaggerRefAndAutoSchema(SecBase):
             tv = TV()
             tv.action = action
             insp = TurboDRFSwaggerAutoSchema(
-                view=tv, path=path, method=method,
-                components=None, request=None, overrides={},
+                view=tv,
+                path=path,
+                method=method,
+                components=None,
+                request=None,
+                overrides={},
             )
             try:
                 insp.get_request_serializer()
@@ -1648,8 +1714,7 @@ class SwaggerRefAndAutoSchema(SecBase):
 
     def test_show_all_fields_setting_does_not_leak(self):
         with override_settings(TURBODRF_SWAGGER_SHOW_ALL_FIELDS=True):
-            for client in (self.client, APIClient(),
-                           self._authed_client(self.viewer)):
+            for client in (self.client, APIClient(), self._authed_client(self.viewer)):
                 try:
                     r = client.get("/swagger/?format=openapi")
                     _assert_clean(self, r, "SHOW_ALL_FIELDS")
@@ -1696,24 +1761,21 @@ class SwaggerInternals(SecBase):
         class CB_dup:
             class cls:
                 _basename = "x"
+
             actions = {"get": "list"}
             name = "x_no_slash"
 
         class CB_normal(CB_dup):
             name = "x"
 
-        self.assertEqual(
-            gen._filter_endpoint_dict({"/api/x/": (CB_dup, ["GET"])}), {}
-        )
+        self.assertEqual(gen._filter_endpoint_dict({"/api/x/": (CB_dup, ["GET"])}), {})
         out = gen._filter_endpoint_dict({"/api/x/": (CB_normal, ["GET"])})
         self.assertEqual(set(out.keys()), {"/api/x/"})
 
         self.assertEqual(
             gen._filter_endpoint_tuples([("/api/x", "rx", "GET", CB_dup)]), []
         )
-        self.assertEqual(
-            gen._filter_endpoint_tuples([("/x", "rx")]), [("/x", "rx")]
-        )
+        self.assertEqual(gen._filter_endpoint_tuples([("/x", "rx")]), [("/x", "rx")])
 
         # Negative cases: each is mis-shaped in a different way and must
         # NOT be flagged as a duplicate.
@@ -1723,22 +1785,24 @@ class SwaggerInternals(SecBase):
         class CB_no_actions:
             class cls:
                 _basename = "x"
+
             name = "y"
 
         class CB_blank_name:
             class cls:
                 _basename = "x"
+
             actions = {"get": "list"}
             name = ""
 
         class CB_no_basename:
             class cls:
                 pass
+
             actions = {"get": "list"}
             name = "x_no_slash"
 
-        for cb in (CB_no_attr(), CB_no_actions(), CB_blank_name(),
-                   CB_no_basename()):
+        for cb in (CB_no_attr(), CB_no_actions(), CB_blank_name(), CB_no_basename()):
             self.assertFalse(gen._is_no_slash_duplicate(cb))
 
     # ---- _extract_model_info ----
@@ -1747,13 +1811,19 @@ class SwaggerInternals(SecBase):
         # Non-/api/ paths and unknown models → None; known paths singularize
         # via simple .rstrip('s').
         gen = _gen()
-        for p in ("/admin/", "/swagger/", "/redoc/",
-                  "/api/nonexistents/", "/api/../etc/passwds/",
-                  "/api/déals/", "/", "", "/api/"):
+        for p in (
+            "/admin/",
+            "/swagger/",
+            "/redoc/",
+            "/api/nonexistents/",
+            "/api/../etc/passwds/",
+            "/api/déals/",
+            "/",
+            "",
+            "/api/",
+        ):
             self.assertIsNone(gen._extract_model_info(p))
-        self.assertEqual(
-            gen._extract_model_info("/api/deals/")["model_name"], "deal"
-        )
+        self.assertEqual(gen._extract_model_info("/api/deals/")["model_name"], "deal")
         self.assertEqual(
             gen._extract_model_info("/api/bankaccounts/")["model_name"],
             "bankaccount",
@@ -1784,19 +1854,22 @@ class SwaggerInternals(SecBase):
             {"type": "object"},
         )
         # Subset perm → subset properties.
-        sch = {"type": "object",
-               "properties": {"id": {"type": "integer"},
-                              "title": {"type": "string"},
-                              "secret": {"type": "string"}}}
-        out = gen._filter_schema_fields(
-            sch, info, {"test_app.deal.id.read"}
-        )
+        sch = {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "title": {"type": "string"},
+                "secret": {"type": "string"},
+            },
+        }
+        out = gen._filter_schema_fields(sch, info, {"test_app.deal.id.read"})
         self.assertEqual(set(out["properties"].keys()), {"id"})
         # Full perms → all fields kept.
         out2 = gen._filter_schema_fields(
-            {"type": "object",
-             "properties": {"id": {"type": "integer"},
-                            "title": {"type": "string"}}},
+            {
+                "type": "object",
+                "properties": {"id": {"type": "integer"}, "title": {"type": "string"}},
+            },
             info,
             {"test_app.deal.id.read", "test_app.deal.title.read"},
         )

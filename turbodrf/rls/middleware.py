@@ -43,7 +43,6 @@ class TurboDRFTenancyMiddleware:
         return self.get_response(request)
 
     def _set_session_vars(self, request):
-        from django.conf import settings
         from django.db import connection
 
         from turbodrf.backends import get_user_roles
@@ -63,15 +62,11 @@ class TurboDRFTenancyMiddleware:
 
         try:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT set_config('app.user_id', %s, true)", [user_id]
-                )
+                cursor.execute("SELECT set_config('app.user_id', %s, true)", [user_id])
                 cursor.execute(
                     "SELECT set_config('app.tenant_id', %s, true)", [tenant_id]
                 )
-                cursor.execute(
-                    "SELECT set_config('app.user_roles', %s, true)", [roles]
-                )
+                cursor.execute("SELECT set_config('app.user_roles', %s, true)", [roles])
         except Exception as e:
             # Don't break the request if session-var setting fails
             # (e.g. user is unauthenticated, no transaction). Log and proceed.

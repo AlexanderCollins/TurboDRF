@@ -133,7 +133,9 @@ class Tenant(Predicate):
         user = _authed_user(request)
         if user is None:
             return [f"Cannot set {self.field}: no authenticated user."]
-        provided_pk = getattr(validated_data[self.field], "pk", validated_data[self.field])
+        provided_pk = getattr(
+            validated_data[self.field], "pk", validated_data[self.field]
+        )
         expected_pk = getattr(get_user_tenant(user), "pk", get_user_tenant(user))
         if provided_pk != expected_pk:
             return [f"Cannot set {self.field} to a different tenant."]
@@ -395,7 +397,7 @@ def parse_config(config):
     import logging
     import warnings
 
-    log = logging.getLogger(__name__)
+    logging.getLogger(__name__)
 
     if not isinstance(config, dict):
         raise ImproperlyConfigured(

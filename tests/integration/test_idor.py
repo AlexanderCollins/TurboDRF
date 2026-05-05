@@ -10,14 +10,12 @@ cross-tenant access is impossible:
 - Multi-role merge: more roles = more access
 """
 
-from decimal import Decimal
-
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from tests.test_app.models import BankAccount, Brokerage, Deal, Transaction
+from tests.test_app.models import Brokerage, Deal
 
 User = get_user_model()
 

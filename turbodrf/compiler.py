@@ -243,9 +243,7 @@ class CompiledQueryPlan:
                     **spec,
                     "sub_fields": kept_subs,
                     "annotations": {
-                        k: v
-                        for k, v in spec["annotations"].items()
-                        if k in allowed
+                        k: v for k, v in spec["annotations"].items() if k in allowed
                     },
                     "type_coercers": {
                         k: v
@@ -342,9 +340,6 @@ def compile_model(model):
         list_fields = [f.name for f in model._meta.get_fields() if hasattr(f, "column")]
 
     # Strip sensitive fields
-    from django.conf import settings as django_settings
-
-    from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
 
     from .validation import is_field_path_sensitive
 

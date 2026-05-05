@@ -41,24 +41,16 @@ def _apply_predicate_writes(model, validated_data, instance, request):
 
     # Layer 1: tenant validate_write (rejects setting tenant_field to a
     # different tenant) — mandatory check.
-    if (
-        tenant_field
-        and "__" not in tenant_field
-        and tenant_field in validated_data
-    ):
+    if tenant_field and "__" not in tenant_field and tenant_field in validated_data:
         if not request or not request.user or not request.user.is_authenticated:
-            errors.append(
-                f"Cannot set {tenant_field}: no authenticated user."
-            )
+            errors.append(f"Cannot set {tenant_field}: no authenticated user.")
         else:
             provided = validated_data[tenant_field]
             expected = get_user_tenant(request.user)
             provided_pk = getattr(provided, "pk", provided)
             expected_pk = getattr(expected, "pk", expected)
             if provided_pk != expected_pk:
-                errors.append(
-                    f"Cannot set {tenant_field} to a different tenant."
-                )
+                errors.append(f"Cannot set {tenant_field} to a different tenant.")
 
     # Layer 2: within-tenant predicate validate_write
     for pred in predicates:
@@ -110,9 +102,7 @@ def _apply_predicate_writes(model, validated_data, instance, request):
         user_roles = set(get_user_roles(request.user))
         fk_errors = {}
 
-        tenant_user_field = getattr(
-            django_settings, "TURBODRF_TENANT_USER_FIELD", None
-        )
+        tenant_user_field = getattr(django_settings, "TURBODRF_TENANT_USER_FIELD", None)
         caller_tenant_pk = None
         if tenant_user_field and tenant_field:
             caller_tenant = get_user_tenant(request.user)
@@ -490,9 +480,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         # Apply predicate-based write enforcement
         # (validate_write → auto_fill → FK injection check)
         model = self.Meta.model
-        validated_data = _apply_predicate_writes(
-            model, validated_data, None, request
-        )
+        validated_data = _apply_predicate_writes(model, validated_data, None, request)
 
         return super().create(validated_data)
 
@@ -661,9 +649,7 @@ class TurboDRFSerializerFactory:
                 )
 
                 request = self.context.get("request") if self.context else None
-                user = (
-                    getattr(request, "user", None) if request else None
-                )
+                user = getattr(request, "user", None) if request else None
                 if user is None or not getattr(user, "is_authenticated", False):
                     return
 
@@ -744,9 +730,7 @@ class TurboDRFSerializerFactory:
                             is_field = False
                         if is_field:
                             if caller_tenant is not None:
-                                qs = qs.filter(
-                                    **{tenant_user_field: caller_tenant}
-                                )
+                                qs = qs.filter(**{tenant_user_field: caller_tenant})
                             else:
                                 qs = qs.none()
                         elif hasattr(related_model, tenant_user_field):
@@ -882,13 +866,6 @@ class TurboDRFSerializerFactory:
         permitted = []
 
         # Get sensitive fields deny-list
-        from django.conf import settings as django_settings
-
-        from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
-
-        sensitive_fields = set(
-            getattr(django_settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
-        )
 
         # First check if we should handle fields as "__all__"
         if fields == "__all__":

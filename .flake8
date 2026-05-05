@@ -1,5 +1,9 @@
 [flake8]
-max-line-length = 88
+# black is the formatter — let it own line breaks. Bumping flake8's
+# enforcement to 100 leaves room for strings and expressions black
+# chooses not to split (URLs, long error messages, etc.) without
+# blanket-ignoring E501.
+max-line-length = 100
 extend-ignore = E203, W503
 exclude = 
     .git,

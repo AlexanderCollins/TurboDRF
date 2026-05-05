@@ -133,9 +133,7 @@ class HttpSecurityBase(TestCase):
         cls.editor._test_roles = ["editor"]
 
         # User with empty roles
-        cls.no_roles_user = User.objects.create_user(
-            username="no_roles", password="x"
-        )
+        cls.no_roles_user = User.objects.create_user(username="no_roles", password="x")
         cls.no_roles_user._test_roles = []
 
         # Innocent victim
@@ -220,15 +218,17 @@ class TestURLAndPKManipulation(HttpSecurityBase):
     def test_pk_format_variants_do_not_bypass_tenant(self):
         encoded = "".join(f"%{ord(c):02X}" for c in str(self.victim_deal.pk))
         variants = [
-            encoded,                                # percent-encoded digits
-            f"{self.victim_deal.pk}%00",            # null byte
-            f"{self.victim_deal.pk}%2F",            # encoded slash
-            f"{self.victim_deal.pk}.0",             # dotted decimal
-            f"+{self.victim_deal.pk}",              # signed
-            "0x2", "0o2", "0b10",                   # hex/octal/binary
-            f"%20{self.victim_deal.pk}",            # leading space
-            f"{self.victim_deal.pk}%20",            # trailing space
-            f"%09{self.victim_deal.pk}",            # tab
+            encoded,  # percent-encoded digits
+            f"{self.victim_deal.pk}%00",  # null byte
+            f"{self.victim_deal.pk}%2F",  # encoded slash
+            f"{self.victim_deal.pk}.0",  # dotted decimal
+            f"+{self.victim_deal.pk}",  # signed
+            "0x2",
+            "0o2",
+            "0b10",  # hex/octal/binary
+            f"%20{self.victim_deal.pk}",  # leading space
+            f"{self.victim_deal.pk}%20",  # trailing space
+            f"%09{self.victim_deal.pk}",  # tab
         ]
         for v in variants:
             r = self.client.get(f"/api/deals/{v}/")
@@ -327,7 +327,13 @@ class TestMethodOverrideAndTunneling(HttpSecurityBase):
         before = Deal.objects.filter(pk=self.victim_deal.pk).count()
         cases = [
             ("post", url, {"_method": "DELETE"}, "json", {}),
-            ("post", url, {"_METHOD": "DELETE", "_HttpMethod": "DELETE"}, "multipart", {}),
+            (
+                "post",
+                url,
+                {"_METHOD": "DELETE", "_HttpMethod": "DELETE"},
+                "multipart",
+                {},
+            ),
             ("post", url + "?_method=GET", {}, "json", {}),
             ("post", url + "?http_method=DELETE", {}, "json", {}),
             ("get", url + "?_method=GET", None, None, {}),
@@ -408,9 +414,7 @@ class TestMethodOverrideAndTunneling(HttpSecurityBase):
 
     def test_trace_no_xst_disclosure(self):
         marker = "MARKER-TRACE-XYZ"
-        r = self.client.generic(
-            "TRACE", "/api/deals/", HTTP_X_CUSTOM_PROBE=marker
-        )
+        r = self.client.generic("TRACE", "/api/deals/", HTTP_X_CUSTOM_PROBE=marker)
         _no_secret_leak(self, r)
         _no_header_reflection(self, r, marker, "TRACE")
         self.assertFalse(_is_5xx(r))
@@ -426,8 +430,19 @@ class TestExoticVerbs(HttpSecurityBase):
     with foreign-tenant data and must NOT 5xx."""
 
     EXOTIC_VERBS_DETAIL = (
-        "TRACE", "CONNECT", "PROPFIND", "PROPPATCH", "LOCK", "UNLOCK",
-        "COPY", "MOVE", "REPORT", "PURGE", "FETCH", "LINK", "UNLINK",
+        "TRACE",
+        "CONNECT",
+        "PROPFIND",
+        "PROPPATCH",
+        "LOCK",
+        "UNLOCK",
+        "COPY",
+        "MOVE",
+        "REPORT",
+        "PURGE",
+        "FETCH",
+        "LINK",
+        "UNLINK",
     )
     EXOTIC_VERBS_COLLECTION = ("MKCOL", "SEARCH", "BAN")
 
@@ -493,8 +508,7 @@ class TestExistenceOracles(HttpSecurityBase):
             self.assertEqual(
                 r_v.status_code,
                 r_g.status_code,
-                f"{verb} oracle: foreign={r_v.status_code} "
-                f"ghost={r_g.status_code}",
+                f"{verb} oracle: foreign={r_v.status_code} " f"ghost={r_g.status_code}",
             )
 
     def test_patch_delete_error_body_identical_foreign_vs_ghost(self):
@@ -502,9 +516,7 @@ class TestExistenceOracles(HttpSecurityBase):
         r_v_p = self.client.patch(
             f"/api/deals/{self.victim_deal.pk}/", {"title": "x"}, format="json"
         )
-        r_g_p = self.client.patch(
-            f"/api/deals/{far}/", {"title": "x"}, format="json"
-        )
+        r_g_p = self.client.patch(f"/api/deals/{far}/", {"title": "x"}, format="json")
         self.assertEqual(r_v_p.status_code, 404)
         self.assertEqual(r_v_p.data, r_g_p.data)
 
@@ -604,11 +616,7 @@ class TestExistenceOracles(HttpSecurityBase):
             t_g.append(time.perf_counter() - t0)
         avg_f = sum(t_for) / n
         avg_g = sum(t_g) / n
-        ratio = (
-            max(avg_f, avg_g) / min(avg_f, avg_g)
-            if min(avg_f, avg_g) > 0
-            else 1
-        )
+        ratio = max(avg_f, avg_g) / min(avg_f, avg_g) if min(avg_f, avg_g) > 0 else 1
         self.assertLess(ratio, 5.0, f"timing oracle ratio={ratio:.2f}")
 
 
@@ -625,9 +633,7 @@ class TestContentTypeAndNegotiation(HttpSecurityBase):
         # form-urlencoded, multipart, JSON-with-utf-7, JSON-with-q=1,
         # x-evil, text/x.doom, multipart-but-actually-json, charset=utf-16,
         # charset=utf-32, BOM body, Transfer-Encoding/Content-Encoding lies.
-        body_json = (
-            '{"title":"X","brokerage":' + str(self.brokerage_victim.pk) + "}"
-        )
+        body_json = '{"title":"X","brokerage":' + str(self.brokerage_victim.pk) + "}"
         cases = [
             (
                 "form-url",
@@ -710,9 +716,7 @@ class TestContentTypeAndNegotiation(HttpSecurityBase):
         )
         _no_secret_leak(self, r)
         self.assertFalse(
-            Deal.objects.filter(
-                brokerage=self.brokerage_victim, title="E"
-            ).exists()
+            Deal.objects.filter(brokerage=self.brokerage_victim, title="E").exists()
         )
 
     def test_smuggling_shape_headers_no_5xx(self):
@@ -735,15 +739,11 @@ class TestContentTypeAndNegotiation(HttpSecurityBase):
             _no_secret_leak(self, r, f"{hdrs}")
             self.assertFalse(_is_5xx(r))
             self.assertFalse(
-                Deal.objects.filter(
-                    brokerage=self.brokerage_victim, title="S"
-                ).exists()
+                Deal.objects.filter(brokerage=self.brokerage_victim, title="S").exists()
             )
 
     def test_post_empty_body_application_json_no_5xx(self):
-        r = self.client.post(
-            "/api/deals/", data="", content_type="application/json"
-        )
+        r = self.client.post("/api/deals/", data="", content_type="application/json")
         _no_secret_leak(self, r)
         self.assertFalse(_is_5xx(r))
 
@@ -790,9 +790,7 @@ class TestContentTypeAndNegotiation(HttpSecurityBase):
             self.assertNotIn("VICTIM_SECRET_DEAL", body)
 
     def test_browsable_api_detail_for_foreign_row_404(self):
-        r = self.client.get(
-            f"/api/deals/{self.victim_deal.id}/?format=api"
-        )
+        r = self.client.get(f"/api/deals/{self.victim_deal.id}/?format=api")
         self.assertEqual(r.status_code, 404)
         body = r.content.decode("utf-8", errors="ignore")
         self.assertNotIn("VICTIM_SECRET_DEAL", body)
@@ -954,9 +952,7 @@ class TestRESTSemantics(HttpSecurityBase):
             "brokerage": self.brokerage_attacker.pk,
             "assigned_broker": self.attacker.pk,
         }
-        r = self.client.put(
-            f"/api/deals/{self.attacker_deal.pk}/", body, format="json"
-        )
+        r = self.client.put(f"/api/deals/{self.attacker_deal.pk}/", body, format="json")
         _no_secret_leak(self, r)
         self.victim_deal.refresh_from_db()
         self.assertEqual(self.victim_deal.title, "VICTIM_SECRET_DEAL")
@@ -965,9 +961,7 @@ class TestRESTSemantics(HttpSecurityBase):
 
     def test_patch_empty_body_no_change(self):
         before_title = self.attacker_deal.title
-        r = self.client.patch(
-            f"/api/deals/{self.attacker_deal.pk}/", {}, format="json"
-        )
+        r = self.client.patch(f"/api/deals/{self.attacker_deal.pk}/", {}, format="json")
         _no_secret_leak(self, r)
         self.assertFalse(_is_5xx(r))
         self.attacker_deal.refresh_from_db()
@@ -1021,9 +1015,7 @@ class TestRESTSemantics(HttpSecurityBase):
             format="json",
         )
         r_delete = self.client.delete("/api/deals/")
-        r_patch = self.client.patch(
-            "/api/deals/", {"title": "BULK"}, format="json"
-        )
+        r_patch = self.client.patch("/api/deals/", {"title": "BULK"}, format="json")
         for r in (r_put, r_delete, r_patch):
             _no_secret_leak(self, r)
             self.assertFalse(_is_5xx(r))
@@ -1087,8 +1079,10 @@ class TestRESTSemantics(HttpSecurityBase):
             self.assertFalse(_is_5xx(r))
 
     def test_idempotency_key_collision_two_users(self):
-        c1 = APIClient(); c1.force_authenticate(user=self.attacker)
-        c2 = APIClient(); c2.force_authenticate(user=self.victim)
+        c1 = APIClient()
+        c1.force_authenticate(user=self.attacker)
+        c2 = APIClient()
+        c2.force_authenticate(user=self.victim)
         key = "shared-key-collision"
         r1 = c1.post(
             "/api/deals/",
@@ -1341,7 +1335,8 @@ class TestOPTIONSMetadata(HttpSecurityBase):
                 first = all_keys[0][1]
                 for who, keys in all_keys[1:]:
                     self.assertEqual(
-                        keys, first,
+                        keys,
+                        first,
                         f"{label} keys differ for {who}: {keys} != {first}",
                     )
 
@@ -1351,9 +1346,7 @@ class TestOPTIONSMetadata(HttpSecurityBase):
         r = c.options(f"/api/samplemodels/{self.sample.pk}/")
         body = r.content.decode("utf-8", errors="replace")
         self.assertFalse(_is_5xx(r))
-        self.assertNotIn(
-            "secret_field", body, "viewer OPTIONS leaked secret_field"
-        )
+        self.assertNotIn("secret_field", body, "viewer OPTIONS leaked secret_field")
         if r.status_code == 200 and isinstance(r.data, dict):
             actions = r.data.get("actions", {})
             for k in ("create", "update", "destroy"):
@@ -1466,10 +1459,7 @@ class TestOPTIONSMetadata(HttpSecurityBase):
         r3 = self.client.generic(
             "OPTIONS",
             "/api/deals/",
-            data=(
-                '{"brokerage": ' + str(self.brokerage_victim.pk)
-                + ', "title": "x"}'
-            ),
+            data=('{"brokerage": ' + str(self.brokerage_victim.pk) + ', "title": "x"}'),
             content_type="application/json",
         )
         _no_secret_leak(self, r3)
@@ -1548,9 +1538,7 @@ class TestOPTIONSMetadata(HttpSecurityBase):
         self.assertFalse(_is_5xx(r))
 
     def test_options_m2m_does_not_enumerate_choices(self):
-        r = self.client.options(
-            f"/api/articlewithcategoriess/{self.article.pk}/"
-        )
+        r = self.client.options(f"/api/articlewithcategoriess/{self.article.pk}/")
         body = r.content.decode("utf-8", errors="replace")
         _no_secret_leak(self, r)
         # No enumerated `"choices": [{"value": 1` block.
