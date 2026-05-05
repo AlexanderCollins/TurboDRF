@@ -11,6 +11,7 @@ recursive-include tests *.py
 recursive-exclude tests __pycache__
 recursive-exclude * *.py[co]
 recursive-exclude * .DS_Store
+recursive-exclude * *.mp4 *.mov *.webm *.gif
 
 prune example_project
 prune docs

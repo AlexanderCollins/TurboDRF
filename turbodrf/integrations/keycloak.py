@@ -119,36 +119,52 @@ def extract_roles_from_token(token_claims):
 
 
 def map_keycloak_roles_to_turbodrf(keycloak_roles):
-    """
-    Map Keycloak role names to TurboDRF role names.
+    """Map Keycloak role names to TurboDRF role names.
+
+    Behavior depends on TURBODRF_KEYCLOAK_STRICT_ROLES (default True) and
+    whether TURBODRF_KEYCLOAK_ROLE_MAPPING is configured:
+
+    - No mapping configured → passthrough (legacy behavior; user clearly
+      intends to use Keycloak role names as TurboDRF role names directly)
+    - Mapping configured + strict=True (default): the mapping acts as an
+      allow-list. Unmapped Keycloak roles are dropped with a warning log.
+      A Keycloak role named 'admin' does NOT become TurboDRF role 'admin'
+      unless explicitly mapped — otherwise a Keycloak realm admin would
+      automatically gain TurboDRF admin if the names happened to match.
+    - Mapping configured + strict=False: legacy passthrough — unmapped
+      roles pass through under their original name.
 
     Args:
         keycloak_roles (list): List of role names from Keycloak.
 
     Returns:
         list: List of TurboDRF role names after mapping.
-
-    Example:
-        # With mapping configured
-        settings.TURBODRF_KEYCLOAK_ROLE_MAPPING = {
-            'realm-admin': 'admin',
-            'content-editor': 'editor'
-        }
-        map_keycloak_roles_to_turbodrf(['realm-admin', 'basic-user'])
-        # Returns: ['admin', 'basic-user']
-        # Note: unmapped roles pass through unchanged
     """
+    import logging
+
     role_mapping = get_role_mapping()
+    strict = getattr(settings, "TURBODRF_KEYCLOAK_STRICT_ROLES", True)
+    logger = logging.getLogger(__name__)
 
     if not role_mapping:
-        # No mapping configured, return as-is
-        return keycloak_roles
+        # No mapping configured — passthrough
+        return list(keycloak_roles)
 
     mapped_roles = []
     for role in keycloak_roles:
-        # Use mapping if available, otherwise keep original role name
-        mapped_role = role_mapping.get(role, role)
-        mapped_roles.append(mapped_role)
+        if role in role_mapping:
+            mapped_roles.append(role_mapping[role])
+        elif strict:
+            logger.warning(
+                "Keycloak role %r has no entry in "
+                "TURBODRF_KEYCLOAK_ROLE_MAPPING and was rejected. "
+                "Add it to the mapping or set "
+                "TURBODRF_KEYCLOAK_STRICT_ROLES=False to allow passthrough.",
+                role,
+            )
+        else:
+            # Legacy permissive: pass through unmapped roles
+            mapped_roles.append(role)
 
     return mapped_roles
 

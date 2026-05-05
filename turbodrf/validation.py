@@ -203,6 +203,55 @@ def check_nested_field_permissions(model, field_path, user, use_cache=True):
     return True
 
 
+def _get_sensitive_fields():
+    from django.conf import settings
+
+    from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
+
+    return set(getattr(settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive))
+
+
+def is_field_path_sensitive(field_path):
+    """True if ANY segment of the `__`-path is in the sensitive deny-list.
+
+    Every hop must be checked, not just the first — otherwise a path like
+    `related__password` would pass through and expose a denied field via
+    a relation traversal.
+    """
+    sensitive = _get_sensitive_fields()
+    for segment in field_path.split("__"):
+        if segment in sensitive:
+            return True
+    return False
+
+
+def is_field_visible_to_user(model, field_path, user, use_cache=True):
+    """Single canonical check: should this field path be visible to this user?
+
+    This is the helper that all serialization paths (search, ordering,
+    filter, OPTIONS, compiled, DRF serializer) should consult so they don't
+    drift apart. Combines:
+
+      1. Sensitive deny-list at every `__` segment.
+      2. Nested-path permission walk via check_nested_field_permissions.
+
+    Pass user=None for anonymous (the snapshot system handles 'guest' role
+    if configured).
+    """
+    if is_field_path_sensitive(field_path):
+        return False
+    return check_nested_field_permissions(model, field_path, user, use_cache=use_cache)
+
+
+def filter_readable_fields(model, fields, user, use_cache=True):
+    """Return the subset of `fields` (list of `__`-paths) that user can read."""
+    return [
+        f
+        for f in fields
+        if is_field_visible_to_user(model, f, user, use_cache=use_cache)
+    ]
+
+
 def validate_filter_field(model, filter_param):
     """
     Validate a filter parameter including nesting depth and field existence.

@@ -78,6 +78,36 @@ class TurboDRFPagination(PageNumberPagination):
 _viewset_bases = get_viewset_base_classes()
 
 
+def _is_resolvable_search_path(model, path):
+    """True if `path` walks resolvable concrete fields on `model`.
+
+    A search field must be a real model field (or a `__`-traversed chain
+    of FK relations ending in a concrete field) so DRF's SearchFilter can
+    build a valid `icontains` Q. An unresolvable path (typo, FK with no
+    sub-field) raises FieldError at SQL-build time.
+    """
+    from django.core.exceptions import FieldDoesNotExist
+
+    if not isinstance(path, str) or not path:
+        return False
+    if "." in path:  # DRF uses `__`, not `.`
+        return False
+    current = model
+    parts = path.split("__")
+    for i, part in enumerate(parts):
+        try:
+            field = current._meta.get_field(part)
+        except FieldDoesNotExist:
+            return False
+        is_last = i == len(parts) - 1
+        if is_last:
+            return True
+        if not field.is_relation or field.related_model is None:
+            return False
+        current = field.related_model
+    return False
+
+
 class TurboDRFViewSet(*_viewset_bases):
     """
     Base ViewSet for TurboDRF-enabled models with automatic configuration.
@@ -171,6 +201,57 @@ class TurboDRFViewSet(*_viewset_bases):
         pass
 
     model = None  # Will be set by the router
+    _predicates = []  # Populated by router: within-tenant predicates only
+    _tenant_field = None  # Populated by router: mandatory tenant boundary
+
+    # NOTE on @action routes: custom @action methods that call
+    # self.get_object() or self.get_queryset() inherit scoping automatically.
+    # If you bypass those (e.g. self.model.objects.get(...) directly), scoping
+    # is bypassed too — you must apply it manually.
+
+    def _get_predicate_q(self, request):
+        """Build the AND'd Q expression from this viewset's WITHIN-TENANT
+        predicates. The mandatory tenant boundary is applied separately by
+        _get_tenant_q (it's a setting, not a predicate — kept outside the
+        algebra so OR-composition can't escape it).
+
+        If no predicates configured: Q() (no within-tenant restriction).
+        If request is missing: _no_match_q() — fail closed.
+        """
+        from django.db.models import Q
+
+        from .backends import get_user_roles
+        from .predicates import _no_match_q
+
+        if not self._predicates:
+            return Q()
+        if request is None:
+            return _no_match_q()
+        user_roles = set(get_user_roles(getattr(request, "user", None)))
+        q = Q()
+        for pred in self._predicates:
+            q &= pred.q(request, user_roles)
+        return q
+
+    def _get_tenant_q(self, request):
+        """Build the mandatory tenant-boundary Q. This is the LAYER 1 filter
+        — applied to every queryset, not composable with predicates, not
+        bypassable by any role."""
+        from django.db.models import Q
+
+        from .predicates import _no_match_q, get_user_tenant
+
+        if not self._tenant_field:
+            return Q()  # no tenant configured for this model
+        if request is None:
+            return _no_match_q()
+        user = getattr(request, "user", None)
+        if user is None or not user.is_authenticated:
+            return _no_match_q()
+        tenant = get_user_tenant(user)
+        if tenant is None:
+            return _no_match_q()
+        return Q(**{self._tenant_field: tenant})
 
     def list(self, request, *args, **kwargs):
         """List action with optional compiled read path.
@@ -220,8 +301,19 @@ class TurboDRFViewSet(*_viewset_bases):
             else:
                 readable_fields = requested_fields
 
+        # Per-nested-field perm gates for the compiled path — both FK
+        # and M2M sides. Filtering by BASE field alone would leak nested
+        # fields the user shouldn't see.
+        allowed_fk_keys = self._filter_compiled_fk_annotations(plan, request)
+        allowed_m2m = self._filter_compiled_m2m_subfields(plan, request)
+
         # Apply .values() + F() annotations
-        compiled_qs, active_plan = plan.apply_to_queryset(queryset, readable_fields)
+        compiled_qs, active_plan = plan.apply_to_queryset(
+            queryset,
+            readable_fields,
+            allowed_fk_keys=allowed_fk_keys,
+            allowed_m2m_subfields=allowed_m2m,
+        )
 
         # Paginate the .values() queryset (works because it's still a queryset)
         page = self.paginate_queryset(compiled_qs)
@@ -279,22 +371,84 @@ class TurboDRFViewSet(*_viewset_bases):
         return requested if requested else None
 
     def _get_compiled_readable_fields(self, request):
-        """Get the set of readable fields for permission filtering."""
+        """Set of readable BASE fields for the compiled path's filter step.
+
+        Anon users with a `guest` role configured get the guest snapshot's
+        readable_fields. Anon without a guest role returns None — legacy
+        behavior keeps public_access models showing configured fields when
+        no guest role exists.
+        """
         if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
             return None
         if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
             return None
 
-        user = getattr(request, "user", None)
-        if not user or not user.is_authenticated:
-            return None
+        from .backends import attach_snapshot_to_request, get_user_roles
 
-        from .backends import attach_snapshot_to_request
+        user = getattr(request, "user", None)
+        # No roles at all → no permission system applies. Legacy behavior:
+        # public_access without guest role lets anon see configured fields.
+        if not get_user_roles(user):
+            return None
 
         snapshot = attach_snapshot_to_request(request, self.model)
         if snapshot and snapshot.readable_fields:
             return snapshot.readable_fields
         return None
+
+    def _filter_compiled_fk_annotations(self, plan, request):
+        """Per-nested-FK-path permission check for the compiled path.
+
+        Each FK annotation is checked against its full `__`-joined path.
+        Filtering by BASE field only would leak nested fields the user
+        shouldn't see. Returns None when no permission system applies
+        (anon without guest role configured).
+        """
+        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
+            return None
+        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+            return None
+
+        from .backends import get_user_roles
+        from .validation import is_field_visible_to_user
+
+        user = getattr(request, "user", None)
+        if not get_user_roles(user):
+            return None  # legacy: no role system → no nested-FK filter
+
+        allowed = set()
+        for output_key, f_expr in plan.fk_annotations.items():
+            if is_field_visible_to_user(self.model, f_expr.name, user):
+                allowed.add(output_key)
+        return allowed
+
+    def _filter_compiled_m2m_subfields(self, plan, request):
+        """Per-nested-M2M-field permission check for the compiled path.
+
+        Mirror of `_filter_compiled_fk_annotations` for the M2M side. Returns
+        a dict {m2m_base: {allowed_subfield, ...}} or None when no role
+        system applies.
+        """
+        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
+            return None
+        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+            return None
+
+        from .backends import get_user_roles
+        from .validation import is_field_visible_to_user
+
+        user = getattr(request, "user", None)
+        if not get_user_roles(user):
+            return None
+
+        allowed_subfields = {}
+        for base_name, spec in plan.m2m_specs.items():
+            allowed_subfields[base_name] = {
+                sub
+                for sub in spec["sub_fields"]
+                if is_field_visible_to_user(self.model, f"{base_name}__{sub}", user)
+            }
+        return allowed_subfields
 
     def get_serializer_class(self):
         """
@@ -357,22 +511,18 @@ class TurboDRFViewSet(*_viewset_bases):
 
         # Process fields to separate simple and nested fields
         if isinstance(fields_to_use, list):
-            # Strip sensitive fields
-            from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
-
-            sensitive_fields = set(
-                getattr(settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
-            )
-
             simple_fields = []
             nested_fields = {}
 
+            from .validation import is_field_path_sensitive
+
             for field in fields_to_use:
-                base_field = field.split("__")[0] if "__" in field else field
-                if base_field in sensitive_fields:
+                # Strip sensitive at every segment of the path (I-2 fix).
+                if is_field_path_sensitive(field):
                     continue
                 if "__" in field:
                     # This is a nested field
+                    base_field = field.split("__")[0]
                     if base_field not in nested_fields:
                         nested_fields[base_field] = []
                     nested_fields[base_field].append(field)
@@ -467,34 +617,9 @@ class TurboDRFViewSet(*_viewset_bases):
         return serializer_class
 
     def get_queryset(self):
-        """
-        Get the queryset with automatic query optimizations.
-
-        This method enhances the base queryset with select_related
-        optimizations based on the fields configured in the model's
-        turbodrf() method. It automatically detects foreign key
-        relationships and adds appropriate select_related calls
-        to minimize database queries.
-
-        The optimization is particularly important when using nested
-        field notation (e.g., 'author__name') as it prevents N+1
-        query problems by fetching related objects in a single query.
-
-        Returns:
-            QuerySet: An optimized queryset with select_related applied
-                     for all foreign key fields referenced in the
-                     field configuration.
-
-        Example:
-            If fields include ['title', 'author__name', 'category__title'],
-            this method will automatically add:
-            queryset.select_related('author', 'category')
-
-        Note:
-            Future enhancements could include:
-            - prefetch_related for many-to-many relationships
-            - Automatic detection of optimal fetch strategies
-            - Configuration options for custom optimizations
+        """Base queryset with `select_related` for FK fields referenced in
+        `turbodrf()` config. Predicate / tenant filters are AND'd onto the
+        result by the layered access-control system below.
         """
         # If model is set (typical for TurboDRF), use it directly
         # Otherwise fall back to the queryset attribute
@@ -527,57 +652,92 @@ class TurboDRFViewSet(*_viewset_bases):
         if select_related_fields:
             queryset = queryset.select_related(*select_related_fields)
 
+        # Apply row-level access in two layers:
+        # 1. MANDATORY tenant boundary (setting, never bypassable)
+        # 2. DISCRETIONARY within-tenant predicates (composable, bypassable)
+        # Layer 1 is applied separately so it can't be OR-composed away
+        # by an Either() in the predicate stack.
+        request = getattr(self, "request", None)
+        if self._tenant_field:
+            queryset = queryset.filter(self._get_tenant_q(request))
+        if self._predicates:
+            queryset = queryset.filter(self._get_predicate_q(request))
+
         return queryset
 
     @property
     def search_fields(self):
+        """Search fields, intersected with the caller's read permissions.
+
+        The raw `searchable_fields` list would leak any sensitive field
+        listed in it via substring inference (`?search=guess`). The
+        field-permission gate runs against every searchable field — a
+        viewer without read permission on a field cannot search by it.
+
+        Without a request attached (unit test / programmatic use), returns
+        the raw list. The HTTP layer always has a request.
         """
-        Get the fields to use for text search functionality.
+        base = getattr(self.model, "searchable_fields", None) or []
+        if not base:
+            return []
+        # Drop entries that aren't resolvable model fields. A misconfigured
+        # `searchable_fields = ['nonexistent']` would otherwise raise
+        # FieldError at SQL-build time → uncaught 500. Operator-mistake
+        # triggered, but failing closed (silent drop) is safer than 5xx.
+        base = [f for f in base if _is_resolvable_search_path(self.model, f)]
+        if not base:
+            return []
 
-        Returns the search fields defined on the model class via
-        the 'searchable_fields' attribute. This integrates with
-        Django REST Framework's SearchFilter to enable text search
-        across specified fields.
+        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
+            return list(base)
+        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+            return list(base)
 
-        Returns:
-            list: Field names that can be searched, or empty list
-                 if no searchable fields are defined.
+        request = getattr(self, "request", None)
+        if request is None:
+            return list(base)
 
-        Model Example:
-            class Article(models.Model):
-                title = models.CharField(max_length=200)
-                content = models.TextField()
+        from .backends import get_user_roles
+        from .validation import filter_readable_fields
 
-                searchable_fields = ['title', 'content']
-
-        API Usage:
-            GET /api/articles/?search=django
-            # Searches in both title and content fields
-        """
-        if hasattr(self.model, "searchable_fields"):
-            return self.model.searchable_fields
-        return []
+        user = getattr(request, "user", None)
+        # No roles → no permission system applies. Legacy: public_access
+        # models with no guest role configured allow anon to search by
+        # configured fields.
+        if not get_user_roles(user):
+            return list(base)
+        return filter_readable_fields(self.model, list(base), user)
 
     @property
     def ordering_fields(self):
+        """Fields available for ?ordering=. Restricted to fields the caller
+        can read to prevent leaking hidden values via row order (an
+        attacker without read perm on `salary` could otherwise sort by it
+        and binary-search the value).
+
+        Returns '__all__' only when permissions are disabled.
         """
-        Define fields available for result ordering.
+        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
+            return "__all__"
+        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+            return "__all__"
 
-        Currently returns '__all__' to allow ordering by any model field.
-        This integrates with Django REST Framework's OrderingFilter.
+        from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
 
-        Returns:
-            str: '__all__' to enable ordering by any field.
+        sensitive_fields = set(
+            getattr(settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
+        )
 
-        API Usage:
-            GET /api/articles/?ordering=created_at
-            GET /api/articles/?ordering=-updated_at  # Descending order
+        readable = self._get_filterable_fields()
+        if readable is None:
+            # Anonymous / no snapshot — allow only non-sensitive concrete fields
+            return [
+                f.name
+                for f in self.model._meta.fields
+                if f.name not in sensitive_fields
+            ]
 
-        Note:
-            Future versions might restrict ordering fields based on
-            model configuration or user permissions.
-        """
-        return "__all__"
+        return [name for name in readable if name not in sensitive_fields]
 
     def get_filterset_fields(self):
         """
@@ -758,17 +918,63 @@ class TurboDRFViewSet(*_viewset_bases):
         return self.get_filterset_fields()
 
     def create(self, request, *args, **kwargs):
-        """
-        Create a model instance.
+        """Create a model instance.
 
-        Overrides the default create method to ensure the response
-        returns with status 201 and the created instance data directly,
-        not wrapped in pagination.
+        We pre-fill tenant/owner FKs into request.data BEFORE serializer
+        validation, because those FKs are typically non-null on the model
+        and DRF's required-field check would otherwise reject requests that
+        omit them. The serializer then runs its own validate_write and
+        auto_fill on validated_data — the two stages have different roles:
+          - view-level pre-fill: ensure required FKs exist for serializer
+            validation (fills only if missing)
+          - serializer-level auto_fill: always overwrite tenant FK after
+            permission-stripping, so a stripped wrong-tenant value gets
+            replaced with the correct one
+        Both are needed for security AND ergonomics. See predicates.py.
         """
-        serializer = self.get_serializer(data=request.data)
+        data = self._prefill_required_fields(request)
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         headers = self.get_success_headers(serializer.data)
         return Response(
             serializer.data, status=status.HTTP_201_CREATED, headers=headers
         )
+
+    def _prefill_required_fields(self, request):
+        """Inject tenant/owner FKs into request.data so the serializer's
+        required-field check passes. Only fills missing values — explicit
+        user values pass through and are validated by the serializer.
+        """
+        from .predicates import Owner, get_user_tenant
+
+        if not request.user.is_authenticated:
+            return request.data
+
+        # Bulk-array bodies and empty Content-Type produce request.data
+        # shapes that aren't dicts (lists, strings). Pass them through
+        # unchanged — DRF will reject downstream with a clean 400 instead
+        # of crashing here on .copy() / dict() calls.
+        if not isinstance(request.data, dict):
+            return request.data
+
+        try:
+            data = request.data.copy()
+        except AttributeError:
+            data = dict(request.data)
+
+        # Tenant from the mandatory layer (setting, not predicate)
+        if self._tenant_field and "__" not in self._tenant_field:
+            if self._tenant_field not in data:
+                tenant = get_user_tenant(request.user)
+                if tenant is not None:
+                    data[self._tenant_field] = getattr(tenant, "pk", tenant)
+
+        # Owner from within-tenant predicates
+        for pred in self._predicates:
+            if isinstance(pred, Owner) and len(pred.fields) == 1:
+                field = pred.fields[0]
+                if "__" not in field and field not in data:
+                    data[field] = request.user.pk
+
+        return data

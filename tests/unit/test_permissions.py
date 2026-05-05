@@ -117,39 +117,47 @@ class TestTurboDRFPermission(TestCase):
                 f"Viewer should not have {method} permission",
             )
 
-    def test_get_user_permissions(self):
-        """Test _get_user_permissions method."""
-        # Admin permissions
-        admin_perms = self.permission._get_user_permissions(self.admin_user)
-        self.assertIn("test_app.samplemodel.read", admin_perms)
-        self.assertIn("test_app.samplemodel.create", admin_perms)
-        self.assertIn("test_app.samplemodel.update", admin_perms)
-        self.assertIn("test_app.samplemodel.delete", admin_perms)
+    def test_role_to_actions_admin(self):
+        """Admin role grants all CRUD actions on samplemodel via the snapshot."""
+        from tests.test_app.models import SampleModel
+        from turbodrf.backends import build_permission_snapshot
 
-        # Editor permissions
-        editor_perms = self.permission._get_user_permissions(self.editor_user)
-        self.assertIn("test_app.samplemodel.read", editor_perms)
-        self.assertIn("test_app.samplemodel.update", editor_perms)
-        self.assertNotIn("test_app.samplemodel.delete", editor_perms)
+        snap = build_permission_snapshot(self.admin_user, SampleModel, use_cache=False)
+        for action in ("read", "create", "update", "delete"):
+            self.assertTrue(
+                snap.can_perform_action(action),
+                f"admin should have {action}",
+            )
 
-        # Viewer permissions
-        viewer_perms = self.permission._get_user_permissions(self.viewer_user)
-        self.assertIn("test_app.samplemodel.read", viewer_perms)
-        self.assertNotIn("test_app.samplemodel.create", viewer_perms)
-        self.assertNotIn("test_app.samplemodel.update", viewer_perms)
-        self.assertNotIn("test_app.samplemodel.delete", viewer_perms)
+    def test_role_to_actions_editor(self):
+        from tests.test_app.models import SampleModel
+        from turbodrf.backends import build_permission_snapshot
 
-    def test_custom_roles(self):
-        """Test custom role assignment."""
-        # Create a user with custom roles
+        snap = build_permission_snapshot(self.editor_user, SampleModel, use_cache=False)
+        self.assertTrue(snap.can_perform_action("read"))
+        self.assertTrue(snap.can_perform_action("update"))
+        self.assertFalse(snap.can_perform_action("delete"))
+
+    def test_role_to_actions_viewer(self):
+        from tests.test_app.models import SampleModel
+        from turbodrf.backends import build_permission_snapshot
+
+        snap = build_permission_snapshot(self.viewer_user, SampleModel, use_cache=False)
+        self.assertTrue(snap.can_perform_action("read"))
+        self.assertFalse(snap.can_perform_action("create"))
+        self.assertFalse(snap.can_perform_action("update"))
+        self.assertFalse(snap.can_perform_action("delete"))
+
+    def test_custom_roles_combined(self):
+        """A user with multiple roles gets the UNION of their permissions."""
+        from tests.test_app.models import SampleModel
+        from turbodrf.backends import build_permission_snapshot
+
         custom_user = User.objects.create_user(username="custom", password="custom123")
-        # Assign custom roles
         custom_user._test_roles = ["admin", "editor"]
-
-        # Should have combined permissions
-        perms = self.permission._get_user_permissions(custom_user)
-        self.assertIn("test_app.samplemodel.delete", perms)  # From admin
-        self.assertIn("test_app.samplemodel.update", perms)  # From both
+        snap = build_permission_snapshot(custom_user, SampleModel, use_cache=False)
+        self.assertTrue(snap.can_perform_action("delete"))  # from admin
+        self.assertTrue(snap.can_perform_action("update"))  # from both
 
     def test_invalid_http_method(self):
         """Test handling of invalid HTTP methods."""
@@ -158,20 +166,25 @@ class TestTurboDRFPermission(TestCase):
         self.assertFalse(self.permission.has_permission(request, self.view))
 
     def test_field_level_permissions(self):
-        """Test field-level permissions in user permissions."""
-        # Admin should have field permissions
-        admin_perms = self.permission._get_user_permissions(self.admin_user)
-        self.assertIn("test_app.samplemodel.secret_field.read", admin_perms)
-        self.assertIn("test_app.samplemodel.secret_field.write", admin_perms)
-        self.assertIn("test_app.samplemodel.price.read", admin_perms)
-        self.assertIn("test_app.samplemodel.price.write", admin_perms)
+        """Snapshot exposes per-field readable/writable sets that match the
+        configured TURBODRF_ROLES rules."""
+        from tests.test_app.models import SampleModel
+        from turbodrf.backends import build_permission_snapshot
 
-        # Editor should have read-only price permission
-        editor_perms = self.permission._get_user_permissions(self.editor_user)
-        self.assertIn("test_app.samplemodel.price.read", editor_perms)
-        self.assertNotIn("test_app.samplemodel.price.write", editor_perms)
+        admin = build_permission_snapshot(self.admin_user, SampleModel, use_cache=False)
+        self.assertIn("secret_field", admin.readable_fields)
+        self.assertIn("secret_field", admin.writable_fields)
+        self.assertIn("price", admin.readable_fields)
+        self.assertIn("price", admin.writable_fields)
 
-        # Viewer should not have price or secret field permissions
-        viewer_perms = self.permission._get_user_permissions(self.viewer_user)
-        self.assertNotIn("test_app.samplemodel.price.read", viewer_perms)
-        self.assertNotIn("test_app.samplemodel.secret_field.read", viewer_perms)
+        editor = build_permission_snapshot(
+            self.editor_user, SampleModel, use_cache=False
+        )
+        self.assertIn("price", editor.readable_fields)
+        self.assertNotIn("price", editor.writable_fields)
+
+        viewer = build_permission_snapshot(
+            self.viewer_user, SampleModel, use_cache=False
+        )
+        self.assertNotIn("price", viewer.readable_fields)
+        self.assertNotIn("secret_field", viewer.readable_fields)

@@ -42,29 +42,9 @@ def _get_permission_check_constraint():
 
 
 class TurboDRFRole(models.Model):
-    """
-    A role represents a collection of permissions that can be assigned to users.
-
-    Roles can be linked to Django Groups for seamless integration with
-    existing Django authentication systems.
-
-    Features:
-        - Unique role names
-        - Optional Django Group integration
-        - Automatic timestamp tracking for cache invalidation
-        - Description for documentation
-
-    Example:
-        # Create a role
-        admin_role = TurboDRFRole.objects.create(
-            name='admin',
-            description='Full access to all resources'
-        )
-
-        # Link to Django Group
-        admin_group = Group.objects.get(name='Administrators')
-        admin_role.django_group = admin_group
-        admin_role.save()
+    """A named role; collection of `RolePermission` rows. Optionally links to
+    a Django Group for integration with existing auth setups. The `version`
+    counter is bumped on update for permission-snapshot cache invalidation.
     """
 
     name = models.CharField(
@@ -114,36 +94,9 @@ class TurboDRFRole(models.Model):
 
 
 class RolePermission(models.Model):
-    """
-    A permission grants specific access rights to a role.
-
-    Supports both model-level permissions (read, create, update, delete)
-    and optional field-level permissions (field read/write).
-
-    Permission Format:
-        Model-level: app_label.model_name.action
-        - action: 'read', 'create', 'update', 'delete'
-
-        Field-level: app_label.model_name.field_name.permission_type
-        - permission_type: 'read', 'write'
-
-    Examples:
-        # Model-level permissions
-        RolePermission.objects.create(
-            role=admin_role,
-            app_label='books',
-            model_name='book',
-            action='read'
-        )
-
-        # Field-level permissions
-        RolePermission.objects.create(
-            role=editor_role,
-            app_label='books',
-            model_name='book',
-            field_name='price',
-            permission_type='read'
-        )
+    """A single permission granted to a `TurboDRFRole`. Supports model-level
+    actions (read/create/update/delete) and field-level rules (read/write).
+    The CheckConstraint enforces that exactly one form is set per row.
     """
 
     # Permission types

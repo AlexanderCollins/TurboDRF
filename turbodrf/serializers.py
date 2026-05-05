@@ -6,29 +6,219 @@ from rest_framework import serializers
 logger = logging.getLogger(__name__)
 
 
+def _apply_predicate_writes(model, validated_data, instance, request):
+    """Run write enforcement for create/update under the two-layer model.
+
+    Layer 1 (mandatory tenant boundary):
+      - Validate that any provided tenant_field value matches caller's tenant
+      - Auto-fill tenant_field if missing
+    Layer 2 (within-tenant predicates):
+      - Run validate_write on each predicate
+      - Run auto_fill on each predicate (Owner fills assigned_to, etc.)
+    Layer 3 (FK injection / co-tenant checks):
+      - Every FK provided must be visible under the related model's predicates
+      - Every FK target with a tenant attribute must share the caller's tenant
+
+    Raises serializers.ValidationError on violations.
+    """
+    from django.db import models as dj_models
+
+    from .backends import get_user_roles
+    from .predicates import get_predicates, get_tenant_field, get_user_tenant
+
+    # Defensive: if a caller passes a non-dict body (list, string), pass it
+    # through unchanged. The HTTP layer already rejects these upstream;
+    # this guard makes the helper safe for direct programmatic use.
+    if not isinstance(validated_data, dict):
+        return validated_data
+
+    tenant_field = get_tenant_field(model)
+    predicates = get_predicates(model)
+    if not tenant_field and not predicates:
+        return validated_data
+
+    errors = []
+
+    # Layer 1: tenant validate_write (rejects setting tenant_field to a
+    # different tenant) — mandatory check.
+    if tenant_field and "__" not in tenant_field and tenant_field in validated_data:
+        if not request or not request.user or not request.user.is_authenticated:
+            errors.append(f"Cannot set {tenant_field}: no authenticated user.")
+        else:
+            provided = validated_data[tenant_field]
+            expected = get_user_tenant(request.user)
+            provided_pk = getattr(provided, "pk", provided)
+            expected_pk = getattr(expected, "pk", expected)
+            if provided_pk != expected_pk:
+                errors.append(f"Cannot set {tenant_field} to a different tenant.")
+
+    # Layer 2: within-tenant predicate validate_write
+    for pred in predicates:
+        errors.extend(pred.validate_write(validated_data, instance, request))
+    if errors:
+        # Optional Sentry breadcrumb (no-op when Sentry not enabled)
+        try:
+            from .integrations.sentry import report_security_event
+
+            report_security_event(
+                "predicate_validate_write_rejected",
+                f"Write rejected on {model.__name__}",
+                model=model.__name__,
+                errors=errors,
+            )
+        except Exception:
+            pass
+        raise serializers.ValidationError({"detail": errors})
+
+    # Layer 1 auto-fill (always overwrite — never trust client)
+    if (
+        tenant_field
+        and "__" not in tenant_field
+        and request
+        and request.user
+        and request.user.is_authenticated
+    ):
+        tenant = get_user_tenant(request.user)
+        if tenant is not None:
+            validated_data = dict(validated_data)
+            validated_data[tenant_field] = tenant
+
+    # Layer 2 auto-fill
+    for pred in predicates:
+        validated_data = pred.auto_fill(validated_data, request)
+
+    # Layer 3a: FK injection check — every FK target must be visible under
+    #            the related model's predicate stack + tenant boundary.
+    # Layer 3b: Co-tenant check — when the host has a tenant_field set, any
+    #            FK target with a tenant attribute (via TURBODRF_TENANT_USER_FIELD)
+    #            must share the caller's tenant. Catches User-FK assignment
+    #            cross-tenant since User typically has no predicates.
+    # Layer 3c: Unified error messages — same text whether the FK target
+    #            doesn't exist or just isn't visible. Distinct messages
+    #            would let an attacker enumerate other tenants' PKs.
+    if request and getattr(request, "user", None) and request.user.is_authenticated:
+        from django.conf import settings as django_settings
+
+        user_roles = set(get_user_roles(request.user))
+        fk_errors = {}
+
+        tenant_user_field = getattr(django_settings, "TURBODRF_TENANT_USER_FIELD", None)
+        caller_tenant_pk = None
+        if tenant_user_field and tenant_field:
+            caller_tenant = get_user_tenant(request.user)
+            caller_tenant_pk = getattr(caller_tenant, "pk", caller_tenant)
+
+        for field in model._meta.fields:
+            if not isinstance(field, dj_models.ForeignKey):
+                continue
+            if field.name not in validated_data:
+                continue
+            value = validated_data[field.name]
+            if value is None:
+                continue
+            related_model = field.related_model
+            value_pk = getattr(value, "pk", value)
+
+            # Build the visibility filter for the related model: tenant +
+            # within-tenant predicates.
+            from django.db.models import Q
+
+            q = Q()
+            related_tenant_field = get_tenant_field(related_model)
+            if related_tenant_field:
+                related_tenant_q = Q()
+                if request.user.is_authenticated:
+                    rtenant = get_user_tenant(request.user)
+                    if rtenant is not None:
+                        related_tenant_q = Q(**{related_tenant_field: rtenant})
+                    else:
+                        related_tenant_q = Q(pk__in=[])  # fail closed
+                q &= related_tenant_q
+
+            for rp in get_predicates(related_model):
+                q &= rp.q(request, user_roles)
+
+            # If the related model is scoped at all (predicates or tenant),
+            # check the FK target is visible.
+            if get_predicates(related_model) or related_tenant_field:
+                if not related_model.objects.filter(pk=value_pk).filter(q).exists():
+                    fk_errors[field.name] = [
+                        f"Invalid {field.name}: not found or not accessible."
+                    ]
+                    continue
+
+            # Co-tenant check: the FK target's tenant attribute must match
+            # the caller's, even when the related model has no predicates
+            # (typical for User).
+            if caller_tenant_pk is not None and tenant_user_field:
+                target_tenant = getattr(value, tenant_user_field, None)
+                if target_tenant is not None:
+                    target_tenant_pk = getattr(target_tenant, "pk", target_tenant)
+                    if target_tenant_pk != caller_tenant_pk:
+                        fk_errors[field.name] = [
+                            f"{field.name} belongs to a different tenant."
+                        ]
+        if fk_errors:
+            try:
+                from .integrations.sentry import report_security_event
+
+                report_security_event(
+                    "fk_injection_rejected",
+                    f"FK injection blocked on {model.__name__}",
+                    model=model.__name__,
+                    fields=list(fk_errors.keys()),
+                )
+            except Exception:
+                pass
+            raise serializers.ValidationError(fk_errors)
+
+    return validated_data
+
+
 class TurboDRFSerializer(serializers.ModelSerializer):
     """
     Base serializer for TurboDRF models with support for nested field notation.
 
     This serializer extends Django REST Framework's ModelSerializer to provide
     automatic handling of nested field relationships using double-underscore notation.
-
-    Features:
-        - Automatic traversal of related fields using '__' notation
-        - Graceful handling of null relationships
-        - Conversion of nested field names to underscore format in output
-
-    Example:
-        If your model configuration includes fields like 'author__name' or
-        'category__parent__title', this serializer will automatically traverse
-        these relationships and include them in the serialized output as
-        'author_name' and 'category_parent_title' respectively.
-
-    Note:
-        The nested field functionality is activated when the Meta class
-        contains a '_nested_fields' attribute, which is typically set by
-        the TurboDRFSerializerFactory.
     """
+
+    def to_internal_value(self, data):
+        """Catch DRF's per-field 'Invalid pk - does not exist.' messages on
+        foreign-key fields and replace them with the unified
+        'Invalid <field>: not found or not accessible.' message used by the
+        predicate-write FK injection check.
+
+        Distinct error texts for "doesn't exist" vs "exists but invisible"
+        let an attacker enumerate other tenants' PKs.
+        """
+        from django.db import models as dj_models
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        try:
+            return super().to_internal_value(data)
+        except DRFValidationError as exc:
+            detail = exc.detail
+            if not isinstance(detail, dict):
+                raise
+            fk_names = {
+                f.name
+                for f in self.Meta.model._meta.fields
+                if isinstance(f, dj_models.ForeignKey)
+            }
+            replaced = False
+            new_detail = {}
+            for field_name, errors in detail.items():
+                if field_name in fk_names:
+                    new_detail[field_name] = [
+                        f"Invalid {field_name}: not found or not accessible."
+                    ]
+                    replaced = True
+                else:
+                    new_detail[field_name] = errors
+            if replaced:
+                raise DRFValidationError(new_detail) from exc
+            raise
 
     def to_representation(self, instance):
         """
@@ -86,8 +276,17 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                             # Add the nested field value with underscores
                             field_name = full_field_path.replace("__", "_")
                             data[field_name] = value
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            # Surface the failure in logs instead of silently
+                            # returning broken data. The path stays out of the
+                            # response (caller falls back to whatever DRF
+                            # already serialized) but operators can see why.
+                            logger.warning(
+                                "Nested field traversal failed for %s.%s: %r",
+                                instance.__class__.__name__,
+                                full_field_path,
+                                exc,
+                            )
 
         return data
 
@@ -131,8 +330,37 @@ class TurboDRFSerializer(serializers.ModelSerializer):
             if m2m_manager is None:
                 return []
 
-            # Get all related objects (should be prefetched for performance)
+            # I-3 fix: apply the target model's tenant_field + within-tenant
+            # predicates to the M2M render. Without this, a nested array in
+            # a parent response could leak target rows the user can't see
+            # via the target's own endpoint.
             related_objects = m2m_manager.all()
+            related_model = getattr(m2m_manager, "model", None)
+            if related_model is not None:
+                from django.db.models import Q
+
+                from .backends import get_user_roles
+                from .predicates import (
+                    get_predicates,
+                    get_tenant_field,
+                    get_user_tenant,
+                )
+
+                request = self.context.get("request")
+                user = getattr(request, "user", None) if request else None
+                if user is not None and getattr(user, "is_authenticated", False):
+                    user_roles = set(get_user_roles(user))
+                    q = Q()
+                    target_tenant_field = get_tenant_field(related_model)
+                    if target_tenant_field:
+                        tenant = get_user_tenant(user)
+                        if tenant is None:
+                            return []  # fail closed
+                        q &= Q(**{target_tenant_field: tenant})
+                    for pred in get_predicates(related_model):
+                        q &= pred.q(request, user_roles)
+                    if q != Q():
+                        related_objects = related_objects.filter(q)
 
             # Extract the field names to include (strip the base_field__ prefix)
             fields_to_extract = set()
@@ -201,6 +429,12 @@ class TurboDRFSerializer(serializers.ModelSerializer):
 
             validated_data = filtered_data
 
+        # Apply predicate-based write enforcement
+        # (validate_write → auto_fill → FK injection check)
+        validated_data = _apply_predicate_writes(
+            instance.__class__, validated_data, instance, request
+        )
+
         return super().update(instance, validated_data)
 
     def create(self, validated_data):
@@ -242,6 +476,11 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                     filtered_data[field_name] = value
 
             validated_data = filtered_data
+
+        # Apply predicate-based write enforcement
+        # (validate_write → auto_fill → FK injection check)
+        model = self.Meta.model
+        validated_data = _apply_predicate_writes(model, validated_data, None, request)
 
         return super().create(validated_data)
 
@@ -374,21 +613,153 @@ class TurboDRFSerializerFactory:
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
 
-                # The base field should remain writable for
-                # create/update operations
-                # Nested serializers are used for display only
-
-                # Attach snapshot to serializer for create/update
                 if snapshot_to_use:
                     self._permission_snapshot = snapshot_to_use
+
+                # DRF's PrimaryKeyRelatedField.queryset is unscoped by
+                # default, so the browsable HTML API populates `<select>`
+                # dropdowns from `Model.objects.all()` — leaking
+                # cross-tenant rows. Replacing the queryset with a
+                # tenant-filtered version closes that leak and aligns
+                # JSON-write rejection with the FK injection check.
+                self._scope_fk_querysets()
+
+            def _scope_fk_querysets(self):
+                """Scope each FK field's queryset to the caller's tenant.
+
+                Three sources of scope:
+                  1. The related model has its own tenant_field setting →
+                     filter by caller's tenant via that field.
+                  2. The related model IS the tenant model itself →
+                     restrict to the caller's tenant pk.
+                  3. The related model has the TURBODRF_TENANT_USER_FIELD
+                     attribute pointing at the same tenant entity (typical
+                     for User.brokerage) → filter by it.
+                """
+                from django.conf import settings as _s
+                from rest_framework.relations import (
+                    ManyRelatedField,
+                    PrimaryKeyRelatedField,
+                )
+
+                from .predicates import (
+                    get_predicates,
+                    get_tenant_field,
+                    get_user_tenant,
+                )
+
+                request = self.context.get("request") if self.context else None
+                user = getattr(request, "user", None) if request else None
+                if user is None or not getattr(user, "is_authenticated", False):
+                    return
+
+                # Only act when the host model is tenant-scoped — there's
+                # nothing to scope against on a non-tenant model.
+                host_tenant_field = get_tenant_field(model_class)
+                if not host_tenant_field:
+                    return
+
+                caller_tenant = get_user_tenant(user)
+                caller_tenant_pk = getattr(caller_tenant, "pk", caller_tenant)
+                tenant_user_field = getattr(_s, "TURBODRF_TENANT_USER_FIELD", None)
+
+                # Resolve tenant model: prefer the host model's own tenant FK
+                # target (works without TURBODRF_TENANT_MODEL being declared).
+                tenant_model = None
+                try:
+                    host_tf = model_class._meta.get_field(host_tenant_field)
+                    if host_tf.is_relation:
+                        tenant_model = host_tf.related_model
+                except Exception:
+                    pass
+                if tenant_model is None:
+                    tenant_model_setting = getattr(_s, "TURBODRF_TENANT_MODEL", None)
+                    if tenant_model_setting:
+                        try:
+                            from django.apps import apps as _apps
+
+                            tenant_model = _apps.get_model(tenant_model_setting)
+                        except Exception:
+                            tenant_model = None
+
+                from .backends import get_user_roles
+
+                user_roles = set(get_user_roles(user))
+
+                for field in self.fields.values():
+                    target_field = field
+                    if isinstance(field, ManyRelatedField):
+                        target_field = field.child_relation
+                    if not isinstance(target_field, PrimaryKeyRelatedField):
+                        continue
+                    qs = getattr(target_field, "queryset", None)
+                    if qs is None:
+                        continue
+                    # Manager → QuerySet so we can iterate without
+                    # tripping `'Manager' object is not iterable` later.
+                    from django.db.models import QuerySet as _QuerySet
+
+                    if not isinstance(qs, _QuerySet):
+                        qs = qs.all()
+                    related_model = qs.model
+
+                    # Case 1: related model has its own tenant_field
+                    rt = get_tenant_field(related_model)
+                    if rt:
+                        if caller_tenant is not None:
+                            qs = qs.filter(**{rt: caller_tenant})
+                        else:
+                            qs = qs.none()
+
+                    # Case 2: related model IS the tenant entity
+                    elif tenant_model is not None and related_model is tenant_model:
+                        if caller_tenant is not None:
+                            tenant_pk = getattr(caller_tenant, "pk", caller_tenant)
+                            qs = qs.filter(pk=tenant_pk)
+                        else:
+                            qs = qs.none()
+
+                    # Case 3: related model has TURBODRF_TENANT_USER_FIELD
+                    # attribute as a field/FK (typical: User.brokerage)
+                    elif tenant_user_field:
+                        is_field = False
+                        try:
+                            related_model._meta.get_field(tenant_user_field)
+                            is_field = True
+                        except Exception:
+                            is_field = False
+                        if is_field:
+                            if caller_tenant is not None:
+                                qs = qs.filter(**{tenant_user_field: caller_tenant})
+                            else:
+                                qs = qs.none()
+                        elif hasattr(related_model, tenant_user_field):
+                            # Property/descriptor — filter row-by-row.
+                            # This only fires for HTML browsable-API form
+                            # population (small N) and JSON-write validation
+                            # (single-row lookup).
+                            if caller_tenant_pk is None:
+                                qs = qs.none()
+                            else:
+                                visible = []
+                                for obj in qs:
+                                    val = getattr(obj, tenant_user_field, None)
+                                    val_pk = getattr(val, "pk", val)
+                                    if val_pk == caller_tenant_pk:
+                                        visible.append(obj.pk)
+                                qs = qs.filter(pk__in=visible)
+                        # else: no scoping signal — fall through.
+
+                    # Apply within-tenant predicates from related model
+                    for pred in get_predicates(related_model):
+                        qs = qs.filter(pred.q(request, user_roles))
+                    target_field.queryset = qs
 
             class Meta:
                 model = model_class
                 fields = all_fields
                 read_only_fields = read_only_fields_list
-                # Include nested fields metadata for TurboDRFSerializer
                 _nested_fields = nested_fields_meta
-                # Unique ref_name for swagger schema generation
                 ref_name = ref_name_value
 
         return DynamicSerializer
@@ -495,23 +866,17 @@ class TurboDRFSerializerFactory:
         permitted = []
 
         # Get sensitive fields deny-list
-        from django.conf import settings as django_settings
-
-        from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
-
-        sensitive_fields = set(
-            getattr(django_settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
-        )
 
         # First check if we should handle fields as "__all__"
         if fields == "__all__":
             # Get all model fields
             fields = [f.name for f in model._meta.fields]
 
+        from .validation import is_field_path_sensitive
+
         for field in fields:
-            # Strip sensitive fields
-            base_field = field.split("__")[0] if "__" in field else field
-            if base_field in sensitive_fields:
+            # Strip sensitive fields at every segment of the path (I-2 fix).
+            if is_field_path_sensitive(field):
                 logger.debug(f"Stripping sensitive field '{field}'")
                 continue
 

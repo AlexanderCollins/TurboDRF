@@ -40,6 +40,10 @@ class DictProxy:
         object.__setattr__(self, "_d", d)
 
     def __getattr__(self, name):
+        # Pickle / copy probe `_d` and dunder names before __init__ runs.
+        # Returning self._d[name] would recurse into __getattr__ forever.
+        if name.startswith("_") or name == "_d":
+            raise AttributeError(name)
         try:
             return self._d[name]
         except KeyError:
@@ -173,8 +177,28 @@ class CompiledQueryPlan:
             return f_expr.name.split("__")[0]
         return None
 
-    def apply_to_queryset(self, queryset, readable_fields=None):
+    def apply_to_queryset(
+        self,
+        queryset,
+        readable_fields=None,
+        allowed_fk_keys=None,
+        allowed_m2m_subfields=None,
+    ):
         """Apply .values() + F() annotations to a queryset.
+
+        Args:
+            readable_fields: Set of readable BASE field names (snapshot
+                level). Filters simple/property fields and the BASE of FK
+                and M2M annotations.
+            allowed_fk_keys: Optional set of FK annotation output keys (e.g.
+                {'author_name', 'author_email'}) allowed at the NESTED
+                level. Filtering by BASE field alone would leak nested
+                fields the user shouldn't see.
+            allowed_m2m_subfields: Optional dict {m2m_base: {sub_field, ...}}
+                for per-nested-M2M-field permission filtering. If a user
+                has `categories.read` but not `category.description.read`,
+                pass {'categories': {'name'}} to drop the description
+                sub-field. None = no per-sub-field filter (legacy behavior).
 
         Returns (compiled_queryset, active_plan_tuple).
         """
@@ -196,6 +220,38 @@ class CompiledQueryPlan:
             active_props = {
                 k: v for k, v in self.property_fields.items() if k in readable_fields
             }
+
+        # Per-nested-field FK perm gate.
+        if allowed_fk_keys is not None:
+            active_fk = {k: v for k, v in active_fk.items() if k in allowed_fk_keys}
+
+        # Per-nested-M2M-field perm gate. Trim each spec's annotations /
+        # sub_fields / type_coercers to only the allowed sub-fields. If
+        # all sub-fields are stripped, drop the whole spec.
+        if allowed_m2m_subfields is not None:
+            trimmed_m2m = {}
+            for base_name, spec in active_m2m.items():
+                allowed = allowed_m2m_subfields.get(base_name)
+                if allowed is None:
+                    # No allow-list for this M2M → drop entirely (defaults
+                    # to deny when the caller is being explicit)
+                    continue
+                kept_subs = [s for s in spec["sub_fields"] if s in allowed]
+                if not kept_subs:
+                    continue
+                trimmed_m2m[base_name] = {
+                    **spec,
+                    "sub_fields": kept_subs,
+                    "annotations": {
+                        k: v for k, v in spec["annotations"].items() if k in allowed
+                    },
+                    "type_coercers": {
+                        k: v
+                        for k, v in spec.get("type_coercers", {}).items()
+                        if k in allowed
+                    },
+                }
+            active_m2m = trimmed_m2m
 
         # Always keep PK if we have M2M to merge
         if active_m2m and self.pk_field not in active_simple:
@@ -284,18 +340,10 @@ def compile_model(model):
         list_fields = [f.name for f in model._meta.get_fields() if hasattr(f, "column")]
 
     # Strip sensitive fields
-    from django.conf import settings as django_settings
 
-    from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
+    from .validation import is_field_path_sensitive
 
-    sensitive_fields = set(
-        getattr(django_settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive)
-    )
-    list_fields = [
-        f
-        for f in list_fields
-        if (f.split("__")[0] if "__" in f else f) not in sensitive_fields
-    ]
+    list_fields = [f for f in list_fields if not is_field_path_sensitive(f)]
 
     original_fields = list(list_fields)
 
