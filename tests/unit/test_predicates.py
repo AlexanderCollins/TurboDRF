@@ -518,6 +518,8 @@ class TestPredicateDefensiveBranches(TestCase):
 
     def test_clear_predicates_resets_registries(self):
         from turbodrf.predicates import (
+            _model_predicates,
+            _model_tenant_fields,
             clear_predicates,
             get_predicates,
             get_tenant_field,
@@ -528,11 +530,23 @@ class TestPredicateDefensiveBranches(TestCase):
         class Fake:
             pass
 
-        register_predicates(Fake, [Owner("x")])
-        register_tenant_field(Fake, "brokerage")
-        self.assertTrue(get_predicates(Fake))
-        self.assertEqual(get_tenant_field(Fake), "brokerage")
+        # Snapshot registry so we can restore — clear_predicates() wipes
+        # the global module state, which would break every subsequent
+        # test on this xdist worker (FK injection guards stop firing,
+        # tenant filters stop applying).
+        saved_p = dict(_model_predicates)
+        saved_t = dict(_model_tenant_fields)
+        try:
+            register_predicates(Fake, [Owner("x")])
+            register_tenant_field(Fake, "brokerage")
+            self.assertTrue(get_predicates(Fake))
+            self.assertEqual(get_tenant_field(Fake), "brokerage")
 
-        clear_predicates()
-        self.assertEqual(get_predicates(Fake), [])
-        self.assertIsNone(get_tenant_field(Fake))
+            clear_predicates()
+            self.assertEqual(get_predicates(Fake), [])
+            self.assertIsNone(get_tenant_field(Fake))
+        finally:
+            _model_predicates.clear()
+            _model_predicates.update(saved_p)
+            _model_tenant_fields.clear()
+            _model_tenant_fields.update(saved_t)
