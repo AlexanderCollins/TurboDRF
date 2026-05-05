@@ -623,14 +623,16 @@ class TestPredicates(AuthzSecurityBase):
             register_predicates(Deal, orig)
 
     def test_parse_config_validation(self):
-        """parse_config rejects: non-dict, mixing visibility+sugar, non-list
-        visibility, non-Predicate visibility item, non-string tenant_field,
-        invalid owner_field type, owner_field dict."""
+        """parse_config rejects: non-dict, mixing visibility+owner-sugar,
+        non-list visibility, non-Predicate visibility item, non-string
+        tenant_field, invalid owner_field type, owner_field dict.
+        (tenant_field + visibility is now allowed — tenant is a setting,
+        not a predicate.)"""
         from turbodrf.predicates import parse_config
 
         bad_inputs = [
             [],
-            {"visibility": [], "tenant_field": "brokerage"},
+            {"visibility": [], "owner_field": "assigned_broker"},
             {"visibility": "not a list"},
             {"visibility": ["string not a predicate"]},
             {"tenant_field": 123},
@@ -1194,13 +1196,26 @@ class TestTenancyResolution(AuthzSecurityBase):
                 tenant_model_setting="test_app.Brokerage",
                 autodetect=False,
             )
-        # Mixing visibility + sugar → reject
+        # tenant_field + visibility — allowed (canonical power form)
+        tf, preds, _ = resolve_tenancy_for_model(
+            Deal,
+            {
+                "visibility": [Owner("assigned_broker")],
+                "tenant_field": "brokerage",
+            },
+            tenant_model_setting="test_app.Brokerage",
+            autodetect=False,
+        )
+        self.assertEqual(tf, "brokerage")
+        self.assertEqual(len(preds), 1)
+
+        # owner_field + visibility — reject (both compile to predicates)
         with self.assertRaises(ImproperlyConfigured):
             resolve_tenancy_for_model(
                 Deal,
                 {
                     "visibility": [Owner("assigned_broker")],
-                    "tenant_field": "brokerage",
+                    "owner_field": "assigned_broker",
                 },
                 tenant_model_setting="test_app.Brokerage",
                 autodetect=False,

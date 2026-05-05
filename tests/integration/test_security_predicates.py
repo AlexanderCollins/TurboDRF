@@ -484,13 +484,29 @@ class TestParseConfigAndRegistration(SecurityBase):
         """Various malformed configs must all raise ImproperlyConfigured."""
         bad_configs = [
             "string",  # not a dict
-            {"visibility": [Owner("a")], "tenant_field": "x"},  # mixed forms
+            {
+                "visibility": [Owner("a")],
+                "owner_field": "assigned_broker",
+            },  # owner sugar conflicts with visibility
             {"visibility": ["not a predicate"]},
             {"tenant_field": ["a", "b"]},  # tenant_field as list
         ]
         for cfg in bad_configs:
             with self.assertRaises(ImproperlyConfigured):
                 parse_config(cfg)
+
+    def test_tenant_field_alongside_visibility_is_allowed(self):
+        """tenant_field is a setting (not a predicate) and composes
+        cleanly with visibility=[...] — this is the canonical power-form
+        pairing now that Tenant() inside visibility is deprecated."""
+        tf, preds = parse_config(
+            {
+                "tenant_field": "brokerage",
+                "visibility": [Owner("assigned_broker")],
+            }
+        )
+        self.assertEqual(tf, "brokerage")
+        self.assertEqual(len(preds), 1)
 
     def test_valid_inputs_yield_no_predicates(self):
         """tenancy='shared' and visibility=[] both yield (None, [])."""
