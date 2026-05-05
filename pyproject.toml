@@ -72,7 +72,7 @@ turbodrf = ["templates/turbodrf/*.html"]
 DJANGO_SETTINGS_MODULE = "tests.settings"
 python_files = ["test_*.py", "*_test.py", "testing/python/*.py"]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --ignore=setup.py --ignore=performance_test.py"
+addopts = "-ra --strict-markers --ignore=setup.py --ignore=performance_test.py -n auto --dist=loadfile"
 
 [tool.black]
 line-length = 88
