@@ -76,9 +76,34 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
             Returns schema showing only endpoints and fields accessible
             to users with the 'editor' role.
         """
-        # Get role from query parameter or session
+        # Role selection with validation:
+        # - Authenticated user passing ?role=X: validate X is one of their
+        #   actual roles. If not, fall back to user's roles (no escalation).
+        # - Anonymous browsing: accept ?role=X for documentation purposes
+        #   (anon can't actually call protected endpoints — schema is doc).
+        # An authenticated viewer cannot use ?role=admin to see the admin
+        # schema unless that role is actually one of theirs — otherwise
+        # any authenticated user could enumerate higher-privilege schema.
         if request:
-            self.current_role = request.GET.get("role", request.session.get("api_role"))
+            requested = request.GET.get("role", request.session.get("api_role"))
+            user = getattr(request, "user", None)
+            is_authenticated = bool(user and user.is_authenticated)
+
+            if requested and is_authenticated:
+                from .backends import get_user_roles
+
+                user_roles = set(get_user_roles(user) or [])
+                if requested in user_roles:
+                    self.current_role = requested
+                else:
+                    # Reject the escalation attempt — fall back to one of
+                    # the user's actual roles (or None)
+                    self.current_role = (
+                        next(iter(user_roles)) if user_roles else None
+                    )
+            else:
+                # Anonymous browsing or no role requested
+                self.current_role = requested
 
         schema = super().get_schema(request, public)
 
@@ -116,56 +141,30 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
         return schema
 
     def _extract_model_info(self, path):
+        """Resolve a schema path to the registered model's (app_label, model_name).
+
+        Accepts both the URLConf-mounted form (`/api/<plural>/`) and the
+        un-prefixed form drf-yasg emits in some versions (`/<plural>/`).
+        Returns None when no registered model corresponds to the singular
+        form.
         """
-        Extract model information from API endpoint path.
+        from django.apps import apps
 
-        This method parses the API path to determine which Django model
-        it corresponds to. This information is used to check permissions
-        for the endpoint.
-
-        Args:
-            path (str): The API endpoint path (e.g., '/api/articles/').
-
-        Returns:
-            dict: Contains 'app_label' and 'model_name' if extraction
-                 succeeds, None otherwise.
-
-        Path Format:
-            Expected: /api/{model_name_plural}/
-            Example: /api/articles/ -> {app_label: 'myapp', model_name: 'article'}
-
-        Note:
-            This is a simplified implementation that assumes:
-            - URLs follow the pattern /api/{model_name_plural}/
-            - Model names are pluralized with simple 's' suffix
-            - All models belong to 'myapp' (should be made configurable)
-
-        TODO:
-            - Extract app_label from URL or model registry
-            - Handle complex pluralization rules
-            - Support nested resources (e.g., /api/articles/1/comments/)
-        """
-        # This is a simplified version - adjust based on your URL patterns
-        parts = path.strip("/").split("/")
-        if len(parts) >= 2 and parts[0] == "api":
-            # Get the model name from URL
-            model_name = parts[1].rstrip("s")  # Remove plural 's'
-
-            # Try to find the actual app label from registered models
-            from django.apps import apps
-
-            for model in apps.get_models():
-                if model._meta.model_name == model_name:
-                    return {
-                        "app_label": model._meta.app_label,
-                        "model_name": model_name,
-                    }
-
-            # Fallback to books app for this example
-            return {
-                "app_label": "books",
-                "model_name": model_name,
-            }
+        parts = [p for p in path.strip("/").split("/") if p]
+        if not parts:
+            return None
+        # Strip leading 'api' segment if drf-yasg includes it.
+        if parts[0] == "api":
+            parts = parts[1:]
+        if not parts:
+            return None
+        model_name = parts[0].rstrip("s")
+        for model in apps.get_models():
+            if model._meta.model_name == model_name:
+                return {
+                    "app_label": model._meta.app_label,
+                    "model_name": model_name,
+                }
         return None
 
     def _has_permission(self, model_info, method, permissions):
@@ -280,24 +279,53 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
         """
         endpoints = super().get_endpoints(request)
 
-        # Filter out _no_slash variants
+        # drf-yasg's get_endpoints returns a list of tuples on older
+        # releases and a dict {path: (callback, methods)} on newer ones.
+        # Both shapes are handled to avoid a 500 against newer drf-yasg.
+        if isinstance(endpoints, dict):
+            return self._filter_endpoint_dict(endpoints)
+
+        return self._filter_endpoint_tuples(endpoints)
+
+    def _filter_endpoint_dict(self, endpoints_dict):
+        """drf-yasg dict form: {path: (callback, methods)} or similar."""
+        filtered = {}
+        for path, value in endpoints_dict.items():
+            callback = value[0] if isinstance(value, tuple) and value else value
+            if self._is_no_slash_duplicate(callback):
+                continue
+            filtered[path] = value
+        return filtered
+
+    def _filter_endpoint_tuples(self, endpoints):
+        """drf-yasg tuple form: list of (path, path_regex, method, callback)."""
         filtered_endpoints = []
-        for path, path_regex, method, callback in endpoints:
-            # Skip endpoints with _no_slash suffix in the URL name
-            if hasattr(callback, "cls") and hasattr(callback.cls, "_basename"):
-                # Check if this is a duplicate no-slash endpoint
-                # by looking at the URL pattern name
-                if (
-                    hasattr(callback, "actions")
-                    and hasattr(callback, "name")
-                    and callback.name
-                    and callback.name.endswith("_no_slash")
-                ):
-                    continue
-
-            filtered_endpoints.append((path, path_regex, method, callback))
-
+        for entry in endpoints:
+            # Defensively handle 4-tuple AND 5-tuple shapes
+            if len(entry) >= 4:
+                path = entry[0]
+                path_regex = entry[1]
+                method = entry[2]
+                callback = entry[3]
+            else:
+                # Unknown shape — pass through unfiltered
+                filtered_endpoints.append(entry)
+                continue
+            if self._is_no_slash_duplicate(callback):
+                continue
+            filtered_endpoints.append(entry)
         return filtered_endpoints
+
+    def _is_no_slash_duplicate(self, callback):
+        """True if this callback is a duplicate no-slash variant."""
+        if not (hasattr(callback, "cls") and hasattr(callback.cls, "_basename")):
+            return False
+        return (
+            hasattr(callback, "actions")
+            and hasattr(callback, "name")
+            and callback.name
+            and callback.name.endswith("_no_slash")
+        )
 
 
 class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
@@ -423,15 +451,41 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
             # This is just for documentation purposes
             from .serializers import TurboDRFSerializer
 
-            # Capture variables for the closure
+            # Strip nested fields (`__` paths) — DRF ModelSerializer can't
+            # use them in Meta.fields directly, and including them raises
+            # at swagger generation time. Only base writeable fields apply
+            # to write operations anyway. The base FK is kept (e.g.
+            # 'author' rather than 'author__name').
+            if isinstance(all_fields, list):
+                seen = set()
+                cleaned = []
+                for f in all_fields:
+                    base = f.split("__")[0] if "__" in f else f
+                    if base not in seen:
+                        seen.add(base)
+                        cleaned.append(base)
+                all_fields = cleaned
+
             fields_to_use = all_fields
             ref_name_value = f"{model_class._meta.model_name}_write"
 
             # Check if we should show all fields regardless of permissions
-            # (useful for development/documentation purposes)
+            # (useful for development/documentation purposes).
+            # Production guard: if DEBUG is False this flag is ignored —
+            # otherwise an operator who left it enabled in dev would leak
+            # field names to every authenticated viewer.
             show_all_fields = getattr(
                 settings, "TURBODRF_SWAGGER_SHOW_ALL_FIELDS", False
             )
+            if show_all_fields and not getattr(settings, "DEBUG", False):
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "TURBODRF_SWAGGER_SHOW_ALL_FIELDS=True is ignored when "
+                    "DEBUG=False. Set DEBUG=True for development or remove "
+                    "the flag in production."
+                )
+                show_all_fields = False
 
             # Create a serializer with all configured fields
             class WriteOperationSerializer(TurboDRFSerializer):

@@ -120,15 +120,14 @@ def get_user_roles(user) -> list:
         )
         return role_names
     elif hasattr(user, "roles"):
-        # Use existing roles property (static mode or custom)
-        return user.roles if isinstance(user.roles, list) else list(user.roles)
+        # `user.roles` may be None (custom user models that haven't set
+        # it), a list, or any iterable. Coerce defensively — downstream
+        # set ops and serialization assume a list.
+        roles = user.roles or []
+        return roles if isinstance(roles, list) else list(roles)
     elif hasattr(user, "_test_roles"):
-        # Support test users with _test_roles property (for backward compatibility)
-        return (
-            user._test_roles
-            if isinstance(user._test_roles, list)
-            else list(user._test_roles)
-        )
+        roles = user._test_roles or []
+        return roles if isinstance(roles, list) else list(roles)
     else:
         return []
 

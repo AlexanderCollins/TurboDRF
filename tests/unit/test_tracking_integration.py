@@ -161,37 +161,6 @@ class TestTrackingConfiguration(TestCase):
         self.assertFalse(default_value)
 
 
-class TestTrackingDocumentation(TestCase):
-    """Test tracking module documentation."""
-
-    def test_tracking_module_has_docstring(self):
-        """Test that tracking module has documentation."""
-        from turbodrf import tracking
-
-        docstring = tracking.__doc__
-
-        self.assertIsNotNone(docstring)
-        self.assertIn("tracking", docstring.lower())
-
-    def test_is_tracking_enabled_has_docstring(self):
-        """Test that is_tracking_enabled has documentation."""
-        docstring = is_tracking_enabled.__doc__
-
-        self.assertIsNotNone(docstring)
-
-    def test_get_tracking_mixin_has_docstring(self):
-        """Test that get_tracking_mixin has documentation."""
-        docstring = get_tracking_mixin.__doc__
-
-        self.assertIsNotNone(docstring)
-
-    def test_get_viewset_base_classes_has_docstring(self):
-        """Test that get_viewset_base_classes has documentation."""
-        docstring = get_viewset_base_classes.__doc__
-
-        self.assertIsNotNone(docstring)
-
-
 class TestTrackingMixinOrdering(TestCase):
     """Test that tracking mixin is added in correct order."""
 
@@ -199,47 +168,12 @@ class TestTrackingMixinOrdering(TestCase):
     def test_tracking_mixin_comes_before_model_viewset(self):
         """Test that tracking mixin is added before ModelViewSet in MRO."""
         bases = get_viewset_base_classes()
-
-        # If tracking mixin is present, it should come first
         if len(bases) > 1:
-            # First base should be the tracking mixin
-            # Last base should be ModelViewSet
+            # If tracking is installed AND enabled, mixin should come first
             self.assertEqual(bases[-1], viewsets.ModelViewSet)
 
 
-class TestTrackingImportSafety(TestCase):
-    """Test that tracking integration handles missing package gracefully."""
-
-    def test_import_tracking_module(self):
-        """Test that tracking module can be imported."""
-        try:
-            from turbodrf import tracking
-
-            self.assertIsNotNone(tracking)
-        except ImportError:
-            self.fail("Should be able to import tracking module")
-
-    def test_is_tracking_enabled_doesnt_raise(self):
-        """Test that is_tracking_enabled doesn't raise even if package missing."""
-        try:
-            result = is_tracking_enabled()
-            self.assertIsInstance(result, bool)
-        except Exception as e:
-            self.fail(f"is_tracking_enabled should not raise: {e}")
-
-    def test_get_tracking_mixin_doesnt_raise(self):
-        """Test that get_tracking_mixin doesn't raise even if package missing."""
-        try:
-            result = get_tracking_mixin()
-            # Should be None or a class
-            self.assertTrue(result is None or callable(result))
-        except Exception as e:
-            self.fail(f"get_tracking_mixin should not raise: {e}")
-
-    def test_get_viewset_base_classes_doesnt_raise(self):
-        """Test that get_viewset_base_classes doesn't raise."""
-        try:
-            result = get_viewset_base_classes()
-            self.assertIsInstance(result, tuple)
-        except Exception as e:
-            self.fail(f"get_viewset_base_classes should not raise: {e}")
+# Note: removed 5 docstring-presence tests + 4 "doesn't raise" placeholders
+# from earlier versions of this file. They asserted nothing functional
+# (e.g. `self.assertIsNotNone(fn.__doc__)`). The remaining tests in this
+# file actually exercise behavior.

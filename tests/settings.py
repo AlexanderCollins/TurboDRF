@@ -188,7 +188,43 @@ TURBODRF_ROLES = {
         "test_app.relatedmodel.description.read",
         # Cannot see secret fields or price
     ],
+    # Roles for predicate/IDOR/tenancy tests on the brokerage chain
+    "underwriter": [
+        "test_app.deal.read",
+        "test_app.deal.create",
+        "test_app.deal.update",
+        "test_app.deal.delete",
+        "test_app.bankaccount.read",
+        "test_app.bankaccount.create",
+        "test_app.bankaccount.update",
+        "test_app.bankaccount.delete",
+        "test_app.transaction.read",
+        "test_app.transaction.create",
+        "test_app.transaction.update",
+        "test_app.transaction.delete",
+    ],
+    "manager": [
+        "test_app.deal.read",
+        "test_app.deal.create",
+        "test_app.deal.update",
+        "test_app.deal.delete",
+        "test_app.bankaccount.read",
+        "test_app.bankaccount.create",
+        "test_app.bankaccount.update",
+        "test_app.bankaccount.delete",
+        "test_app.transaction.read",
+        "test_app.transaction.create",
+        "test_app.transaction.update",
+        "test_app.transaction.delete",
+    ],
 }
+
+# Predicate / row-level access control settings
+# We do NOT set TURBODRF_TENANT_MODEL globally — that would force every
+# existing test model to declare tenancy. Predicate-specific tests use
+# override_settings for their scope.
+TURBODRF_TENANT_USER_FIELD = "brokerage"
+TURBODRF_REQUIRE_TENANCY = False
 
 # REST Framework settings
 REST_FRAMEWORK = {

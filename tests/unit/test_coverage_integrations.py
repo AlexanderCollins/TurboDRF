@@ -162,7 +162,12 @@ class TestGetUserRolesFromSocialAuth(TestCase):
         mock_manager.all.return_value = [mock_social]
         user.social_auth = mock_manager
 
-        with override_settings(TURBODRF_KEYCLOAK_ROLE_MAPPING={"realm-admin": "admin"}):
+        # Use legacy permissive mode here so 'viewer' passes through
+        # (strict mode would drop it — verified in test_keycloak_integration.py)
+        with override_settings(
+            TURBODRF_KEYCLOAK_ROLE_MAPPING={"realm-admin": "admin"},
+            TURBODRF_KEYCLOAK_STRICT_ROLES=False,
+        ):
             from turbodrf.integrations.keycloak import get_user_roles_from_social_auth
 
             roles = get_user_roles_from_social_auth(user)
