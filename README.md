@@ -2,7 +2,7 @@
 
 [![PyPI Version](https://img.shields.io/pypi/v/turbodrf?label=pypi)](https://pypi.org/project/turbodrf/)
 [![Tests](https://img.shields.io/github/actions/workflow/status/alexandercollins/turbodrf/ci.yml?branch=main&label=tests)](https://github.com/alexandercollins/turbodrf/actions)
-[![Coverage](https://img.shields.io/badge/coverage-95.61%25-brightgreen)](https://github.com/alexandercollins/turbodrf)
+[![Coverage](https://img.shields.io/badge/coverage-95.48%25-brightgreen)](https://github.com/alexandercollins/turbodrf)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/)
 [![Django](https://img.shields.io/badge/django-4.2%20%7C%205.2%20%7C%206.0-darkgreen)](https://www.djangoproject.com/)
 [![License](https://img.shields.io/badge/license-MIT-purple)](LICENSE)
