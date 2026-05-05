@@ -5,6 +5,7 @@ fields by creating a row and reading the response body — leaking the
 exact value they just submitted (or any auto-filled / server-computed
 value) past the field-permission gate.
 """
+
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase, override_settings
@@ -38,7 +39,6 @@ WRITE_BOTH_READ_NAME_ONLY = {
 }
 
 
-@override_settings(TURBODRF_ROLES=WRITE_BOTH_READ_NAME_ONLY)
 class Test201ResponseFieldFiltering(TestCase):
 
     def setUp(self):
@@ -48,6 +48,16 @@ class Test201ResponseFieldFiltering(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
+    def tearDown(self):
+        # The override_settings inside each test caches a permission
+        # snapshot under the restricted role set. After teardown, Django
+        # rolls back the test user but the cache is process-local —
+        # later tests in this xdist worker that happen to reuse the same
+        # user.pk would get a cache hit with the wrong (restricted)
+        # snapshot. Clearing here keeps the test self-contained.
+        cache.clear()
+
+    @override_settings(TURBODRF_ROLES=WRITE_BOTH_READ_NAME_ONLY)
     def test_201_response_strips_unreadable_fields(self):
         r = self.client.post(
             "/api/categorys/",
@@ -66,12 +76,11 @@ class Test201ResponseFieldFiltering(TestCase):
         # Belt and braces — scan the entire body string for the value
         self.assertNotIn("SECRET_DESC_DONT_LEAK", str(body))
 
+    @override_settings(TURBODRF_ROLES=WRITE_BOTH_READ_NAME_ONLY)
     def test_get_response_strips_same_fields_as_201(self):
         """The 201 response and the equivalent GET response should have
         the same field set — confirming the same filter is applied."""
-        cat = Category.objects.create(
-            name="Cat2", description="SECRET_DESC_2"
-        )
+        cat = Category.objects.create(name="Cat2", description="SECRET_DESC_2")
         r_get = self.client.get(f"/api/categorys/{cat.id}/")
         self.assertEqual(r_get.status_code, 200)
         get_body = r_get.data
@@ -86,9 +95,10 @@ class Test201ResponseFieldFiltering(TestCase):
 
         # Same readable field set — proves single source of truth
         self.assertEqual(
-            sorted(get_body.keys()), sorted(post_body.keys()),
+            sorted(get_body.keys()),
+            sorted(post_body.keys()),
             f"GET keys {sorted(get_body.keys())} != "
-            f"POST keys {sorted(post_body.keys())} — different filters!"
+            f"POST keys {sorted(post_body.keys())} — different filters!",
         )
         self.assertNotIn("description", get_body)
         self.assertNotIn("description", post_body)
