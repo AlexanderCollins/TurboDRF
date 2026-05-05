@@ -11,6 +11,15 @@
 
 Turn your Django models into fully-featured REST APIs with a mixin and a method. Zero boilerplate.
 
+## Walkthrough
+
+A 16-minute walkthrough covering setup, query parameters, writes, role-based access control, predicates, and the security model:
+
+<!-- After pushing to main, GitHub renders this as an inline player. -->
+<video src="https://github.com/alexandercollins/turbodrf/raw/main/docs/walkthrough.mp4" controls width="100%"></video>
+
+If your renderer doesn't show the player, use the [direct link](docs/walkthrough.mp4).
+
 ## Install
 
 ```bash
