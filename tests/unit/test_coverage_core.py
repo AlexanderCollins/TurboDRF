@@ -15,7 +15,6 @@ from tests.test_app.models import (
     SampleModel,
 )
 from turbodrf.mixins import TurboDRFMixin
-from turbodrf.utils import create_options_metadata
 from turbodrf.validation import (
     get_max_nesting_depth,
     get_nested_field_model,
@@ -127,176 +126,12 @@ class TestGetFieldType(TestCase):
         self.assertEqual(field.name, "description")
 
 
-# ---------------------------------------------------------------------------
-# Utils tests: create_options_metadata
-# ---------------------------------------------------------------------------
-
-
-class TestCreateOptionsMetadata(TestCase):
-    """Test the OPTIONS metadata builder in utils.py."""
-
-    def _make_user(self, roles):
-        """Create a mock user with roles."""
-        user = MagicMock()
-        user.roles = roles
-        return user
-
-    def test_basic_metadata_structure(self):
-        """Metadata has name, description, and fields keys."""
-        user = self._make_user(["viewer"])
-        with patch(
-            "turbodrf.settings.TURBODRF_ROLES",
-            {
-                "viewer": [
-                    "test_app.samplemodel.title.read",
-                    "test_app.samplemodel.price.read",
-                ]
-            },
-        ):
-            meta = create_options_metadata(SampleModel, ["title", "price"], user)
-        self.assertEqual(meta["name"], "sample model")
-        self.assertIn("fields", meta)
-        self.assertIn("title", meta["fields"])
-        self.assertIn("price", meta["fields"])
-
-    def test_nested_field_creates_nested_entry(self):
-        """Fields with __ notation produce a nested-type stub."""
-        user = self._make_user([])
-        with patch("turbodrf.settings.TURBODRF_ROLES", {}):
-            meta = create_options_metadata(SampleModel, ["related__name"], user)
-        self.assertIn("related", meta["fields"])
-        self.assertEqual(meta["fields"]["related"]["type"], "nested")
-
-    def test_field_info_includes_type_and_label(self):
-        """Each concrete field has type, label, required, etc."""
-        user = self._make_user(["admin"])
-        with patch(
-            "turbodrf.settings.TURBODRF_ROLES",
-            {
-                "admin": [
-                    "test_app.samplemodel.title.read",
-                    "test_app.samplemodel.title.write",
-                ]
-            },
-        ):
-            meta = create_options_metadata(SampleModel, ["title"], user)
-        title_info = meta["fields"]["title"]
-        self.assertEqual(title_info["type"], "CharField")
-        self.assertIn("label", title_info)
-        self.assertIn("max_length", title_info)
-        self.assertEqual(title_info["max_length"], 200)
-
-    def test_field_with_no_permissions_is_readonly_writeonly(self):
-        """A field with no matching perms is both read_only and write_only."""
-        user = self._make_user(["nobody"])
-        with patch("turbodrf.settings.TURBODRF_ROLES", {"nobody": []}):
-            meta = create_options_metadata(SampleModel, ["title"], user)
-        title_info = meta["fields"]["title"]
-        self.assertTrue(title_info["read_only"])  # can't write
-        self.assertTrue(title_info["write_only"])  # can't read
-
-    def test_nonexistent_field_produces_unknown(self):
-        """A field not on the model falls back to type=unknown."""
-        user = self._make_user([])
-        with patch("turbodrf.settings.TURBODRF_ROLES", {}):
-            meta = create_options_metadata(SampleModel, ["does_not_exist"], user)
-        self.assertEqual(meta["fields"]["does_not_exist"]["type"], "unknown")
-
-    def test_description_from_docstring(self):
-        """Model docstring is used as description."""
-        user = self._make_user([])
-        with patch("turbodrf.settings.TURBODRF_ROLES", {}):
-            meta = create_options_metadata(SampleModel, [], user)
-        self.assertIn("Main test model", meta["description"])
-
-    def test_model_without_docstring(self):
-        """Model with no docstring returns empty description."""
-        user = self._make_user([])
-        model = MagicMock()
-        model._meta.verbose_name = "fake"
-        model._meta.app_label = "fake"
-        model._meta.model_name = "fake"
-        model.__doc__ = None
-        with patch("turbodrf.settings.TURBODRF_ROLES", {}):
-            meta = create_options_metadata(model, [], user)
-        self.assertEqual(meta["description"], "")
-
-    def test_field_with_choices(self):
-        """Fields with choices include choice list in metadata."""
-        user = self._make_user([])
-        mock_field = MagicMock()
-        mock_field.__class__.__name__ = "CharField"
-        mock_field.blank = False
-        mock_field.verbose_name = "status"
-        mock_field.help_text = ""
-        mock_field.choices = [("a", "Active"), ("i", "Inactive")]
-        mock_field.max_length = 1
-
-        mock_model = MagicMock()
-        mock_model._meta.verbose_name = "thing"
-        mock_model._meta.app_label = "app"
-        mock_model._meta.model_name = "thing"
-        mock_model.__doc__ = ""
-        mock_model._meta.get_field.return_value = mock_field
-
-        with patch("turbodrf.settings.TURBODRF_ROLES", {}):
-            meta = create_options_metadata(mock_model, ["status"], user)
-        self.assertIn("choices", meta["fields"]["status"])
-        self.assertEqual(len(meta["fields"]["status"]["choices"]), 2)
-        self.assertEqual(
-            meta["fields"]["status"]["choices"][0],
-            {"value": "a", "display": "Active"},
-        )
-
-    def test_multiple_roles_union_permissions(self):
-        """Permissions from multiple roles are unioned."""
-        user = self._make_user(["role_a", "role_b"])
-        with patch(
-            "turbodrf.settings.TURBODRF_ROLES",
-            {
-                "role_a": ["test_app.samplemodel.title.read"],
-                "role_b": ["test_app.samplemodel.title.write"],
-            },
-        ):
-            meta = create_options_metadata(SampleModel, ["title"], user)
-        title_info = meta["fields"]["title"]
-        self.assertFalse(title_info["read_only"])
-        self.assertFalse(title_info["write_only"])
-
-    def test_help_text_included(self):
-        """help_text from field is included in metadata."""
-        user = self._make_user([])
-        mock_field = MagicMock()
-        mock_field.__class__.__name__ = "CharField"
-        mock_field.blank = True
-        mock_field.verbose_name = "name"
-        mock_field.help_text = "Enter your name"
-        mock_field.choices = None
-        # No max_length attribute for this test
-        del mock_field.max_length
-
-        mock_model = MagicMock()
-        mock_model._meta.verbose_name = "thing"
-        mock_model._meta.app_label = "app"
-        mock_model._meta.model_name = "thing"
-        mock_model.__doc__ = ""
-        mock_model._meta.get_field.return_value = mock_field
-
-        with patch("turbodrf.settings.TURBODRF_ROLES", {}):
-            meta = create_options_metadata(mock_model, ["name"], user)
-        self.assertEqual(meta["fields"]["name"]["help_text"], "Enter your name")
-        self.assertFalse(meta["fields"]["name"]["required"])
-
-    def test_multiple_nested_fields_same_base(self):
-        """Multiple nested fields with same base only create one entry."""
-        user = self._make_user([])
-        with patch("turbodrf.settings.TURBODRF_ROLES", {}):
-            meta = create_options_metadata(
-                SampleModel, ["related__name", "related__description"], user
-            )
-        # related should appear once with nested type
-        self.assertEqual(meta["fields"]["related"]["type"], "nested")
-        self.assertIn("fields", meta["fields"]["related"])
+# Note: tests for the removed `create_options_metadata` helper used to
+# live here. The helper was deleted along with `turbodrf/utils.py` because
+# it was never used in production — `metadata.py:TurboDRFMetadata` is the
+# real implementation, and it's covered by `test_coverage_swagger.py`
+# (TestTurboDRFMetadata). One orphan test (test_multiple_nested_fields_same_base)
+# also referenced the deleted helper and was removed with it.
 
 
 # ---------------------------------------------------------------------------

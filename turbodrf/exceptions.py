@@ -21,6 +21,16 @@ class NoRoleAssigned(APIException):
     default_code = "no_role_assigned"
 
 
+def _coerce_error_detail(value):
+    """Recursively convert DRF's ErrorDetail (a str subclass) to plain Python
+    types so the fast JSON renderer (msgspec/orjson) can encode them."""
+    if isinstance(value, dict):
+        return {k: _coerce_error_detail(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_coerce_error_detail(v) for v in value]
+    return str(value) if value is not None else None
+
+
 def turbodrf_exception_handler(exc, context):
     """Custom exception handler that wraps errors in a standard format."""
     response = exception_handler(exc, context)
@@ -30,10 +40,9 @@ def turbodrf_exception_handler(exc, context):
         if hasattr(exc, "detail"):
             detail = exc.detail
             if isinstance(detail, dict):
-                # Validation errors — keep field-level detail
-                message = detail
+                message = _coerce_error_detail(detail)
             elif isinstance(detail, list):
-                message = detail
+                message = _coerce_error_detail(detail)
             else:
                 message = str(detail)
         else:

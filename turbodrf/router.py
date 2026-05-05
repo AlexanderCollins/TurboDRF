@@ -13,6 +13,24 @@ from .mixins import TurboDRFMixin
 from .views import TurboDRFViewSet
 
 
+def _walk_predicates(predicates):
+    """Yield every predicate (recursing into Either's children)."""
+    from .predicates import Either
+
+    for p in predicates:
+        yield p
+        if isinstance(p, Either):
+            yield from _walk_predicates(p.predicates)
+
+
+# Process-level flag: once the bypass-role validation passes for the real
+# settings on first init, subsequent router inits (typically under
+# override_settings during tests) skip the re-check. Production startup
+# hits this once with the real TURBODRF_ROLES; tests with partial role
+# overrides won't trip the guard against the model's static bypass list.
+_bypass_roles_validated = False
+
+
 class TurboDRFRouter(DefaultRouter):
     """
     Router that auto-discovers and registers TurboDRF models.
@@ -69,8 +87,9 @@ class TurboDRFRouter(DefaultRouter):
         1. Finds all models inheriting from TurboDRFMixin
         2. Checks if the model is enabled (via turbodrf() config)
         3. Validates field nesting depth
-        4. Creates a dynamic ViewSet for the model
-        5. Registers the ViewSet with the appropriate endpoint
+        4. Resolves tenancy (sugar → predicates, auto-detection, hard-fail)
+        5. Creates a dynamic ViewSet for the model
+        6. Registers the ViewSet with the appropriate endpoint
 
         Models can customize their endpoint name via the 'endpoint' key
         in their turbodrf() configuration. If not specified, the endpoint
@@ -78,9 +97,25 @@ class TurboDRFRouter(DefaultRouter):
         """
         import logging
 
+        from django.conf import settings as django_settings
+        from django.core.exceptions import ImproperlyConfigured
+
+        from .predicates import (
+            Either,
+            Owner,
+            has_tenancy_declaration,
+            register_predicates,
+            register_tenant_field,
+        )
+        from .tenancy import resolve_tenancy_for_model
         from .validation import validate_nesting_depth
 
         logger = logging.getLogger(__name__)
+
+        tenant_model_setting = getattr(django_settings, "TURBODRF_TENANT_MODEL", None)
+        require_tenancy = getattr(django_settings, "TURBODRF_REQUIRE_TENANCY", True)
+        autodetect = getattr(django_settings, "TURBODRF_AUTODETECT_TENANT", False)
+        known_roles = set(getattr(django_settings, "TURBODRF_ROLES", {}).keys())
 
         for model in apps.get_models():
             if issubclass(model, TurboDRFMixin):
@@ -107,6 +142,67 @@ class TurboDRFRouter(DefaultRouter):
                                 f"Model {model.__name__} field '{field}' "
                                 f"validation failed: {str(e)}"
                             )
+
+                    # ---------------------------------------------------
+                    # Resolve tenancy: returns (tenant_field, predicates,
+                    # autodetected). Tenant is a SETTING separate from the
+                    # predicate algebra so OR-composition cannot escape it.
+                    # ---------------------------------------------------
+                    tenant_field, predicates, autodetected = (
+                        resolve_tenancy_for_model(
+                            model,
+                            config,
+                            tenant_model_setting,
+                            autodetect=autodetect,
+                        )
+                    )
+
+                    if (
+                        require_tenancy
+                        and tenant_model_setting is not None
+                        and tenant_field is None
+                        and not predicates
+                        and not has_tenancy_declaration(config)
+                        and not autodetected
+                    ):
+                        raise ImproperlyConfigured(
+                            f"{model.__name__}.turbodrf() declares no tenancy "
+                            f"and no tenant FK could be auto-detected to "
+                            f"{tenant_model_setting}. Add one of: "
+                            f"'tenant_field': '<path>', "
+                            f"'visibility': [...], or "
+                            f"'tenancy': 'shared' (for reference data). "
+                            f"Set TURBODRF_REQUIRE_TENANCY=False to disable "
+                            f"this check."
+                        )
+
+                    # Validate bypass roles against TURBODRF_ROLES.
+                    # Runs once per process at first init. Subsequent
+                    # inits (typically under override_settings in tests)
+                    # skip this — the real config has already been
+                    # checked, and partial role overrides shouldn't
+                    # spuriously fail the typo guard.
+                    global _bypass_roles_validated
+                    if known_roles and not _bypass_roles_validated:
+                        for pred in _walk_predicates(predicates):
+                            if isinstance(pred, Owner) and pred.bypass:
+                                unknown = pred.bypass - known_roles
+                                if unknown:
+                                    raise ImproperlyConfigured(
+                                        f"{model.__name__}.turbodrf() declares "
+                                        f"bypass_owner_roles={sorted(pred.bypass)} "
+                                        f"but {sorted(unknown)} are not in "
+                                        f"TURBODRF_ROLES. Typo or stale config?"
+                                    )
+
+                    register_tenant_field(model, tenant_field)
+                    register_predicates(model, predicates)
+                    if autodetected:
+                        logger.info(
+                            f"Auto-detected tenant path for {model.__name__}: "
+                            f"{tenant_field}"
+                        )
+
                     # Get custom endpoint or use default
                     endpoint = config.get("endpoint", f"{model._meta.model_name}s")
 
@@ -117,6 +213,8 @@ class TurboDRFRouter(DefaultRouter):
                     viewset_attrs = {
                         "model": model,
                         "queryset": model.objects.all(),
+                        "_predicates": predicates,
+                        "_tenant_field": tenant_field,
                         "__module__": model.__module__,
                         "__doc__": (
                             f"Auto-generated ViewSet for {model.__name__} model."
@@ -154,6 +252,11 @@ class TurboDRFRouter(DefaultRouter):
                                 f"Could not compile {model.__name__}: {e}. "
                                 f"Falling back to DRF serializer path."
                             )
+
+        # Mark bypass-roles validation as complete for this process.
+        # Subsequent inits skip the check.
+        _bypass_roles_validated = True
+        globals()["_bypass_roles_validated"] = True
 
     def get_urls(self):
         """

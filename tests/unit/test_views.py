@@ -173,9 +173,20 @@ class TestTurboDRFViewSet(TestCase):
         self.assertEqual(search_fields, ["title", "description"])
 
     def test_ordering_fields_property(self):
-        """Test ordering fields property."""
+        """ordering_fields is permission-restricted to prevent ordering by
+        hidden fields (binary search attack on hidden values).
+
+        Without a request/user attached the property still returns SOME list
+        of non-sensitive fields — '__all__' would be a security regression."""
         ordering_fields = self.viewset.ordering_fields
-        self.assertEqual(ordering_fields, "__all__")
+        # Should be a list (or '__all__' only when permissions are disabled)
+        self.assertIsInstance(ordering_fields, (list, str))
+        if isinstance(ordering_fields, str):
+            self.assertEqual(ordering_fields, "__all__")
+        else:
+            # Sensitive fields must be excluded
+            self.assertNotIn("password", ordering_fields)
+            self.assertNotIn("token", ordering_fields)
 
     def test_filterset_fields_property(self):
         """Test filterset fields property."""

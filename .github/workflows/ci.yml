@@ -10,9 +10,21 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-        django-version: ["4.2", "5.2"]
+        django-version: ["4.2", "5.2", "6.0"]
+        exclude:
+          # Django 4.2 officially supports Python 3.8-3.12 only.
+          - python-version: "3.13"
+            django-version: "4.2"
+          - python-version: "3.14"
+            django-version: "4.2"
+          # Django 6.0 requires Python 3.12+.
+          - python-version: "3.10"
+            django-version: "6.0"
+          - python-version: "3.11"
+            django-version: "6.0"
 
     steps:
     - uses: actions/checkout@v6
@@ -25,7 +37,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install django~=${{ matrix.django-version }}.0
+        pip install "django~=${{ matrix.django-version }}.0"
         pip install -e ".[dev]"
 
     - name: Run tests with coverage

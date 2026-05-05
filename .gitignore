@@ -44,6 +44,15 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# Generated coverage / dev artifacts
+coverage.json
+example_project/cookies.txt
+
+# Internal security audit working notes (full version with exploitation
+# details). Public summary lives at docs/security_audit.md.
+SECURITY_AUDIT.md
+/tmp/turbodrf_pentest_report_*.md
+
 # Environments
 .env
 .venv
@@ -64,3 +73,4 @@ Thumbs.db
 
 # Claude Code
 .claude/
+video_education/

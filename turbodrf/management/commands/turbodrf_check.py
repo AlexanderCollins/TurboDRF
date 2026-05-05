@@ -109,6 +109,9 @@ class Command(BaseCommand):
         )
         self.stdout.write(f"  Public access: {public_access}")
 
+        # Tenancy / predicate report
+        self._report_tenancy(model, config)
+
         if issues:
             self.stdout.write(self.style.ERROR("  Issues:"))
             for issue in issues:
@@ -120,3 +123,94 @@ class Command(BaseCommand):
                     "Add 'compiled': True to turbodrf() config."
                 )
             )
+
+    def _report_tenancy(self, model, config):
+        """Print row-level access control configuration for the model."""
+        from django.conf import settings
+
+        from turbodrf.predicates import has_tenancy_declaration
+        from turbodrf.tenancy import (
+            AmbiguousTenantPath,
+            resolve_tenancy_for_model,
+        )
+
+        tenant_model_setting = getattr(settings, "TURBODRF_TENANT_MODEL", None)
+        autodetect = getattr(settings, "TURBODRF_AUTODETECT_TENANT", True)
+        require = getattr(settings, "TURBODRF_REQUIRE_TENANCY", True)
+
+        if tenant_model_setting is None:
+            self.stdout.write(
+                "  Tenancy: (TURBODRF_TENANT_MODEL not configured)"
+            )
+            return
+
+        try:
+            tenant_field, predicates, autodetected = resolve_tenancy_for_model(
+                model, config, tenant_model_setting, autodetect=autodetect
+            )
+        except AmbiguousTenantPath as e:
+            self.stdout.write(self.style.ERROR(f"  Tenancy: AMBIGUOUS — {e}"))
+            return
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f"  Tenancy: ERROR — {e}"))
+            return
+
+        self.stdout.write(f"  Tenant model: {tenant_model_setting}")
+
+        if config.get("tenancy") == "shared":
+            self.stdout.write("  Tenancy: shared (no row scoping)")
+            return
+
+        if not tenant_field and not predicates:
+            if require and not has_tenancy_declaration(config):
+                self.stdout.write(
+                    self.style.ERROR(
+                        "  Tenancy: NOT DECLARED — router will refuse to "
+                        "register this model. Add 'tenant_field', "
+                        "'visibility', or 'tenancy': 'shared'."
+                    )
+                )
+            else:
+                self.stdout.write("  Tenancy: (none)")
+            return
+
+        if tenant_field:
+            label = (
+                f"  Tenant field: {tenant_field}"
+                + (" [auto-detected]" if autodetected else "")
+            )
+            self.stdout.write(self.style.SUCCESS(label))
+
+        if predicates:
+            names = [self._describe_predicate(p) for p in predicates]
+            self.stdout.write(f"  Within-tenant predicates: {', '.join(names)}")
+
+    def _describe_predicate(self, p):
+        """One-line describe of a predicate for command output."""
+        from turbodrf.predicates import (
+            Conditional,
+            Custom,
+            Either,
+            Group,
+            Members,
+            Owner,
+        )
+
+        if isinstance(p, Owner):
+            fields = p.fields[0] if len(p.fields) == 1 else p.fields
+            bypass = (
+                f", bypass={sorted(p.bypass)}" if p.bypass else ""
+            )
+            return f"Owner({fields!r}{bypass})"
+        if isinstance(p, Members):
+            return f"Members({p.m2m_field!r})"
+        if isinstance(p, Group):
+            return f"Group({p.field!r})"
+        if isinstance(p, Conditional):
+            return f"Conditional(require={sorted(p.require_roles)})"
+        if isinstance(p, Either):
+            children = ", ".join(self._describe_predicate(c) for c in p.predicates)
+            return f"Either({children})"
+        if isinstance(p, Custom):
+            return "Custom(...)"
+        return type(p).__name__
