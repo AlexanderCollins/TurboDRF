@@ -125,17 +125,21 @@ return {
 Power form (when you need `Either` or `Custom`):
 
 ```python
-from turbodrf.predicates import Tenant, Owner, Either, Custom
+from turbodrf.predicates import Owner, Either, Custom
 
 return {
-    'visibility': [
-        Tenant('workspace'),
+    'tenant_field': 'workspace',          # mandatory boundary (setting)
+    'visibility': [                       # within-tenant predicates
         Either(Owner('author'), Owner('reviewer')),
     ],
 }
 ```
 
-You can't mix sugar + `visibility` on the same model.
+`tenant_field` is a setting, not a predicate, and is allowed alongside
+`visibility`. `owner_field` / `bypass_owner_roles` are sugar that compiles
+to predicates — those *do* conflict with `visibility` (pick one or the
+other). Tenant inside `visibility` is supported but deprecated; use the
+`tenant_field` setting instead.
 
 ---
 

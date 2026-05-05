@@ -41,7 +41,6 @@ from turbodrf.predicates import (
     has_tenancy_declaration,
     parse_config,
     register_predicates,
-    register_tenant_field,
 )
 
 User = get_user_model()
@@ -484,13 +483,29 @@ class TestParseConfigAndRegistration(SecurityBase):
         """Various malformed configs must all raise ImproperlyConfigured."""
         bad_configs = [
             "string",  # not a dict
-            {"visibility": [Owner("a")], "tenant_field": "x"},  # mixed forms
+            {
+                "visibility": [Owner("a")],
+                "owner_field": "assigned_broker",
+            },  # owner sugar conflicts with visibility
             {"visibility": ["not a predicate"]},
             {"tenant_field": ["a", "b"]},  # tenant_field as list
         ]
         for cfg in bad_configs:
             with self.assertRaises(ImproperlyConfigured):
                 parse_config(cfg)
+
+    def test_tenant_field_alongside_visibility_is_allowed(self):
+        """tenant_field is a setting (not a predicate) and composes
+        cleanly with visibility=[...] — this is the canonical power-form
+        pairing now that Tenant() inside visibility is deprecated."""
+        tf, preds = parse_config(
+            {
+                "tenant_field": "brokerage",
+                "visibility": [Owner("assigned_broker")],
+            }
+        )
+        self.assertEqual(tf, "brokerage")
+        self.assertEqual(len(preds), 1)
 
     def test_valid_inputs_yield_no_predicates(self):
         """tenancy='shared' and visibility=[] both yield (None, [])."""
@@ -531,21 +546,27 @@ class TestParseConfigAndRegistration(SecurityBase):
 
     def test_unregistered_model_returns_defaults_and_clear_predicates(self):
         """Unregistered model → ([], None). clear_predicates() wipes the
-        registry; restore via register + router rehydrate."""
+        registry; restore via full snapshot."""
+        from turbodrf.predicates import _model_predicates, _model_tenant_fields
         from turbodrf.router import TurboDRFRouter
 
         self.assertEqual(get_predicates(SampleModel), [])
         self.assertIsNone(get_tenant_field(SampleModel))
 
-        orig_preds = list(get_predicates(Deal))
-        orig_tf = get_tenant_field(Deal)
+        # Snapshot the FULL registry — restoring only Deal would leave
+        # every other model unregistered for subsequent tests on this
+        # xdist worker (FK injection guards stop firing).
+        saved_p = dict(_model_predicates)
+        saved_t = dict(_model_tenant_fields)
         try:
             clear_predicates()
             self.assertEqual(get_predicates(Deal), [])
             self.assertIsNone(get_tenant_field(Deal))
         finally:
-            register_predicates(Deal, orig_preds)
-            register_tenant_field(Deal, orig_tf)
+            _model_predicates.clear()
+            _model_predicates.update(saved_p)
+            _model_tenant_fields.clear()
+            _model_tenant_fields.update(saved_t)
             TurboDRFRouter()
 
 
