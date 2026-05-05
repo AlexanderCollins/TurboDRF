@@ -41,7 +41,6 @@ from turbodrf.predicates import (
     has_tenancy_declaration,
     parse_config,
     register_predicates,
-    register_tenant_field,
 )
 
 User = get_user_model()
