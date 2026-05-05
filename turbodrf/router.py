@@ -101,7 +101,6 @@ class TurboDRFRouter(DefaultRouter):
         from django.core.exceptions import ImproperlyConfigured
 
         from .predicates import (
-            Either,
             Owner,
             has_tenancy_declaration,
             register_predicates,
@@ -148,13 +147,11 @@ class TurboDRFRouter(DefaultRouter):
                     # autodetected). Tenant is a SETTING separate from the
                     # predicate algebra so OR-composition cannot escape it.
                     # ---------------------------------------------------
-                    tenant_field, predicates, autodetected = (
-                        resolve_tenancy_for_model(
-                            model,
-                            config,
-                            tenant_model_setting,
-                            autodetect=autodetect,
-                        )
+                    tenant_field, predicates, autodetected = resolve_tenancy_for_model(
+                        model,
+                        config,
+                        tenant_model_setting,
+                        autodetect=autodetect,
                     )
 
                     if (

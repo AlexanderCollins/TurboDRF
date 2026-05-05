@@ -35,9 +35,7 @@ class TurboDRFMetadata(SimpleMetadata):
         metadata["model"] = {
             "name": str(model._meta.verbose_name),
             "app_label": model._meta.app_label,
-            "fields": self._get_field_metadata(
-                model, fields, request.user, snapshot
-            ),
+            "fields": self._get_field_metadata(model, fields, request.user, snapshot),
         }
         metadata["actions"] = self._get_allowed_actions(model, request.user, snapshot)
 
@@ -82,10 +80,7 @@ class TurboDRFMetadata(SimpleMetadata):
         gate_by_perms = bool(get_user_roles(user))
 
         for field_name in fields:
-            if (
-                gate_by_perms
-                and not is_field_visible_to_user(model, field_name, user)
-            ):
+            if gate_by_perms and not is_field_visible_to_user(model, field_name, user):
                 continue
 
             if "__" in field_name:
@@ -122,8 +117,7 @@ class TurboDRFMetadata(SimpleMetadata):
                         field_info["max_length"] = field.max_length
                     if hasattr(field, "choices") and field.choices:
                         field_info["choices"] = [
-                            {"value": k, "display": str(v)}
-                            for k, v in field.choices
+                            {"value": k, "display": str(v)} for k, v in field.choices
                         ]
 
                     field_metadata[field_name] = field_info

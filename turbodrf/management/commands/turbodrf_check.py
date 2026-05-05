@@ -139,9 +139,7 @@ class Command(BaseCommand):
         require = getattr(settings, "TURBODRF_REQUIRE_TENANCY", True)
 
         if tenant_model_setting is None:
-            self.stdout.write(
-                "  Tenancy: (TURBODRF_TENANT_MODEL not configured)"
-            )
+            self.stdout.write("  Tenancy: (TURBODRF_TENANT_MODEL not configured)")
             return
 
         try:
@@ -175,9 +173,8 @@ class Command(BaseCommand):
             return
 
         if tenant_field:
-            label = (
-                f"  Tenant field: {tenant_field}"
-                + (" [auto-detected]" if autodetected else "")
+            label = f"  Tenant field: {tenant_field}" + (
+                " [auto-detected]" if autodetected else ""
             )
             self.stdout.write(self.style.SUCCESS(label))
 
@@ -198,9 +195,7 @@ class Command(BaseCommand):
 
         if isinstance(p, Owner):
             fields = p.fields[0] if len(p.fields) == 1 else p.fields
-            bypass = (
-                f", bypass={sorted(p.bypass)}" if p.bypass else ""
-            )
+            bypass = f", bypass={sorted(p.bypass)}" if p.bypass else ""
             return f"Owner({fields!r}{bypass})"
         if isinstance(p, Members):
             return f"Members({p.m2m_field!r})"

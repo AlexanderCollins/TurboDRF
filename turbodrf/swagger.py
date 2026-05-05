@@ -98,9 +98,7 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
                 else:
                     # Reject the escalation attempt — fall back to one of
                     # the user's actual roles (or None)
-                    self.current_role = (
-                        next(iter(user_roles)) if user_roles else None
-                    )
+                    self.current_role = next(iter(user_roles)) if user_roles else None
             else:
                 # Anonymous browsing or no role requested
                 self.current_role = requested
@@ -303,9 +301,9 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
         for entry in endpoints:
             # Defensively handle 4-tuple AND 5-tuple shapes
             if len(entry) >= 4:
-                path = entry[0]
-                path_regex = entry[1]
-                method = entry[2]
+                entry[0]
+                entry[1]
+                entry[2]
                 callback = entry[3]
             else:
                 # Unknown shape — pass through unfiltered

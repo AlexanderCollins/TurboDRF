@@ -43,9 +43,7 @@ class TestTenantRLS(TestCase):
 class TestOwnerRLS(TestCase):
     def test_simple_owner(self):
         clause = Owner("assigned_to").to_rls_using_clause()
-        self.assertEqual(
-            clause, "assigned_to_id = current_setting('app.user_id')::int"
-        )
+        self.assertEqual(clause, "assigned_to_id = current_setting('app.user_id')::int")
 
     def test_owner_with_bypass(self):
         clause = Owner("assigned_to", bypass=["admin", "manager"]).to_rls_using_clause()
@@ -88,7 +86,9 @@ class TestUnsupportedPredicates(TestCase):
 
     def test_conditional_raises(self):
         with self.assertRaises(NotImplementedError):
-            Conditional(when=Q(public=True), require_roles=["admin"]).to_rls_using_clause()
+            Conditional(
+                when=Q(public=True), require_roles=["admin"]
+            ).to_rls_using_clause()
 
     def test_custom_raises(self):
         with self.assertRaises(NotImplementedError):

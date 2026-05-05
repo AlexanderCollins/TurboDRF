@@ -231,9 +231,7 @@ class TestFKAndTenantInjection(SecurityTestBase):
             format="json",
         )
         self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertFalse(
-            Transaction.objects.filter(amount=Decimal("1.00")).exists()
-        )
+        self.assertFalse(Transaction.objects.filter(amount=Decimal("1.00")).exists())
 
     def test_create_bankaccount_with_foreign_deal_rejected(self):
         self._login(self.u_a)
@@ -273,9 +271,7 @@ class TestFKAndTenantInjection(SecurityTestBase):
     def test_create_deal_omitting_brokerage_autofills_correct_one(self):
         """User omits brokerage — autofill puts THEIR brokerage, not attacker-controlled."""
         self._login(self.m_a)
-        r = self.client.post(
-            "/api/deals/", {"title": "auto"}, format="json"
-        )
+        r = self.client.post("/api/deals/", {"title": "auto"}, format="json")
         self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
         deal = Deal.objects.get(title="auto")
         self.assertEqual(deal.brokerage_id, self.b_a.id)
@@ -296,16 +292,22 @@ class TestHiddenFieldExposure(SecurityTestBase):
         super().setUpTestData()
         cls.related = RelatedModel.objects.create(name="r")
         cls.item_secret = SampleModel.objects.create(
-            title="item", price=Decimal("10"), related=cls.related,
+            title="item",
+            price=Decimal("10"),
+            related=cls.related,
             secret_field="THE_SECRET_VALUE",
         )
         # Two items with secret_field that would sort differently
         cls.item_zzz = SampleModel.objects.create(
-            title="A", price=Decimal("1"), related=cls.related,
+            title="A",
+            price=Decimal("1"),
+            related=cls.related,
             secret_field="zzz",
         )
         cls.item_aaa = SampleModel.objects.create(
-            title="B", price=Decimal("2"), related=cls.related,
+            title="B",
+            price=Decimal("2"),
+            related=cls.related,
             secret_field="aaa",
         )
 
@@ -326,9 +328,10 @@ class TestHiddenFieldExposure(SecurityTestBase):
             ids_match = [d.get("id") for d in r_match.data["data"]]
             ids_nomatch = [d.get("id") for d in r_nomatch.data["data"]]
             self.assertEqual(
-                ids_match, ids_nomatch,
+                ids_match,
+                ids_nomatch,
                 f"VULNERABILITY: filter {match_q!r} vs {nomatch_q!r} differ — "
-                "hidden field value leaks via filter."
+                "hidden field value leaks via filter.",
             )
 
     def test_ordering_by_hidden_field_does_not_leak_order(self):
@@ -350,8 +353,11 @@ class TestHiddenFieldExposure(SecurityTestBase):
         self._login(self.viewer)
         r = self.client.get(f"/api/samplemodels/{self.item_secret.id}/")
         self.assertEqual(r.status_code, status.HTTP_200_OK)
-        self.assertNotIn("secret_field", r.data,
-            f"VULNERABILITY: secret_field exposed in response: {r.data}")
+        self.assertNotIn(
+            "secret_field",
+            r.data,
+            f"VULNERABILITY: secret_field exposed in response: {r.data}",
+        )
 
     def test_search_does_not_match_against_hidden_field(self):
         """If a developer accidentally lists secret_field in searchable_fields,
@@ -361,15 +367,14 @@ class TestHiddenFieldExposure(SecurityTestBase):
         SampleModel.searchable_fields = ["title", "description", "secret_field"]
         try:
             self._login(self.viewer)
-            r_match = self.client.get(
-                "/api/samplemodels/?search=THE_SECRET_VALUE"
-            )
+            r_match = self.client.get("/api/samplemodels/?search=THE_SECRET_VALUE")
             r_nomatch = self.client.get("/api/samplemodels/?search=ZZZNOMATCH")
             ids_match = [d.get("id") for d in r_match.data["data"]]
             ids_nomatch = [d.get("id") for d in r_nomatch.data["data"]]
             self.assertEqual(
-                ids_match, ids_nomatch,
-                "VULNERABILITY: ?search= matches against secret_field for viewer."
+                ids_match,
+                ids_nomatch,
+                "VULNERABILITY: ?search= matches against secret_field for viewer.",
             )
         finally:
             SampleModel.searchable_fields = original
@@ -426,9 +431,7 @@ class TestNullAndEdgeCases(SecurityTestBase):
 
     def test_user_with_no_tenant_cannot_create(self):
         self._login(self.no_tenant)
-        r = self.client.post(
-            "/api/deals/", {"title": "x"}, format="json"
-        )
+        r = self.client.post("/api/deals/", {"title": "x"}, format="json")
         # Auto-fill can't fill (no tenant) — model save fails
         self.assertNotEqual(r.status_code, status.HTTP_201_CREATED)
 
@@ -448,8 +451,11 @@ class TestNullAndEdgeCases(SecurityTestBase):
             # 404 / 400 are both acceptable
             self.assertIn(
                 r.status_code,
-                [status.HTTP_404_NOT_FOUND, status.HTTP_400_BAD_REQUEST,
-                 status.HTTP_200_OK],
+                [
+                    status.HTTP_404_NOT_FOUND,
+                    status.HTTP_400_BAD_REQUEST,
+                    status.HTTP_200_OK,
+                ],
             )
 
         for payload in ["%", "_", "(?i:.*)", "((((((((a))))))))"]:
@@ -871,7 +877,10 @@ class TestSensitiveDenyListNested(TestCase):
         from turbodrf.validation import is_field_path_sensitive
 
         for path in (
-            "password", "related__password", "a__b__token", "x__api_key",
+            "password",
+            "related__password",
+            "a__b__token",
+            "x__api_key",
         ):
             self.assertTrue(
                 is_field_path_sensitive(path),
@@ -897,9 +906,7 @@ class TestParseConfigInvariants(TestCase):
 
         from turbodrf.predicates import Either, Owner, Tenant, parse_config
 
-        bad_config = {
-            "visibility": [Either(Owner("u", bypass=["admin"]), Tenant("t"))]
-        }
+        bad_config = {"visibility": [Either(Owner("u", bypass=["admin"]), Tenant("t"))]}
         with self.assertRaises(ImproperlyConfigured) as ctx:
             parse_config(bad_config)
         self.assertIn("Either", str(ctx.exception))
@@ -1101,9 +1108,7 @@ class TestCompiledRegression(TestCase):
 
             readable = viewset._get_compiled_readable_fields(req)
             if readable is None:
-                self.fail(
-                    "REGRESSION: anon user with guest role still returns None."
-                )
+                self.fail("REGRESSION: anon user with guest role still returns None.")
             self.assertIn("title", readable)
             self.assertNotIn(
                 "price",
@@ -1201,7 +1206,5 @@ class TestPrefillRequiresAuthenticatedUser(TestCase):
 
     def test_anon_post_to_tenant_scoped_endpoint_403(self):
         # Deal has no public_access — anon should get 403 immediately
-        r = self.client.post(
-            "/api/deals/", {"title": "leak"}, format="json"
-        )
+        r = self.client.post("/api/deals/", {"title": "leak"}, format="json")
         self.assertEqual(r.status_code, 403)

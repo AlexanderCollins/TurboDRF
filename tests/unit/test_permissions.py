@@ -119,8 +119,8 @@ class TestTurboDRFPermission(TestCase):
 
     def test_role_to_actions_admin(self):
         """Admin role grants all CRUD actions on samplemodel via the snapshot."""
-        from turbodrf.backends import build_permission_snapshot
         from tests.test_app.models import SampleModel
+        from turbodrf.backends import build_permission_snapshot
 
         snap = build_permission_snapshot(self.admin_user, SampleModel, use_cache=False)
         for action in ("read", "create", "update", "delete"):
@@ -130,8 +130,8 @@ class TestTurboDRFPermission(TestCase):
             )
 
     def test_role_to_actions_editor(self):
-        from turbodrf.backends import build_permission_snapshot
         from tests.test_app.models import SampleModel
+        from turbodrf.backends import build_permission_snapshot
 
         snap = build_permission_snapshot(self.editor_user, SampleModel, use_cache=False)
         self.assertTrue(snap.can_perform_action("read"))
@@ -139,8 +139,8 @@ class TestTurboDRFPermission(TestCase):
         self.assertFalse(snap.can_perform_action("delete"))
 
     def test_role_to_actions_viewer(self):
-        from turbodrf.backends import build_permission_snapshot
         from tests.test_app.models import SampleModel
+        from turbodrf.backends import build_permission_snapshot
 
         snap = build_permission_snapshot(self.viewer_user, SampleModel, use_cache=False)
         self.assertTrue(snap.can_perform_action("read"))
@@ -150,8 +150,8 @@ class TestTurboDRFPermission(TestCase):
 
     def test_custom_roles_combined(self):
         """A user with multiple roles gets the UNION of their permissions."""
-        from turbodrf.backends import build_permission_snapshot
         from tests.test_app.models import SampleModel
+        from turbodrf.backends import build_permission_snapshot
 
         custom_user = User.objects.create_user(username="custom", password="custom123")
         custom_user._test_roles = ["admin", "editor"]
@@ -168,8 +168,8 @@ class TestTurboDRFPermission(TestCase):
     def test_field_level_permissions(self):
         """Snapshot exposes per-field readable/writable sets that match the
         configured TURBODRF_ROLES rules."""
-        from turbodrf.backends import build_permission_snapshot
         from tests.test_app.models import SampleModel
+        from turbodrf.backends import build_permission_snapshot
 
         admin = build_permission_snapshot(self.admin_user, SampleModel, use_cache=False)
         self.assertIn("secret_field", admin.readable_fields)
@@ -177,10 +177,14 @@ class TestTurboDRFPermission(TestCase):
         self.assertIn("price", admin.readable_fields)
         self.assertIn("price", admin.writable_fields)
 
-        editor = build_permission_snapshot(self.editor_user, SampleModel, use_cache=False)
+        editor = build_permission_snapshot(
+            self.editor_user, SampleModel, use_cache=False
+        )
         self.assertIn("price", editor.readable_fields)
         self.assertNotIn("price", editor.writable_fields)
 
-        viewer = build_permission_snapshot(self.viewer_user, SampleModel, use_cache=False)
+        viewer = build_permission_snapshot(
+            self.viewer_user, SampleModel, use_cache=False
+        )
         self.assertNotIn("price", viewer.readable_fields)
         self.assertNotIn("secret_field", viewer.readable_fields)

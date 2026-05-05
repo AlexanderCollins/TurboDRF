@@ -130,9 +130,7 @@ class AuthzSecurityBase(TestCase):
 
     def _assert_no_victim_leak(self, response):
         body = (
-            str(response.data)
-            if hasattr(response, "data")
-            else str(response.content)
+            str(response.data) if hasattr(response, "data") else str(response.content)
         )
         self.assertNotIn(VICTIM_DEAL_TITLE, body)
         self.assertNotIn(VICTIM_BANK_NAME, body)
@@ -369,9 +367,7 @@ class TestTenantConfusion(AuthzSecurityBase):
             id = 1
             roles = ["underwriter"]
 
-        self.assertIsNone(
-            _authed_user(type("R", (), {"user": HalfUser()})())
-        )
+        self.assertIsNone(_authed_user(type("R", (), {"user": HalfUser()})()))
 
 
 # ============================================================================
@@ -498,9 +494,7 @@ class TestPredicates(AuthzSecurityBase):
         with self.assertRaises(AttributeError):
             Custom(q_func=lambda r, u: "not a Q").q(req, set())
         # Raising
-        c = Custom(
-            q_func=lambda r, u: (_ for _ in ()).throw(RuntimeError("kaboom"))
-        )
+        c = Custom(q_func=lambda r, u: (_ for _ in ()).throw(RuntimeError("kaboom")))
         with self.assertRaises(RuntimeError):
             c.q(req, set())
         # API path remains safe
@@ -534,11 +528,7 @@ class TestPredicates(AuthzSecurityBase):
         try:
             register_predicates(
                 Deal,
-                [
-                    Custom(
-                        q_func=lambda r, u: ~Q(brokerage=self.brokerage_attacker)
-                    )
-                ],
+                [Custom(q_func=lambda r, u: ~Q(brokerage=self.brokerage_attacker))],
             )
             r = self.client.get("/api/deals/")
             self._assert_no_victim_leak(r)
@@ -584,9 +574,7 @@ class TestPredicates(AuthzSecurityBase):
         factory = APIRequestFactory()
         req = factory.get("/")
         req.user = AnonymousUser()
-        self.assertEqual(
-            Members(m2m_field="some_m2m").q(req, set()), Q(pk__in=[])
-        )
+        self.assertEqual(Members(m2m_field="some_m2m").q(req, set()), Q(pk__in=[]))
         self.assertEqual(
             Group(field="brokerage", user_via="members").q(req, set()),
             Q(pk__in=[]),
@@ -638,7 +626,7 @@ class TestPredicates(AuthzSecurityBase):
         """parse_config rejects: non-dict, mixing visibility+sugar, non-list
         visibility, non-Predicate visibility item, non-string tenant_field,
         invalid owner_field type, owner_field dict."""
-        from turbodrf.predicates import Owner, parse_config
+        from turbodrf.predicates import parse_config
 
         bad_inputs = [
             [],
@@ -680,9 +668,7 @@ class TestPredicates(AuthzSecurityBase):
         tf, preds = parse_config({"visibility": []})
         self.assertIsNone(tf)
         self.assertEqual(preds, [])
-        tf, preds = parse_config(
-            {"tenant_field": "brokerage", "owner_field": []}
-        )
+        tf, preds = parse_config({"tenant_field": "brokerage", "owner_field": []})
         self.assertEqual(tf, "brokerage")
         self.assertEqual(preds, [])
 
@@ -801,9 +787,7 @@ class TestHeaderAndQueryOverride(AuthzSecurityBase):
             "HTTP_BROKERAGE",
         ):
             kwargs = {header_name: str(self.brokerage_victim.pk)}
-            self._assert_no_victim_leak(
-                self.client.get("/api/deals/", **kwargs)
-            )
+            self._assert_no_victim_leak(self.client.get("/api/deals/", **kwargs))
         self._assert_no_victim_leak(
             self.client.get(f"/api/deals/?brokerage={self.brokerage_victim.pk}")
         )
@@ -813,9 +797,7 @@ class TestHeaderAndQueryOverride(AuthzSecurityBase):
             f"?bank_account__deal={self.victim_deal.pk}",
             f"?bank_account={self.victim_bank.pk}",
         ):
-            self._assert_no_victim_leak(
-                self.client.get(f"/api/transactions/{q}")
-            )
+            self._assert_no_victim_leak(self.client.get(f"/api/transactions/{q}"))
 
 
 # ============================================================================
@@ -935,9 +917,7 @@ class TestCrossTenantWriteProbes(AuthzSecurityBase):
         )
         self.assertEqual(r.status_code, 403)
         self.assertFalse(
-            Deal.objects.filter(
-                title="evil", brokerage=self.brokerage_victim
-            ).exists()
+            Deal.objects.filter(title="evil", brokerage=self.brokerage_victim).exists()
         )
 
     def test_cross_tenant_post_under_drift_blocked(self):
@@ -1005,9 +985,7 @@ class TestCrossTenantWriteProbes(AuthzSecurityBase):
         )
         self._assert_no_victim_leak(r2)
         self.assertFalse(
-            Deal.objects.filter(
-                title="EVIL_USER", assigned_broker=self.victim
-            ).exists()
+            Deal.objects.filter(title="EVIL_USER", assigned_broker=self.victim).exists()
         )
 
     def test_post_raw_string_body_no_leak(self):
@@ -1040,9 +1018,7 @@ class TestSwaggerRoleHandling(AuthzSecurityBase):
                 if hasattr(r, "data")
                 else r.content.decode("utf-8", errors="ignore")
             )
-            self.assertNotEqual(
-                r.status_code, 500, f"5xx leaks stack trace at {path}"
-            )
+            self.assertNotEqual(r.status_code, 500, f"5xx leaks stack trace at {path}")
             self.assertNotIn(VICTIM_DEAL_TITLE, body)
             self.assertNotIn(VICTIM_BANK_NAME, body)
             self.assertNotIn(VICTIM_TX_AMOUNT_STR, body)
@@ -1106,9 +1082,7 @@ class TestKeycloakIntegration(AuthzSecurityBase):
             TURBODRF_KEYCLOAK_ROLE_MAPPING={"realm-admin": "underwriter"},
             TURBODRF_KEYCLOAK_STRICT_ROLES=True,
         ):
-            self.assertEqual(
-                map_keycloak_roles_to_turbodrf(["  realm-admin  "]), []
-            )
+            self.assertEqual(map_keycloak_roles_to_turbodrf(["  realm-admin  "]), [])
             self.assertEqual(
                 map_keycloak_roles_to_turbodrf(["admin'; DROP TABLE--"]), []
             )
@@ -1125,9 +1099,7 @@ class TestKeycloakIntegration(AuthzSecurityBase):
             TURBODRF_KEYCLOAK_ROLE_MAPPING={"realm-admin": 12345},
             TURBODRF_KEYCLOAK_STRICT_ROLES=True,
         ):
-            self.assertEqual(
-                map_keycloak_roles_to_turbodrf(["realm-admin"]), [12345]
-            )
+            self.assertEqual(map_keycloak_roles_to_turbodrf(["realm-admin"]), [12345])
 
     def test_extract_roles_token_drift(self):
         from turbodrf.integrations.keycloak import extract_roles_from_token
@@ -1147,8 +1119,8 @@ class TestKeycloakIntegration(AuthzSecurityBase):
 
 class TestTenancyResolution(AuthzSecurityBase):
     def test_autodetect_path_resolution(self):
-        from turbodrf.tenancy import find_tenant_path
         from tests.test_app.models import Category
+        from turbodrf.tenancy import find_tenant_path
 
         self.assertEqual(find_tenant_path(BankAccount, Brokerage), "deal__brokerage")
         self.assertEqual(
@@ -1172,8 +1144,10 @@ class TestTenancyResolution(AuthzSecurityBase):
     def test_resolve_tenancy_for_model_invariants(self):
         """resolve_tenancy_for_model: empty config → no field, no preds;
         Tenant() inside visibility → extracted to tenant_field;
-        tenancy='shared' → no field; bad field paths/owner_field/either-with-Tenant raise."""
+        tenancy='shared' → no field; bad field paths/owner_field/either-with-Tenant raise.
+        """
         import warnings
+
         from turbodrf.predicates import Either, Owner, Tenant
         from turbodrf.tenancy import resolve_tenancy_for_model
 
@@ -1216,11 +1190,7 @@ class TestTenancyResolution(AuthzSecurityBase):
         with self.assertRaises(ImproperlyConfigured):
             resolve_tenancy_for_model(
                 Deal,
-                {
-                    "visibility": [
-                        Either(Tenant("brokerage"), Owner("assigned_broker"))
-                    ]
-                },
+                {"visibility": [Either(Tenant("brokerage"), Owner("assigned_broker"))]},
                 tenant_model_setting="test_app.Brokerage",
                 autodetect=False,
             )
@@ -1288,9 +1258,7 @@ class TestRouterAndUrls(AuthzSecurityBase):
         suspicious = [
             u
             for u in flat
-            if any(
-                model in u for model in ("deals", "bankaccounts", "transactions")
-            )
+            if any(model in u for model in ("deals", "bankaccounts", "transactions"))
             and any(seg in u for seg in ("/extra", "/all", "/admin", "/dump", "/raw"))
         ]
         self.assertEqual(suspicious, [])
@@ -1340,9 +1308,7 @@ class TestAppAndRegistry(AuthzSecurityBase):
         self.assertTrue(hasattr(User, "brokerage"))
         u = User.objects.create_user(username="ready_test", password="x")
         set_test_brokerage(u, self.brokerage_attacker)
-        self.assertEqual(
-            User.objects.get(pk=u.pk).brokerage, self.brokerage_attacker
-        )
+        self.assertEqual(User.objects.get(pk=u.pk).brokerage, self.brokerage_attacker)
         u2 = User.objects.create_user(username="ready_test2", password="x")
         self.assertIsNone(User.objects.get(pk=u2.pk).brokerage)
         # turbodrf app config wired
@@ -1363,9 +1329,7 @@ class TestAppAndRegistry(AuthzSecurityBase):
 
         self.assertEqual(get_tenant_field(Deal), "brokerage")
         self.assertEqual(get_tenant_field(BankAccount), "deal__brokerage")
-        self.assertEqual(
-            get_tenant_field(Transaction), "bank_account__deal__brokerage"
-        )
+        self.assertEqual(get_tenant_field(Transaction), "bank_account__deal__brokerage")
 
     def test_no_mixin_means_not_registered(self):
         from tests.test_app.models import NoTurboDRFModel
@@ -1400,9 +1364,7 @@ class TestAppAndRegistry(AuthzSecurityBase):
             self._assert_no_victim_leak(self.client.get("/api/deals/"))
 
             # Generator coerced to list
-            register_predicates(
-                Deal, (p for p in [Owner("assigned_broker")])
-            )
+            register_predicates(Deal, (p for p in [Owner("assigned_broker")]))
             self.assertIsInstance(get_predicates(Deal), list)
 
             # Last-wins
@@ -1521,9 +1483,7 @@ class TestSettingsDrift(AuthzSecurityBase):
                     continue
                 self._assert_no_victim_leak(r)
         # Anon with guest role
-        with override_settings(
-            TURBODRF_ROLES={"guest": ["test_app.deal.read"]}
-        ):
+        with override_settings(TURBODRF_ROLES={"guest": ["test_app.deal.read"]}):
             self.client.force_authenticate(user=None)
             self._assert_no_victim_leak(self.client.get("/api/deals/"))
 
@@ -1578,7 +1538,13 @@ class TestCacheBackendDrift(AuthzSecurityBase):
         cache key includes user.pk so cross-user collision impossible."""
         cache.clear()
         configs = [
-            {"CACHES": {"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}}},
+            {
+                "CACHES": {
+                    "default": {
+                        "BACKEND": "django.core.cache.backends.dummy.DummyCache"
+                    }
+                }
+            },
             {
                 "CACHES": {
                     "default": {
@@ -1625,9 +1591,7 @@ class TestEnvironmentDrift(AuthzSecurityBase):
             r2 = self.client.get(f"/api/deals/{99999999}/")
             self._assert_no_victim_leak(r2)
             # Query injection attempt
-            r3 = self.client.get(
-                "/api/deals/?brokerage__name__icontains=Victim_Co"
-            )
+            r3 = self.client.get("/api/deals/?brokerage__name__icontains=Victim_Co")
             self._assert_no_victim_leak(r3)
             # Detail/POST under DEBUG
             r4 = self.client.get(f"/api/deals/{self.victim_deal.pk}/")
@@ -1737,9 +1701,7 @@ class TestModelConfigDrift(AuthzSecurityBase):
         with override_settings(TURBODRF_DISABLE_PERMISSIONS=True):
             self._assert_no_victim_leak(self.client.get("/api/transactions/"))
         with override_settings(TURBODRF_PERMISSION_MODE="database"):
-            self._assert_no_victim_leak(
-                self.client.get("/api/deals/?role=admin")
-            )
+            self._assert_no_victim_leak(self.client.get("/api/deals/?role=admin"))
 
 
 # ============================================================================

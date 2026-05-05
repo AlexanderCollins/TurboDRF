@@ -149,9 +149,11 @@ class SecurityBase(TestCase):
         r = _R()
         r.user = user if user is not None else self.attacker
         if not authed:
+
             class _AnonUser:
                 is_authenticated = False
                 pk = None
+
             r.user = _AnonUser()
         return r
 
@@ -265,13 +267,15 @@ class TestOwnerPredicate(SecurityBase):
         no authed user skips (Tenant layer is the gate)."""
         o = Owner("assigned_broker", bypass=["manager"])
         req = self._request_stub()
-        self.assertEqual(o.validate_write({"assigned_broker": self.attacker}, None, req), [])
-        self.assertNotEqual(o.validate_write({"assigned_broker": self.victim}, None, req), [])
+        self.assertEqual(
+            o.validate_write({"assigned_broker": self.attacker}, None, req), []
+        )
+        self.assertNotEqual(
+            o.validate_write({"assigned_broker": self.victim}, None, req), []
+        )
 
         o2 = Owner("assigned_broker__pk")
-        self.assertEqual(
-            o2.validate_write({"assigned_broker__pk": 999}, None, req), []
-        )
+        self.assertEqual(o2.validate_write({"assigned_broker__pk": 999}, None, req), [])
         self.assertEqual(
             Owner("assigned_broker").validate_write(
                 {"assigned_broker": self.victim}, None, self._request_stub(authed=False)
@@ -363,7 +367,9 @@ class TestComposition(SecurityBase):
 
         # Anon → no match
         anon_req = self._request_stub(authed=False)
-        self.assertEqual(Members(m2m_field="bogus_m2m").q(anon_req, set()), _no_match_q())
+        self.assertEqual(
+            Members(m2m_field="bogus_m2m").q(anon_req, set()), _no_match_q()
+        )
         self.assertEqual(Group(field="brokerage").q(anon_req, set()), _no_match_q())
 
 
@@ -399,6 +405,7 @@ class TestCustomPredicate(SecurityBase):
         """Custom q_func that mutates request.user mid-call. Tenant Q is
         built once at get_queryset time — mutation must not retroactively
         widen scope."""
+
         def mutator(req, roles):
             try:
                 req.user._test_brokerage = self.brokerage_victim
@@ -440,6 +447,7 @@ class TestCustomPredicate(SecurityBase):
     def test_custom_auto_filler_injecting_victim_fk_overwritten(self):
         """auto_filler injects victim's brokerage. Layer 1 (tenant) must
         either reject (4xx) or overwrite back to attacker's tenant."""
+
         def filler(vd, req):
             vd = dict(vd)
             vd["brokerage"] = self.brokerage_victim
@@ -497,10 +505,12 @@ class TestParseConfigAndRegistration(SecurityBase):
     def test_bypass_with_non_string_does_not_crash_and_deeply_nested_either(self):
         """bypass_owner_roles with mixed-type entries works. Deeply-nested
         Either does not blow recursion."""
-        tf, preds = parse_config({
-            "owner_field": "assigned_broker",
-            "bypass_owner_roles": ["manager", 42, None],
-        })
+        tf, preds = parse_config(
+            {
+                "owner_field": "assigned_broker",
+                "bypass_owner_roles": ["manager", 42, None],
+            }
+        )
         self.assertEqual(len(preds), 1)
         # 42/None won't match any real role; manager bypasses.
         self.assertEqual(preds[0].q(self._request_stub(), {"manager"}), Q())
@@ -512,7 +522,6 @@ class TestParseConfigAndRegistration(SecurityBase):
         tf2, preds2 = parse_config({"visibility": [e]})
         self.assertIsNone(tf2)
         self.assertEqual(len(preds2), 1)
-
 
     def test_register_with_model_none_does_not_affect_other_models(self):
         register_predicates(None, [Owner("assigned_broker")])
@@ -576,6 +585,7 @@ class TestViewSetTenantQHelpers(SecurityBase):
 
     def test_get_predicate_q_propagates_predicate_exceptions(self):
         """Predicate.q raises → helper must NOT swallow and resolve to Q()."""
+
         class BoomPredicate(Predicate):
             def q(self, request, user_roles):
                 raise RuntimeError("boom")
@@ -688,8 +698,14 @@ class TestManagerLevelBypass(SecurityBase):
                 ):
                     self.assertIn(
                         attr_name,
-                        {"create", "destroy", "list", "partial_update",
-                         "retrieve", "update"},
+                        {
+                            "create",
+                            "destroy",
+                            "list",
+                            "partial_update",
+                            "retrieve",
+                            "update",
+                        },
                         f"Unexpected custom @action {attr_name!r} on "
                         f"{viewset.__name__}",
                     )
@@ -745,7 +761,9 @@ class TestUnsupportedQueryParams(SecurityBase):
             r = self.client.get(f"/api/deals/?{q}")
             assert_no_secrets(self, r)
             if r.status_code == 200 and isinstance(r.data, dict):
-                ids = [d.get("id") for d in r.data.get("data", []) if isinstance(d, dict)]
+                ids = [
+                    d.get("id") for d in r.data.get("data", []) if isinstance(d, dict)
+                ]
                 self.assertNotIn(self.victim_deal.id, ids)
         self._victim_unchanged()
 
@@ -781,6 +799,7 @@ class TestSelectRelatedAndDetail(SecurityBase):
             self.assertNotEqual(r.status_code, 200)
             assert_no_secrets(self, r)
 
+
 # ============================================================================
 # 13. Signals
 # ============================================================================
@@ -796,6 +815,7 @@ class TestSignals(SecurityBase):
             pre_delete,
             pre_save,
         )
+
         for sig in (post_save, pre_save, post_delete, pre_delete):
             for (lookup_key, receiver_id), ref in sig.receivers:
                 receiver = ref() if callable(ref) else ref
@@ -812,7 +832,9 @@ class TestSignals(SecurityBase):
         """A POST that injects a victim FK or attempts to write at a
         victim brokerage must leave victim brokerage row count unchanged
         and create no Transaction at the victim bank."""
-        before_victim_deals = Deal.objects.filter(brokerage=self.brokerage_victim).count()
+        before_victim_deals = Deal.objects.filter(
+            brokerage=self.brokerage_victim
+        ).count()
         before_tx = Transaction.objects.count()
 
         r1 = self.client.post(
@@ -867,8 +889,14 @@ class TestStaticAudits(SecurityBase):
         from turbodrf import serializers as turbo_ser
         from turbodrf import views
 
-        needles = (".extra(", ".raw(", "RawSQL(", "connection.cursor(",
-                   "subprocess.", "os.system(")
+        needles = (
+            ".extra(",
+            ".raw(",
+            "RawSQL(",
+            "connection.cursor(",
+            "subprocess.",
+            "os.system(",
+        )
         for mod in (views, turbo_ser):
             src = inspect.getsource(mod)
             for needle in needles:
@@ -894,10 +922,14 @@ class TestStaticAudits(SecurityBase):
         must be NOT NULL with the right related model."""
         import os
 
-        mig_dir = os.path.normpath(os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "..", "turbodrf", "migrations",
-        ))
+        mig_dir = os.path.normpath(
+            os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                "..",
+                "turbodrf",
+                "migrations",
+            )
+        )
         if os.path.isdir(mig_dir):
             for fname in os.listdir(mig_dir):
                 if not fname.endswith(".py") or fname == "__init__.py":
@@ -1049,9 +1081,15 @@ class TestBulkOps(SecurityBase):
     def test_list_endpoint_rejects_bulk_methods(self):
         """PATCH / PUT / DELETE on the list endpoint must be 405 or 400."""
         for method in ("patch", "put", "delete"):
-            kwargs = {"data": {"title": "bulk"}, "format": "json"} if method != "delete" else {}
+            kwargs = (
+                {"data": {"title": "bulk"}, "format": "json"}
+                if method != "delete"
+                else {}
+            )
             r = getattr(self.client, method)("/api/deals/", **kwargs)
-            self.assertIn(r.status_code, (405, 400), f"{method.upper()} → {r.status_code}")
+            self.assertIn(
+                r.status_code, (405, 400), f"{method.upper()} → {r.status_code}"
+            )
 
 
 # ============================================================================
@@ -1161,8 +1199,9 @@ class TestAPIRoutedORMBypass(SecurityBase):
             r = self.client.get(f"/api/transactions/?{q}")
             assert_no_secrets(self, r)
             if r.status_code == 200 and isinstance(r.data, dict):
-                ids = [d.get("id") for d in r.data.get("data", [])
-                       if isinstance(d, dict)]
+                ids = [
+                    d.get("id") for d in r.data.get("data", []) if isinstance(d, dict)
+                ]
                 self.assertNotIn(self.victim_tx.id, ids)
 
     def test_multi_pk_path_does_not_return_both_rows(self):

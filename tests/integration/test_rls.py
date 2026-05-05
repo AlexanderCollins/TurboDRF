@@ -92,9 +92,7 @@ def _apply_combined_policy(table, name, clauses, with_check=None):
     """
     using = " AND ".join(f"({_nullsafe(c)})" for c in clauses)
     check = with_check if with_check is not None else using
-    _exec(
-        f"CREATE POLICY {name} ON {table} USING ({using}) WITH CHECK ({check})"
-    )
+    _exec(f"CREATE POLICY {name} ON {table} USING ({using}) WITH CHECK ({check})")
 
 
 # ---------------------------------------------------------------------------
@@ -347,9 +345,7 @@ class TestStackedTenantAndOwner(TestCase):
             "test_stacked",
             [
                 Tenant("brokerage").to_rls_using_clause(),
-                Owner(
-                    "assigned_broker", bypass=["manager"]
-                ).to_rls_using_clause(),
+                Owner("assigned_broker", bypass=["manager"]).to_rls_using_clause(),
             ],
             # WITH CHECK only enforces tenant on writes (owner enforced
             # separately by validate_write at the app layer)
@@ -549,16 +545,12 @@ class TestEmitRLSRoundtrip(TestCase):
         d = Deal.objects.create(title="rt", brokerage=b, assigned_broker=u)
 
         # User can see their own deal
-        self.assertIn(
-            d.id, list(Deal.objects.values_list("id", flat=True))
-        )
+        self.assertIn(d.id, list(Deal.objects.values_list("id", flat=True)))
 
         # Without any session var, default-deny (NULLIF wrap)
         _clear_var("app.tenant_id")
         _clear_var("app.user_id")
-        self.assertNotIn(
-            d.id, list(Deal.objects.values_list("id", flat=True))
-        )
+        self.assertNotIn(d.id, list(Deal.objects.values_list("id", flat=True)))
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +598,9 @@ class TestUnsupportedPredicatesRaise(TestCase):
         from turbodrf.predicates import Conditional
 
         with self.assertRaises(NotImplementedError):
-            Conditional(when=Q(staff=True), require_roles=["admin"]).to_rls_using_clause()
+            Conditional(
+                when=Q(staff=True), require_roles=["admin"]
+            ).to_rls_using_clause()
 
     def test_custom_raises(self):
         from django.db.models import Q

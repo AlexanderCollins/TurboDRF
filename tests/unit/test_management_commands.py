@@ -166,8 +166,7 @@ class TurboDRFCheckCommandTest(TestCase):
     def test_tenancy_reporting_describes_each_predicate(self):
         """Owner / Members / Group / Either / Custom / Conditional all
         get one-line descriptions."""
-        from django.core.management import call_command
-        from django.test.utils import override_settings
+        from django.db.models import Q
 
         from turbodrf.management.commands.turbodrf_check import Command
         from turbodrf.predicates import (
@@ -178,7 +177,6 @@ class TurboDRFCheckCommandTest(TestCase):
             Members,
             Owner,
         )
-        from django.db.models import Q
 
         cmd = Command()
         # Each kind of predicate gets a description
@@ -186,15 +184,14 @@ class TurboDRFCheckCommandTest(TestCase):
         self.assertIn("bypass=", cmd._describe_predicate(Owner("x", bypass=["a"])))
         self.assertIn("Members", cmd._describe_predicate(Members("m2m")))
         self.assertIn("Group", cmd._describe_predicate(Group("team")))
-        self.assertIn("Conditional", cmd._describe_predicate(
-            Conditional(when=Q(x=1), require_roles=["admin"])
-        ))
-        self.assertIn("Either", cmd._describe_predicate(
-            Either(Owner("a"), Owner("b"))
-        ))
-        self.assertIn("Custom", cmd._describe_predicate(
-            Custom(q_func=lambda r, u: Q())
-        ))
+        self.assertIn(
+            "Conditional",
+            cmd._describe_predicate(Conditional(when=Q(x=1), require_roles=["admin"])),
+        )
+        self.assertIn("Either", cmd._describe_predicate(Either(Owner("a"), Owner("b"))))
+        self.assertIn(
+            "Custom", cmd._describe_predicate(Custom(q_func=lambda r, u: Q()))
+        )
 
     def test_models_sorted_alphabetically(self):
         """Output models should be sorted by name."""

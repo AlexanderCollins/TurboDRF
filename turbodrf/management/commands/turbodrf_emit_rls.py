@@ -17,7 +17,6 @@ from django.apps import apps
 from django.core.management.base import BaseCommand
 
 from turbodrf.mixins import TurboDRFMixin
-from turbodrf.predicates import Either, Owner, Predicate, Tenant
 
 
 class Command(BaseCommand):
@@ -77,9 +76,7 @@ class Command(BaseCommand):
                     model, config, tenant_model_setting, autodetect=autodetect
                 )
             except Exception as e:
-                self.stdout.write(
-                    f"-- {model.__name__}: ERROR resolving tenancy — {e}"
-                )
+                self.stdout.write(f"-- {model.__name__}: ERROR resolving tenancy — {e}")
                 continue
 
             if not tenant_field and not predicates:

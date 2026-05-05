@@ -12,8 +12,6 @@ Covers:
 - POST with explicit-but-correct tenant → 201
 """
 
-from decimal import Decimal
-
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework import status
@@ -70,9 +68,7 @@ class TestCreateFKInjection(FKInjectionTestBase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         # Confirm nothing was actually created
-        self.assertFalse(
-            Transaction.objects.filter(bank_account=self.bank_b).exists()
-        )
+        self.assertFalse(Transaction.objects.filter(bank_account=self.bank_b).exists())
 
     def test_underwriter_a_can_create_transaction_on_own_bank(self):
         self._login(self.under_a)

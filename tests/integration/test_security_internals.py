@@ -12,10 +12,10 @@ allauth, custom user models, RLS middleware).
 import json
 import logging
 import threading
-import time
-
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal
+from unittest.mock import MagicMock, patch
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.auth.models import Group as DjangoGroup
@@ -23,9 +23,10 @@ from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.db import connections, transaction
 from django.db.models import F, Q
-from django.test import RequestFactory, TestCase, TransactionTestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from rest_framework import serializers as drf_serializers
 from rest_framework.test import APIClient, APIRequestFactory
+
 from tests.test_app.apps import _test_user_brokerages, set_test_brokerage
 from tests.test_app.models import (
     BankAccount,
@@ -90,7 +91,6 @@ from turbodrf.validation import (
     is_field_visible_to_user,
 )
 from turbodrf.views import TurboDRFViewSet
-from unittest.mock import MagicMock, patch
 
 User = get_user_model()
 
@@ -135,7 +135,9 @@ def _no_leak(testcase, response, where=""):
         except Exception:
             pass
     for s in SECRETS:
-        testcase.assertNotIn(s, blob, f"[{where}] secret {s!r} leaked status={response.status_code}")
+        testcase.assertNotIn(
+            s, blob, f"[{where}] secret {s!r} leaked status={response.status_code}"
+        )
 
 
 def _no_5xx(testcase, response, where=""):
@@ -284,7 +286,12 @@ class InternalHelperTests(AdversaryBase):
                     Deal, data, None, self._attacker_request()
                 )
                 self.assert_no_victim_leak_value(result)
-            except (AttributeError, TypeError, ValueError, drf_serializers.ValidationError):
+            except (
+                AttributeError,
+                TypeError,
+                ValueError,
+                drf_serializers.ValidationError,
+            ):
                 pass  # crash is OK as low DoS, no leak
 
     def assert_no_victim_leak_value(self, value):
@@ -328,8 +335,10 @@ class InternalHelperTests(AdversaryBase):
 
     def test_apply_predicate_writes_request_user_attr_missing(self):
         """request without .user attribute must not crash with leak."""
+
         class _R:
             pass
+
         try:
             _apply_predicate_writes(Deal, {}, None, _R())
         except (AttributeError, drf_serializers.ValidationError):
@@ -349,7 +358,9 @@ class InternalHelperTests(AdversaryBase):
             q_pred = viewset._get_predicate_q(req)
             q_ten = viewset._get_tenant_q(req)
             # Combined: must yield nothing
-            rows = list(Deal.objects.filter(q_pred & q_ten).values_list("title", flat=True))
+            rows = list(
+                Deal.objects.filter(q_pred & q_ten).values_list("title", flat=True)
+            )
             self.assert_no_victim_leak_value(rows)
 
     def test_get_tenant_q_user_no_brokerage(self):
@@ -383,7 +394,9 @@ class InternalHelperTests(AdversaryBase):
         self.assertEqual(out, "not a dict")
         # None — either passes or raises a benign error
         try:
-            viewset._prefill_required_fields(_MockRequest(user=self.attacker, data=None))
+            viewset._prefill_required_fields(
+                _MockRequest(user=self.attacker, data=None)
+            )
         except (AttributeError, TypeError):
             pass
 
@@ -586,6 +599,7 @@ class InternalHelperTests(AdversaryBase):
         except Exception:
             pass
         from django.contrib.contenttypes.models import ContentType
+
         self.assertIsNone(get_cached_snapshot(self.attacker, ContentType))
 
     def test_attach_snapshot_caches_per_request(self):
@@ -650,15 +664,16 @@ class InternalHelperTests(AdversaryBase):
                 Deal, Either(Owner("assigned_broker"), Owner("bogus"))
             )
         # Custom: not path-validated
-        _validate_predicate_paths(
-            Deal, Custom(q_func=lambda r, ur: Q(bogus_field="x"))
-        )
+        _validate_predicate_paths(Deal, Custom(q_func=lambda r, ur: Q(bogus_field="x")))
 
     def test_swagger_helpers_fail_closed(self):
         """invalid path / unknown model / unknown method / empty perms ->
         no auth grant."""
         from drf_yasg import openapi
-        gen = RoleBasedSchemaGenerator(info=openapi.Info(title="Test", default_version="v1"))
+
+        gen = RoleBasedSchemaGenerator(
+            info=openapi.Info(title="Test", default_version="v1")
+        )
 
         self.assertIsNone(gen._extract_model_info("/not/api/anything"))
         self.assertIsNone(gen._extract_model_info("/"))
@@ -761,6 +776,7 @@ class CompiledPathTests(AdversaryBase):
             proxy.author.name
         # Pickle round-trip should now succeed without recursion.
         import pickle
+
         roundtrip = pickle.loads(pickle.dumps(DictProxy({"a": 1})))
         self.assertEqual(roundtrip.a, 1)
 
@@ -784,8 +800,10 @@ class CompiledPathTests(AdversaryBase):
 
     def test_dictproxy_subclassing_safe(self):
         """Subclassing DictProxy doesn't poison the parent."""
+
         class Sub(DictProxy):
             pass
+
         self.assertEqual(Sub({"a": 1}).a, 1)
 
     # ---- ?fields= parameter -----------------------------------------------
@@ -976,7 +994,7 @@ class CompiledPathTests(AdversaryBase):
         cat2 = Category.objects.create(name="catB", description="dB")
         a2 = CompiledArticle.objects.create(title="CART_B", author=self.related)
         a2.categories.add(cat2)
-        a3 = CompiledArticle.objects.create(title="EMPTY_M2M", author=self.related)
+        CompiledArticle.objects.create(title="EMPTY_M2M", author=self.related)
 
         r = self.client.get("/api/compiledarticles/")
         self.assert_no_5xx(r, "m2m group")
@@ -1054,9 +1072,7 @@ class CompiledPathTests(AdversaryBase):
 
     def test_compiled_html_accept_disabled_perms(self):
         """HTML accept and TURBODRF_DISABLE_PERMISSIONS both safe."""
-        r = self.client.get(
-            "/api/compiledsamplemodels/", HTTP_ACCEPT="text/html"
-        )
+        r = self.client.get("/api/compiledsamplemodels/", HTTP_ACCEPT="text/html")
         self.assert_no_5xx(r, "html accept")
         self.assert_no_victim_leak(r)
 
@@ -1161,29 +1177,36 @@ class JsonParserTests(AdversaryBase):
             (b"true", "true_root"),
             (b"false", "false_root"),
             (
-                ("﻿" + json.dumps(
-                    {"title": "BOM", "brokerage": self.brokerage_attacker.pk}
-                )).encode("utf-8"),
+                (
+                    "﻿"
+                    + json.dumps(
+                        {"title": "BOM", "brokerage": self.brokerage_attacker.pk}
+                    )
+                ).encode("utf-8"),
                 "bom",
             ),
             (
                 b'{"title":"c"/*inline*/,"brokerage":'
-                + str(self.brokerage_attacker.pk).encode() + b"}",
+                + str(self.brokerage_attacker.pk).encode()
+                + b"}",
                 "json_with_comments",
             ),
             (
                 b'{"title":"tc","brokerage":'
-                + str(self.brokerage_attacker.pk).encode() + b",}",
+                + str(self.brokerage_attacker.pk).encode()
+                + b",}",
                 "trailing_comma",
             ),
             (
                 b'{title:"x","brokerage":'
-                + str(self.brokerage_attacker.pk).encode() + b"}",
+                + str(self.brokerage_attacker.pk).encode()
+                + b"}",
                 "unquoted_keys",
             ),
             (
                 b"{'title':'x','brokerage':"
-                + str(self.brokerage_attacker.pk).encode() + b"}",
+                + str(self.brokerage_attacker.pk).encode()
+                + b"}",
                 "single_quotes",
             ),
             (
@@ -1193,14 +1216,15 @@ class JsonParserTests(AdversaryBase):
             (
                 (
                     '{"title":"\\u0000\\uffff\\ud83d\\ude00",'
-                    '"brokerage":' + str(self.brokerage_attacker.pk) + '}'
+                    '"brokerage":' + str(self.brokerage_attacker.pk) + "}"
                 ).encode(),
                 "escaped_unicode",
             ),
             (
                 (
                     '{"title":"\\ud83d","brokerage":'
-                    + str(self.brokerage_attacker.pk) + "}"
+                    + str(self.brokerage_attacker.pk)
+                    + "}"
                 ).encode(),
                 "lone_surrogate",
             ),
@@ -1286,14 +1310,18 @@ class JsonParserTests(AdversaryBase):
 
         # Brokerage as array / object
         for body in (
-            json.dumps({
-                "title": "f3",
-                "brokerage": [self.brokerage_attacker.pk, self.brokerage_victim.pk],
-            }).encode(),
-            json.dumps({
-                "title": "f4",
-                "brokerage": {"id": self.brokerage_victim.pk},
-            }).encode(),
+            json.dumps(
+                {
+                    "title": "f3",
+                    "brokerage": [self.brokerage_attacker.pk, self.brokerage_victim.pk],
+                }
+            ).encode(),
+            json.dumps(
+                {
+                    "title": "f4",
+                    "brokerage": {"id": self.brokerage_victim.pk},
+                }
+            ).encode(),
         ):
             r = self._post(body)
             _no_5xx(self, r, "broker shape")
@@ -1333,8 +1361,14 @@ class JsonParserTests(AdversaryBase):
             {"0": "ignored", "1": "ignored"},
             {"_brokerage": self.brokerage_victim.pk, "_predicates": []},
             {"title_": "shadow"},
-            {"brokerage.pk": self.brokerage_victim.pk, "brokerage.id": self.brokerage_victim.pk},
-            {"brokerage-id": self.brokerage_victim.pk, "brokerage:id": self.brokerage_victim.pk},
+            {
+                "brokerage.pk": self.brokerage_victim.pk,
+                "brokerage.id": self.brokerage_victim.pk,
+            },
+            {
+                "brokerage-id": self.brokerage_victim.pk,
+                "brokerage:id": self.brokerage_victim.pk,
+            },
             {"タイトル": "shadow"},
             {"class": "x", "def": "x", "lambda": "x", "import": "x"},
             {
@@ -1362,11 +1396,13 @@ class JsonParserTests(AdversaryBase):
         self.assertIsNotNone(json.loads(r.content))
         try:
             import orjson
+
             self.assertIsNotNone(orjson.loads(r.content))
         except ImportError:
             pass
         try:
             import msgspec.json
+
             self.assertIsNotNone(msgspec.json.decode(r.content))
         except ImportError:
             pass
@@ -1461,8 +1497,18 @@ class JsonParserTests(AdversaryBase):
     def test_filter_numeric_equivalences_no_5xx(self):
         """+0/-0/0.0/1e10/scientific/decimal-string filter values don't
         crash and don't leak."""
-        for v in ("0", "+0", "-0", "0.0", "-0.0", "+0.0", "1e10", "10000000000",
-                  "0.10", "0.1"):
+        for v in (
+            "0",
+            "+0",
+            "-0",
+            "0.0",
+            "-0.0",
+            "+0.0",
+            "1e10",
+            "10000000000",
+            "0.10",
+            "0.1",
+        ):
             r = self.client.get(f"/api/transactions/?amount={v}")
             _no_5xx(self, r, f"amount={v}")
             _no_leak(self, r, f"amount={v}")
@@ -1581,7 +1627,9 @@ class LoggingSecurityTests(AdversaryBase):
             TURBODRF_KEYCLOAK_ROLE_MAPPING={"kc_admin": "admin"},
             TURBODRF_KEYCLOAK_STRICT_ROLES=True,
         ):
-            with self.assertLogs("turbodrf.integrations.keycloak", level="WARNING") as cm:
+            with self.assertLogs(
+                "turbodrf.integrations.keycloak", level="WARNING"
+            ) as cm:
                 map_keycloak_roles_to_turbodrf(["NOT_MAPPED_ROLE"])
         self.assertTrue(any("NOT_MAPPED_ROLE" in r.getMessage() for r in cm.records))
         for rec in cm.records:
@@ -1594,7 +1642,9 @@ class LoggingSecurityTests(AdversaryBase):
             TURBODRF_KEYCLOAK_ROLE_MAPPING={"u": "underwriter"},
             TURBODRF_KEYCLOAK_STRICT_ROLES=True,
         ):
-            with self.assertLogs("turbodrf.integrations.keycloak", level="WARNING") as cm:
+            with self.assertLogs(
+                "turbodrf.integrations.keycloak", level="WARNING"
+            ) as cm:
                 map_keycloak_roles_to_turbodrf(["super_admin\n[FAKE LOG]\nimpersonate"])
         for rec in cm.records:
             self.assertNotIn("\n[FAKE LOG]\n", rec.getMessage())
@@ -1636,8 +1686,13 @@ class LoggingSecurityTests(AdversaryBase):
                     format="json",
                 )
             body = (
-                str(getattr(r, "data", "")) + " "
-                + (r.content.decode("utf-8", errors="replace") if hasattr(r, "content") else "")
+                str(getattr(r, "data", ""))
+                + " "
+                + (
+                    r.content.decode("utf-8", errors="replace")
+                    if hasattr(r, "content")
+                    else ""
+                )
             )
             for s in SECRETS:
                 self.assertNotIn(s, body)
@@ -1650,10 +1705,19 @@ class LoggingSecurityTests(AdversaryBase):
         with override_settings(DEBUG=False):
             r = self.client.get("/api/deals/abc/")
         body = (
-            str(getattr(r, "data", "")) + " "
-            + (r.content.decode("utf-8", errors="replace") if hasattr(r, "content") else "")
+            str(getattr(r, "data", ""))
+            + " "
+            + (
+                r.content.decode("utf-8", errors="replace")
+                if hasattr(r, "content")
+                else ""
+            )
         )
-        for sub in ("Traceback (most recent call last)", "TurboDRFViewSet", "CompiledQueryPlan"):
+        for sub in (
+            "Traceback (most recent call last)",
+            "TurboDRFViewSet",
+            "CompiledQueryPlan",
+        ):
             self.assertNotIn(sub, body)
 
         # Auth header not echoed
@@ -1661,8 +1725,14 @@ class LoggingSecurityTests(AdversaryBase):
             r = self.client.get(
                 "/api/deals/", HTTP_AUTHORIZATION="Bearer secret_token_xyz"
             )
-        body = str(getattr(r, "data", "")) + " " + (
-            r.content.decode("utf-8", errors="replace") if hasattr(r, "content") else ""
+        body = (
+            str(getattr(r, "data", ""))
+            + " "
+            + (
+                r.content.decode("utf-8", errors="replace")
+                if hasattr(r, "content")
+                else ""
+            )
         )
         self.assertNotIn("secret_token_xyz", body)
 
@@ -1702,7 +1772,10 @@ class LoggingSecurityTests(AdversaryBase):
 
         # Authorization header / session cookie not in logs
         for header_args, marker in (
-            ({"HTTP_AUTHORIZATION": "Bearer SUPER_SECRET_BEARER_42"}, "SUPER_SECRET_BEARER_42"),
+            (
+                {"HTTP_AUTHORIZATION": "Bearer SUPER_SECRET_BEARER_42"},
+                "SUPER_SECRET_BEARER_42",
+            ),
             ({"HTTP_COOKIE": "sessionid=COOKIE_MARKER_BBB"}, "COOKIE_MARKER_BBB"),
         ):
             handler, detach = _attach_capture(*_TURBODRF_LOGGERS)
@@ -1767,7 +1840,12 @@ class LoggingSecurityTests(AdversaryBase):
         """Newline / CR / ANSI / NUL byte / huge-payload titles do not
         produce raw control sequences in log output, and don't blow up
         log records to >90KB."""
-        for title in (LOG_INJECT_NEWLINE, LOG_INJECT_CR, LOG_INJECT_ANSI, LOG_INJECT_NULL):
+        for title in (
+            LOG_INJECT_NEWLINE,
+            LOG_INJECT_CR,
+            LOG_INJECT_ANSI,
+            LOG_INJECT_NULL,
+        ):
             handler, detach = _attach_capture(*_TURBODRF_LOGGERS)
             try:
                 self.client.post(
@@ -1805,8 +1883,13 @@ class LoggingSecurityTests(AdversaryBase):
             with override_settings(DEBUG=dbg):
                 r = self.client.get("/swagger.json")
             body = (
-                str(getattr(r, "data", "")) + " "
-                + (r.content.decode("utf-8", errors="replace") if hasattr(r, "content") else "")
+                str(getattr(r, "data", ""))
+                + " "
+                + (
+                    r.content.decode("utf-8", errors="replace")
+                    if hasattr(r, "content")
+                    else ""
+                )
             )
             self.assertNotIn("Traceback", body)
             for s in SECRETS:
@@ -1958,9 +2041,7 @@ class ConcurrencyTests(AdversaryBase):
 
         with ThreadPoolExecutor(max_workers=10) as ex:
             list(ex.map(make_and_attach, range(50)))
-        self.assertEqual(
-            len({id(r._turbodrf_snapshots) for r in kept}), 50
-        )
+        self.assertEqual(len({id(r._turbodrf_snapshots) for r in kept}), 50)
 
     def test_concurrent_snapshot_for_different_models_no_pollution(self):
         """Same user, three models concurrently -> per-model fields
@@ -1969,16 +2050,22 @@ class ConcurrencyTests(AdversaryBase):
 
         def build(model):
             try:
-                results[model.__name__] = build_permission_snapshot(self.attacker, model)
+                results[model.__name__] = build_permission_snapshot(
+                    self.attacker, model
+                )
             finally:
                 _close_thread_db()
 
         with ThreadPoolExecutor(max_workers=3) as ex:
-            list(as_completed([
-                ex.submit(build, Deal),
-                ex.submit(build, BankAccount),
-                ex.submit(build, Transaction),
-            ]))
+            list(
+                as_completed(
+                    [
+                        ex.submit(build, Deal),
+                        ex.submit(build, BankAccount),
+                        ex.submit(build, Transaction),
+                    ]
+                )
+            )
 
         self.assertIn("title", results["Deal"].readable_fields)
         self.assertIn("name", results["BankAccount"].readable_fields)
@@ -2085,8 +2172,9 @@ class ConcurrencyTests(AdversaryBase):
         self.assertEqual(q2, Q())
 
         # Either(Owner, Custom) — non-trivial Q
-        either = Either(Owner("assigned_broker", bypass=[]),
-                        Custom(lambda r, ur: Q(pk__in=[])))
+        either = Either(
+            Owner("assigned_broker", bypass=[]), Custom(lambda r, ur: Q(pk__in=[]))
+        )
         for _ in range(20):
             self.assertNotEqual(either.q(req, {"underwriter"}), Q())
 
@@ -2163,7 +2251,9 @@ class ConcurrencyTests(AdversaryBase):
 
         # Dummy cache
         with override_settings(
-            CACHES={"default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}}
+            CACHES={
+                "default": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"}
+            }
         ):
             r = self.client.get("/api/deals/")
             self.assert_no_victim_leak(r)
@@ -2217,7 +2307,13 @@ class ConcurrencyTests(AdversaryBase):
         manager, underwriter} -> never 5xx, never leak."""
         original = self.attacker._test_roles
         try:
-            for new in (["viewer"], ["editor"], ["admin"], ["manager"], ["underwriter"]):
+            for new in (
+                ["viewer"],
+                ["editor"],
+                ["admin"],
+                ["manager"],
+                ["underwriter"],
+            ):
                 self.attacker._test_roles = new
                 r = self.client.get("/api/deals/")
                 self.assertIn(r.status_code, (200, 403))
@@ -2264,6 +2360,7 @@ class ConcurrencyTests(AdversaryBase):
         saved_p = dict(_model_predicates)
         saved_t = dict(_model_tenant_fields)
         try:
+
             class M1:
                 pass
 
@@ -2286,12 +2383,16 @@ class ConcurrencyTests(AdversaryBase):
                     _close_thread_db()
 
             with ThreadPoolExecutor(max_workers=4) as ex:
-                list(as_completed([
-                    ex.submit(reg_pred, M1, preds_1),
-                    ex.submit(reg_pred, M2, preds_2),
-                    ex.submit(reg_tf, M1, "brokerage"),
-                    ex.submit(reg_tf, M2, "deal__brokerage"),
-                ]))
+                list(
+                    as_completed(
+                        [
+                            ex.submit(reg_pred, M1, preds_1),
+                            ex.submit(reg_pred, M2, preds_2),
+                            ex.submit(reg_tf, M1, "brokerage"),
+                            ex.submit(reg_tf, M2, "deal__brokerage"),
+                        ]
+                    )
+                )
 
             self.assertEqual(_model_predicates[M1][0].fields, ["foo"])
             self.assertEqual(_model_predicates[M2][0].fields, ["bar"])
@@ -2331,6 +2432,7 @@ class ConcurrencyTests(AdversaryBase):
         snapshots are content-equal across builds, request.user
         assignment is observably atomic."""
         from turbodrf.rls import middleware as rls_mw
+
         self.assertTrue(hasattr(rls_mw, "TurboDRFTenancyMiddleware"))
 
         s1 = build_permission_snapshot(self.attacker, Deal, use_cache=False)
@@ -2427,6 +2529,7 @@ class RealConcurrencyTests(_AdversaryWorldMixin, TransactionTestCase):
     def test_concurrent_threaded_fk_injection_attempts_all_blocked(self):
         """16 threaded FK injections — none succeed; victim_bank has
         only its single original transaction afterwards."""
+
         def attempt():
             try:
                 client = APIClient()
@@ -2442,9 +2545,7 @@ class RealConcurrencyTests(_AdversaryWorldMixin, TransactionTestCase):
         with ThreadPoolExecutor(max_workers=8) as ex:
             list(as_completed([ex.submit(attempt) for _ in range(16)]))
 
-        injected = Transaction.objects.filter(
-            bank_account=self.victim_bank
-        ).count()
+        injected = Transaction.objects.filter(bank_account=self.victim_bank).count()
         # The fixture creates 0 victim transactions in this class (no
         # victim_tx in our setUp). Verify zero injection happened.
         self.assertEqual(injected, 0)
@@ -2472,10 +2573,12 @@ class RealConcurrencyTests(_AdversaryWorldMixin, TransactionTestCase):
                     r = client.get("/api/deals/")
                     if r.status_code == 200:
                         body = str(r.data)
-                        results.append((
-                            "ATTACKER_DEAL" in body,
-                            VICTIM_SECRET_DEAL in body,
-                        ))
+                        results.append(
+                            (
+                                "ATTACKER_DEAL" in body,
+                                VICTIM_SECRET_DEAL in body,
+                            )
+                        )
             finally:
                 _close_thread_db()
 
@@ -2589,7 +2692,10 @@ class IntegrationTests(AdversaryBase):
         from turbodrf.integrations.keycloak import map_keycloak_roles_to_turbodrf
 
         with override_settings(
-            TURBODRF_KEYCLOAK_ROLE_MAPPING={"kc-under": "underwriter", "kc-mgr": "manager"},
+            TURBODRF_KEYCLOAK_ROLE_MAPPING={
+                "kc-under": "underwriter",
+                "kc-mgr": "manager",
+            },
             TURBODRF_KEYCLOAK_STRICT_ROLES=True,
         ):
             self.assertEqual(
@@ -2622,9 +2728,7 @@ class IntegrationTests(AdversaryBase):
             "__class__.__bases__",
         ):
             with override_settings(TURBODRF_KEYCLOAK_ROLE_CLAIM=path):
-                self.assertEqual(
-                    extract_roles_from_token({"roles": ["admin"]}), []
-                )
+                self.assertEqual(extract_roles_from_token({"roles": ["admin"]}), [])
 
         # Path-not-in-token
         with override_settings(
@@ -2648,7 +2752,9 @@ class IntegrationTests(AdversaryBase):
 
         # Deeply nested path that legitimately matches
         token = {"resource_access": {"my-client": {"roles": ["legit-user"]}}}
-        with override_settings(TURBODRF_KEYCLOAK_ROLE_CLAIM="resource_access.my-client.roles"):
+        with override_settings(
+            TURBODRF_KEYCLOAK_ROLE_CLAIM="resource_access.my-client.roles"
+        ):
             self.assertEqual(extract_roles_from_token(token), ["legit-user"])
 
         # Other client's roles not picked up
@@ -2658,7 +2764,9 @@ class IntegrationTests(AdversaryBase):
                 "attacker-client": {"roles": ["admin"]},
             }
         }
-        with override_settings(TURBODRF_KEYCLOAK_ROLE_CLAIM="resource_access.my-client.roles"):
+        with override_settings(
+            TURBODRF_KEYCLOAK_ROLE_CLAIM="resource_access.my-client.roles"
+        ):
             roles = extract_roles_from_token(token)
             self.assertEqual(roles, ["viewer"])
             self.assertNotIn("admin", roles)
@@ -2674,8 +2782,10 @@ class IntegrationTests(AdversaryBase):
 
         # Multiple associations: first non-empty wins
         u = MagicMock()
-        first = MagicMock(); first.extra_data = {"roles": ["viewer"]}
-        second = MagicMock(); second.extra_data = {"roles": ["admin"]}
+        first = MagicMock()
+        first.extra_data = {"roles": ["viewer"]}
+        second = MagicMock()
+        second.extra_data = {"roles": ["admin"]}
         u.social_auth.all.return_value = [first, second]
         with override_settings(
             TURBODRF_KEYCLOAK_ROLE_CLAIM="roles",
@@ -2687,7 +2797,8 @@ class IntegrationTests(AdversaryBase):
         # Malformed extra_data variants
         for bad in ("not-a-dict", None):
             u = MagicMock()
-            assoc = MagicMock(); assoc.extra_data = bad
+            assoc = MagicMock()
+            assoc.extra_data = bad
             u.social_auth.all.return_value = [assoc]
             with override_settings(TURBODRF_KEYCLOAK_ROLE_CLAIM="roles"):
                 self.assertEqual(get_user_roles_from_social_auth(u), [])
@@ -2729,6 +2840,7 @@ class IntegrationTests(AdversaryBase):
     def test_get_role_mapping_returns_dict(self):
         """Default mapping is a dict."""
         from turbodrf.integrations.keycloak import get_role_mapping
+
         self.assertIsInstance(get_role_mapping(), dict)
 
     # ---- Custom user model edges -----------------------------------------
@@ -2789,7 +2901,8 @@ class IntegrationTests(AdversaryBase):
         u.is_authenticated = True
         u.pk = 1
         u.brokerage = self.brokerage_attacker.pk
-        request = MagicMock(); request.user = u
+        request = MagicMock()
+        request.user = u
         with override_settings(TURBODRF_TENANT_USER_FIELD="brokerage"):
             self.assertIsNotNone(Tenant("brokerage").q(request, set()))
 
@@ -2998,7 +3111,8 @@ class IntegrationTests(AdversaryBase):
         # Middleware: doesn't overwrite _test_roles
         get_response = MagicMock(return_value="response")
         mw = AllAuthRoleMiddleware(get_response)
-        request = MagicMock(); request.user = self.attacker
+        request = MagicMock()
+        request.user = self.attacker
         mw(request)
         self.assertEqual(self.attacker._test_roles, ["underwriter"])
 
@@ -3017,14 +3131,16 @@ class IntegrationTests(AdversaryBase):
         # SQLite no-op
         get_response = MagicMock(return_value="response")
         mw = TurboDRFTenancyMiddleware(get_response)
-        request = MagicMock(); request.user = self.attacker
+        request = MagicMock()
+        request.user = self.attacker
         self.assertEqual(mw(request), "response")
         get_response.assert_called_once_with(request)
 
         # Anon early return
         get_response = MagicMock(return_value="response")
         mw = TurboDRFTenancyMiddleware(get_response)
-        request = MagicMock(); request.user = AnonymousUser()
+        request = MagicMock()
+        request.user = AnonymousUser()
         with patch("turbodrf.rls.middleware._is_postgres", return_value=True):
             with patch("django.db.connection.cursor") as mock_cursor:
                 mw(request)
@@ -3035,7 +3151,8 @@ class IntegrationTests(AdversaryBase):
         no_tenant._test_roles = ["underwriter"]
         get_response = MagicMock(return_value="response")
         mw = TurboDRFTenancyMiddleware(get_response)
-        request = MagicMock(); request.user = no_tenant
+        request = MagicMock()
+        request.user = no_tenant
         cursor_mock = MagicMock()
         cursor_mock.__enter__ = MagicMock(return_value=cursor_mock)
         cursor_mock.__exit__ = MagicMock(return_value=False)
@@ -3046,7 +3163,8 @@ class IntegrationTests(AdversaryBase):
                 except Exception:
                     pass
                 tenant_calls = [
-                    c for c in cursor_mock.execute.call_args_list
+                    c
+                    for c in cursor_mock.execute.call_args_list
                     if "tenant_id" in (c[0][0] if c[0] else "")
                 ]
                 for c in tenant_calls:
@@ -3054,17 +3172,20 @@ class IntegrationTests(AdversaryBase):
 
         # Source-level: parameterized SQL
         import inspect
+
         from turbodrf.rls import middleware as mw_mod
+
         src = inspect.getsource(mw_mod.TurboDRFTenancyMiddleware._set_session_vars)
         self.assertIn("set_config('app.user_id', %s, true)", src)
         self.assertIn("set_config('app.tenant_id', %s, true)", src)
         self.assertIn("set_config('app.user_roles', %s, true)", src)
-        self.assertNotIn('f"SELECT set_config(\'app.tenant_id\'', src)
+        self.assertNotIn("f\"SELECT set_config('app.tenant_id'", src)
 
         # Exception during set_config -> swallowed, request continues
         get_response = MagicMock(return_value="response")
         mw = TurboDRFTenancyMiddleware(get_response)
-        request = MagicMock(); request.user = self.attacker
+        request = MagicMock()
+        request.user = self.attacker
         cursor_mock = MagicMock()
         cursor_mock.__enter__ = MagicMock(return_value=cursor_mock)
         cursor_mock.__exit__ = MagicMock(return_value=False)

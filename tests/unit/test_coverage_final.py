@@ -723,12 +723,20 @@ class TestRendererModuleLevelVars(TestCase):
 
     def test_lib_name_is_msgspec(self):
         """With msgspec installed, _lib_name should be 'msgspec'."""
+        try:
+            import msgspec  # noqa: F401
+        except ImportError:
+            self.skipTest("msgspec not installed (extras_require['fast'])")
         from turbodrf.renderers import _lib_name
 
         self.assertEqual(_lib_name, "msgspec")
 
     def test_encoder_is_not_none(self):
         """With msgspec installed, _encoder should be set."""
+        try:
+            import msgspec  # noqa: F401
+        except ImportError:
+            self.skipTest("msgspec not installed (extras_require['fast'])")
         from turbodrf.renderers import _encoder
 
         self.assertIsNotNone(_encoder)
@@ -1201,6 +1209,7 @@ class TestGetSchemaWithRoleFiltering(TestCase):
         )
 
         from django.contrib.auth.models import AnonymousUser
+
         mock_request = MagicMock()
         mock_request.GET = {}
         mock_request.session = {"api_role": "viewer"}

@@ -55,9 +55,7 @@ class TestSentryWhenEnabled(TestCase):
         mock_scope = MagicMock()
         mock_sdk.get_current_scope.return_value = mock_scope
         # context manager for push_scope
-        mock_sdk.push_scope.return_value.__enter__ = MagicMock(
-            return_value=mock_scope
-        )
+        mock_sdk.push_scope.return_value.__enter__ = MagicMock(return_value=mock_scope)
         mock_sdk.push_scope.return_value.__exit__ = MagicMock(return_value=False)
         return patch.dict("sys.modules", {"sentry_sdk": mock_sdk}), mock_sdk
 
@@ -77,15 +75,11 @@ class TestSentryWhenEnabled(TestCase):
     def test_report_security_event_creates_breadcrumb(self):
         ctx, mock_sdk = self._patch_sdk()
         with ctx:
-            report_security_event(
-                "fk_injection_rejected", "Test", model="Deal"
-            )
+            report_security_event("fk_injection_rejected", "Test", model="Deal")
             mock_sdk.add_breadcrumb.assert_called_once()
             kwargs = mock_sdk.add_breadcrumb.call_args.kwargs
             self.assertEqual(kwargs["category"], "turbodrf.security")
-            self.assertEqual(
-                kwargs["data"]["event_type"], "fk_injection_rejected"
-            )
+            self.assertEqual(kwargs["data"]["event_type"], "fk_injection_rejected")
             self.assertEqual(kwargs["data"]["model"], "Deal")
 
     def test_capture_security_message_sends_message(self):
