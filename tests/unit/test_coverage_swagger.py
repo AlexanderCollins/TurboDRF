@@ -573,6 +573,14 @@ class TestTurboDRFMetadata(TestCase):
     """Cover metadata.py uncovered lines."""
 
     def setUp(self):
+        from django.core.cache import cache
+
+        # MagicMock-based users in these tests get unstable ids that can
+        # collide in the permission-snapshot cache across parallel
+        # workers. Clear cache to avoid hitting another worker's stale
+        # snapshot.
+        cache.clear()
+
         self.factory = APIRequestFactory()
         self.related = RelatedModel.objects.create(name="Cat", description="desc")
 
