@@ -108,9 +108,12 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
         if self.current_role:
             # Filter paths based on role permissions
             filtered_paths = {}
-            from .settings import TURBODRF_ROLES
+            from django.conf import settings as _django_settings
 
-            permissions = set(TURBODRF_ROLES.get(self.current_role, []))
+            from .settings import TURBODRF_ROLES as _default_roles
+
+            roles = getattr(_django_settings, "TURBODRF_ROLES", _default_roles)
+            permissions = set(roles.get(self.current_role, []))
 
             for path, methods in schema["paths"].items():
                 filtered_methods = {}
