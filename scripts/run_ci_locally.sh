@@ -37,7 +37,8 @@ run_one() {
             pip install --quiet --upgrade pip
             pip install --quiet 'django~=${DJ}.0'
             pip install --quiet -e '.[dev]'
-            pytest -n 2 --tb=short 2>&1 | tail -30
+            # Match CI's exact invocation (.github/workflows/ci.yml:33)
+            pytest -v --cov=turbodrf --cov-report=term --cov-report=json 2>&1 | tail -40
         "
     echo
 }
