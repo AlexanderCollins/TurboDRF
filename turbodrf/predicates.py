@@ -412,20 +412,25 @@ def parse_config(config):
 
     visibility = config.get("visibility")
     if visibility is not None:
-        # Mixing sugar form with power form is ambiguous — refuse to guess
-        # which one wins. Silently dropping either side is how cross-tenant
-        # leaks happen.
+        # `tenant_field` is conceptually orthogonal to `visibility` — the
+        # tenant boundary is a setting outside the predicate algebra, while
+        # `visibility` is the within-tenant algebra. They compose cleanly
+        # and are the recommended pairing whenever you need
+        # Either/Custom alongside tenancy. `owner_field` and
+        # `bypass_owner_roles` are sugar that produces predicates which
+        # would also appear in `visibility`, so those genuinely conflict.
         conflicting = [
             k
-            for k in ("tenant_field", "owner_field", "bypass_owner_roles")
+            for k in ("owner_field", "bypass_owner_roles")
             if config.get(k) is not None
         ]
         if conflicting:
             raise ImproperlyConfigured(
                 f"Cannot mix 'visibility' with sugar keys {conflicting}. "
-                f"Pick one form: either 'visibility=[...]' (power form) OR "
-                f"'tenant_field' / 'owner_field' / 'bypass_owner_roles' "
-                f"(sugar form)."
+                f"Either use 'visibility=[...]' (and put Owner(...) inside "
+                f"it) or use 'owner_field' / 'bypass_owner_roles' sugar — "
+                f"not both. 'tenant_field' is allowed alongside "
+                f"'visibility' since it's a setting, not a predicate."
             )
         if not isinstance(visibility, (list, tuple)):
             raise ImproperlyConfigured(
@@ -439,21 +444,33 @@ def parse_config(config):
                 )
             _reject_tenant_inside_either(p)
 
-        # Extract any top-level Tenant predicates into tenant_field setting
+        # Honor an explicit tenant_field setting when present.
+        tf = config.get("tenant_field")
+        if tf is not None:
+            if not isinstance(tf, str):
+                raise ImproperlyConfigured("'tenant_field' must be a string.")
+            tenant_field = tf
+
+        # Extract any top-level Tenant predicates into tenant_field setting.
+        # Still emits a deprecation warning so the canonical form is
+        # `tenant_field=...` + within-tenant `visibility=[...]`, but no
+        # longer dead-ends users when they follow the warning's advice.
         cleaned = []
         for p in visibility:
             if isinstance(p, Tenant):
                 if tenant_field is not None and tenant_field != p.field:
                     raise ImproperlyConfigured(
-                        f"Multiple Tenant predicates in 'visibility' with "
-                        f"different fields: {tenant_field!r} and {p.field!r}. "
-                        f"Use a single 'tenant_field' setting instead."
+                        f"Multiple tenant fields declared: 'tenant_field' "
+                        f"setting is {tenant_field!r} but Tenant() inside "
+                        f"'visibility' uses {p.field!r}. Use a single "
+                        f"'tenant_field' setting."
                     )
                 tenant_field = p.field
                 warnings.warn(
                     "Tenant() inside 'visibility' is deprecated. Use the "
                     "'tenant_field' setting instead — Tenant is a mandatory "
-                    "boundary, not a composable predicate.",
+                    "boundary, not a composable predicate. The "
+                    "'tenant_field' setting can sit alongside 'visibility'.",
                     DeprecationWarning,
                     stacklevel=3,
                 )

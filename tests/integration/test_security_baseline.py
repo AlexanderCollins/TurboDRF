@@ -911,9 +911,11 @@ class TestParseConfigInvariants(TestCase):
             parse_config(bad_config)
         self.assertIn("Either", str(ctx.exception))
 
-    def test_mixing_sugar_and_visibility_raises(self):
-        """Mixing tenant_field= with visibility= silently dropped tenant_field
-        before; must raise instead."""
+    def test_mixing_owner_sugar_and_visibility_raises(self):
+        """`owner_field` / `bypass_owner_roles` sugar conflicts with
+        `visibility` (both compile to predicates) — must raise. But
+        `tenant_field` is a setting, not a predicate, and is allowed
+        alongside `visibility`."""
         from django.core.exceptions import ImproperlyConfigured
 
         from turbodrf.predicates import Owner, parse_config
@@ -921,11 +923,23 @@ class TestParseConfigInvariants(TestCase):
         with self.assertRaises(ImproperlyConfigured) as cm:
             parse_config(
                 {
-                    "tenant_field": "brokerage",
+                    "owner_field": "assigned_broker",
                     "visibility": [Owner("assigned_broker")],
                 }
             )
         self.assertIn("Cannot mix", str(cm.exception))
+
+        # tenant_field + visibility is the canonical power-form pairing —
+        # the deprecated `Tenant() inside visibility` form told users to
+        # use this combination. Should NOT raise.
+        tf, preds = parse_config(
+            {
+                "tenant_field": "brokerage",
+                "visibility": [Owner("assigned_broker")],
+            }
+        )
+        self.assertEqual(tf, "brokerage")
+        self.assertEqual(len(preds), 1)
 
     def test_tenant_layer_applied_separately_from_predicate_q(self):
         """Even if every predicate's Q resolves to Q() (unrestricted), the
