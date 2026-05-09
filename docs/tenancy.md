@@ -461,7 +461,6 @@ a Q clause are restricted to specified roles). These are usable in
 ## See also
 
 - `docs/security.md` — threat model, sensitive fields, error responses
-- `docs/design_notes.md` — what the row-scoping system addresses and what it doesn't
 - `docs/rls.md` — optional Postgres RLS as defense-in-depth
 - `docs/migration_to_predicates.md` — migrating an existing project
 - `SECURITY_AUDIT.md` — audit history
