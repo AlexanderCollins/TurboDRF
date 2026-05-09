@@ -324,7 +324,15 @@ class Custom(Predicate):
 
 
 class Members(Predicate):
-    """Advanced: user must be in the row's M2M-to-User collection."""
+    """Advanced: user must be in the row's M2M-to-User collection.
+
+    Read-only enforcement. ``Members`` does not implement
+    ``auto_fill`` or ``validate_write``, so wiring it onto a writable
+    endpoint will silently let any tenant member create or update a
+    row without the membership check. Use ``Owner`` (or ``Custom`` with
+    explicit write hooks) for writable paths and reserve ``Members``
+    for read-only models.
+    """
 
     def __init__(self, m2m_field):
         self.m2m_field = m2m_field
@@ -335,12 +343,32 @@ class Members(Predicate):
             return _no_match_q()
         return Q(**{self.m2m_field: user})
 
+    def auto_fill(self, validated_data, request):
+        raise NotImplementedError(
+            "Members predicate has no auto_fill — it only enforces "
+            "row reads. For writable endpoints use Owner or Custom "
+            "with explicit write hooks."
+        )
+
+    def validate_write(self, validated_data, instance, request):
+        raise NotImplementedError(
+            "Members predicate has no validate_write — it only "
+            "enforces row reads. For writable endpoints use Owner "
+            "or Custom with explicit write hooks."
+        )
+
 
 class Group(Predicate):
     """Advanced: user must belong to the group/team that owns the row.
 
-    `field` is the FK on the row to the group/team.
-    `user_via` is the reverse-M2M name from group/team to user.
+    ``field`` is the FK on the row to the group/team.
+    ``user_via`` is the reverse-M2M name from group/team to user.
+
+    Read-only enforcement. ``Group`` does not implement ``auto_fill``
+    or ``validate_write``, so wiring it onto a writable endpoint will
+    silently let any tenant member create or update a row without the
+    membership check. Use ``Owner`` (or ``Custom`` with explicit write
+    hooks) for writable paths.
     """
 
     def __init__(self, field, user_via="members"):
@@ -353,9 +381,31 @@ class Group(Predicate):
             return _no_match_q()
         return Q(**{f"{self.field}__{self.user_via}": user})
 
+    def auto_fill(self, validated_data, request):
+        raise NotImplementedError(
+            "Group predicate has no auto_fill — it only enforces "
+            "row reads. For writable endpoints use Owner or Custom "
+            "with explicit write hooks."
+        )
+
+    def validate_write(self, validated_data, instance, request):
+        raise NotImplementedError(
+            "Group predicate has no validate_write — it only "
+            "enforces row reads. For writable endpoints use Owner "
+            "or Custom with explicit write hooks."
+        )
+
 
 class Conditional(Predicate):
-    """Advanced: rows matching `when` are visible only to users with a required role."""
+    """Advanced: rows matching ``when`` are visible only to users with a
+    required role.
+
+    Read-only enforcement. ``Conditional`` does not implement
+    ``auto_fill`` or ``validate_write``; a writable endpoint with a
+    ``Conditional`` predicate would let users freely create or update
+    rows that match ``when`` regardless of role. Use ``Owner`` /
+    ``Custom`` with explicit write hooks for writable paths.
+    """
 
     def __init__(self, when, require_roles):
         if not isinstance(when, Q):
@@ -367,6 +417,20 @@ class Conditional(Predicate):
         if user_roles and (user_roles & self.require_roles):
             return Q()
         return ~self.when
+
+    def auto_fill(self, validated_data, request):
+        raise NotImplementedError(
+            "Conditional predicate has no auto_fill — it only "
+            "enforces row reads. For writable endpoints use Owner "
+            "or Custom with explicit write hooks."
+        )
+
+    def validate_write(self, validated_data, instance, request):
+        raise NotImplementedError(
+            "Conditional predicate has no validate_write — it only "
+            "enforces row reads. For writable endpoints use Owner "
+            "or Custom with explicit write hooks."
+        )
 
 
 # ---------------------------------------------------------------------------

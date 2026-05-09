@@ -209,6 +209,16 @@ class TurboDRFViewSet(*_viewset_bases):
     # If you bypass those (e.g. self.model.objects.get(...) directly), scoping
     # is bypassed too — you must apply it manually.
 
+    def _get_base_queryset(self):
+        """Override point for subclasses that need a custom base
+        queryset. Whatever this returns is passed through the tenant +
+        predicate filter steps in `get_queryset` — the access layer
+        cannot be skipped from this hook.
+        """
+        if self.model is not None:
+            return self.model.objects.all()
+        return super().get_queryset()
+
     def _get_predicate_q(self, request):
         """Build the AND'd Q expression from this viewset's WITHIN-TENANT
         predicates. The mandatory tenant boundary is applied separately by
@@ -620,17 +630,23 @@ class TurboDRFViewSet(*_viewset_bases):
         """Base queryset with `select_related` for FK fields referenced in
         `turbodrf()` config. Predicate / tenant filters are AND'd onto the
         result by the layered access-control system below.
+
+        SECURITY INVARIANT (must hold across all subclasses): the
+        queryset returned by this method MUST have been passed through
+        the tenant + predicate filter steps below. Subclasses that
+        override `get_queryset` and short-circuit before the
+        `_get_tenant_q` / `_get_predicate_q` calls bypass row scoping
+        and leak cross-tenant data. If a subclass needs a custom base
+        queryset, override `_get_base_queryset()` instead — this
+        wrapper still applies the access layer.
         """
-        # If model is set (typical for TurboDRF), use it directly
-        # Otherwise fall back to the queryset attribute
-        if self.model is not None:
-            queryset = self.model.objects.all()
-        else:
-            queryset = super().get_queryset()
+        # Unscoped base — see invariant in the docstring. This MUST be
+        # passed through the tenant + predicate filter steps further
+        # down before being returned to a request.
+        unscoped = self._get_base_queryset()
 
         # Add default ordering by primary key to avoid pagination warnings
-        if not queryset.ordered:
-            queryset = queryset.order_by("pk")
+        queryset = unscoped if unscoped.ordered else unscoped.order_by("pk")
 
         # Add select_related and prefetch_related optimizations
         # This is a simple implementation - could be enhanced

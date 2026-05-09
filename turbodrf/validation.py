@@ -119,6 +119,246 @@ def get_nested_field_model(model, field_path):
     return current_model, field_chain
 
 
+def validate_searchable_fields_safety(model):
+    """Refuse to boot if a model's ``searchable_fields`` traverse into a
+    target whose predicates / tenant_field DRF's ``SearchFilter`` does
+    not apply to the join.
+
+    DRF's ``SearchFilter`` generates ``WHERE <path> ILIKE ...`` joined to
+    the target model. The parent rows are already tenant + predicate
+    scoped via ``get_queryset()``, but the JOIN to the target does not
+    apply the target's own visibility rules. A search query can match
+    against target rows the user cannot see via the target's own
+    endpoint — leaking row existence and partial column values via
+    substring inference (``?search=secret``).
+
+    Same class of bug as :func:`turbodrf.compiler.validate_compiled_path_safety`.
+    See ``docs/security.md`` for the full bug class.
+
+    Detection is fully static: walk every ``searchable_fields`` entry
+    that contains ``__``; for every model along the chain (excluding
+    the parent itself), look up registered predicates and tenant_field;
+    refuse to start if any link is unsafe.
+
+    Escape hatches (raised in the error message):
+        * Drop the ``__``-path from ``searchable_fields`` (use only flat
+          fields on the parent model).
+        * Set ``TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS = True`` to bypass
+          (logs a loud warning per offending entry; for migrations
+          only).
+    """
+    from django.conf import settings as _s
+
+    from .predicates import get_predicates, get_tenant_field
+
+    searchable = getattr(model, "searchable_fields", None) or []
+    if not searchable:
+        return
+
+    allow_unsafe = getattr(_s, "TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS", False)
+    parent_tenant = get_tenant_field(model)
+
+    for path in searchable:
+        if not isinstance(path, str) or "__" not in path:
+            continue
+        try:
+            _final_model, chain = get_nested_field_model(model, path)
+        except FieldDoesNotExist:
+            # Resolvability check at views.py:_is_resolvable_search_path
+            # already silently drops these at request time; skip here.
+            continue
+
+        # Walk the chain. Skip the parent itself (chain[0]) — the unsafe
+        # case is the JOIN target, not the source. Each subsequent
+        # entry's `model` field is the model the previous FK pointed at.
+        offending = []
+        for step_idx, (step_model, _field, _name) in enumerate(chain):
+            if step_idx == 0:
+                continue
+            target_predicates = get_predicates(step_model)
+            target_tenant = get_tenant_field(step_model)
+
+            unsafe_predicates = bool(target_predicates)
+            unsafe_tenant_drift = (
+                target_tenant is not None and parent_tenant is None
+            )
+            if unsafe_predicates or unsafe_tenant_drift:
+                reasons = []
+                if unsafe_predicates:
+                    reasons.append(
+                        f"{step_model.__name__} has "
+                        f"{len(target_predicates)} registered predicate(s) "
+                        f"({', '.join(type(p).__name__ for p in target_predicates)}) "
+                        f"that DRF's SearchFilter does not apply to the join"
+                    )
+                if unsafe_tenant_drift:
+                    reasons.append(
+                        f"{step_model.__name__} declares "
+                        f"tenant_field={target_tenant!r} but "
+                        f"{model.__name__} is shared (no tenant_field) — "
+                        f"a shared parent searching tenanted rows leaks "
+                        f"across tenants"
+                    )
+                offending.append((step_model, reasons))
+
+        if not offending:
+            continue
+
+        joined = "; ".join(
+            f"[{m.__name__}] {' / '.join(r)}" for m, r in offending
+        )
+        message = (
+            f"{model.__name__}.searchable_fields contains "
+            f"'{path}', but: {joined}.\n\n"
+            f"This is the same data-leak class as the compiled M2M "
+            f"target bypass — the search query joins to "
+            f"{offending[-1][0].__name__} without applying its own "
+            f"visibility rules, so '?search=secret' can match against "
+            f"rows the caller cannot see via the "
+            f"{offending[-1][0].__name__} endpoint. See "
+            f"docs/security.md#search-field-target-bypass.\n\n"
+            f"Fix one of:\n"
+            f"  • Drop '{path}' from {model.__name__}.searchable_fields "
+            f"(use only flat fields on {model.__name__} itself).\n"
+            f"  • Remove predicates / tenant_field from "
+            f"{offending[-1][0].__name__} only if it is genuinely "
+            f"public reference data with no row-level rules.\n"
+            f"  • Set TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS=True to "
+            f"bypass this gate (NOT recommended; logs a warning)."
+        )
+
+        if allow_unsafe:
+            logger.warning(
+                "TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS=True — bypassing "
+                "search-field safety gate. %s",
+                message,
+            )
+            continue
+
+        from django.core.exceptions import ImproperlyConfigured
+
+        raise ImproperlyConfigured(message)
+
+
+def path_traverses_predicate_target(parent_model, field_path):
+    """True if the JOIN chain for ``field_path`` passes through a model
+    with registered predicates or tenant-drift relative to the parent.
+
+    Used at REQUEST time by :func:`build_traversal_scope_q` to decide
+    whether a ``__``-path filter / ordering needs the target-scoping
+    AND clause. Same bug class as the compiled M2M / search-fields
+    startup gates, applied at request time because URL-driven JOINs
+    aren't statically enumerable.
+
+    Returns False on unresolvable paths so normal validation can
+    surface the error.
+    """
+    from .predicates import get_predicates, get_tenant_field
+
+    parent_tenant = get_tenant_field(parent_model)
+    try:
+        _final_model, chain = get_nested_field_model(parent_model, field_path)
+    except FieldDoesNotExist:
+        return False
+
+    for step_idx, (step_model, _field, _name) in enumerate(chain):
+        if step_idx == 0:
+            continue
+        if get_predicates(step_model):
+            return True
+        target_tenant = get_tenant_field(step_model)
+        if target_tenant is not None and parent_tenant is None:
+            return True
+    return False
+
+
+def build_traversal_scope_q(parent_model, field_path, request):
+    """Build a Q that scopes every JOIN target along ``field_path`` to
+    the rows the request's user can see via that target's own endpoint.
+
+    For each model in the JOIN chain that has registered predicates or
+    a ``tenant_field``, this AND's
+    ``<prefix>__pk__in=<TargetModel.objects.filter(<target_q>)>`` onto
+    the parent queryset, where ``target_q`` mirrors the target view's
+    tenant_q + predicate_q construction (see
+    :meth:`turbodrf.views.TurboDRFViewSet._get_tenant_q` and
+    :meth:`._get_predicate_q`).
+
+    Used at request time to wrap URL-driven JOINs (``?fk__field=...``,
+    ``?ordering=fk__field``) so the JOIN can't render rows the caller
+    cannot see via the target's own endpoint — same bug class as the
+    compiled M2M / search-field bypasses, but URL-driven so it can't be
+    gated at startup.
+
+    Returns ``Q()`` (no-op) for paths whose chain is fully unscoped, or
+    when no ``__`` is present in the path.
+    """
+    from django.db.models import Q
+
+    from .backends import get_user_roles
+    from .predicates import (
+        get_predicates,
+        get_tenant_field,
+        get_user_tenant,
+    )
+
+    if not isinstance(field_path, str) or "__" not in field_path:
+        return Q()
+
+    try:
+        _final, chain = get_nested_field_model(parent_model, field_path)
+    except FieldDoesNotExist:
+        return Q()
+
+    user = getattr(request, "user", None) if request is not None else None
+    user_roles = set(get_user_roles(user)) if user is not None else set()
+    parts = field_path.split("__")
+
+    q_combined = Q()
+
+    for step_idx, (step_model, _f, _name) in enumerate(chain):
+        if step_idx == 0:
+            continue
+        target_predicates = get_predicates(step_model)
+        target_tenant_field = get_tenant_field(step_model)
+
+        if not target_predicates and target_tenant_field is None:
+            continue
+
+        prefix = "__".join(parts[:step_idx])
+        scoped_qs = step_model.objects.all()
+
+        # Tenant boundary on the target.
+        if target_tenant_field is not None:
+            if (
+                request is None
+                or user is None
+                or not getattr(user, "is_authenticated", False)
+            ):
+                # Fail closed: no resolvable tenant means the JOIN target
+                # is out of bounds.
+                return q_combined & Q(**{f"{prefix}__in": step_model.objects.none()})
+            tenant = get_user_tenant(user)
+            if tenant is None:
+                return q_combined & Q(**{f"{prefix}__in": step_model.objects.none()})
+            scoped_qs = scoped_qs.filter(**{target_tenant_field: tenant})
+
+        # Within-tenant predicates on the target.
+        if target_predicates:
+            if request is None:
+                return q_combined & Q(**{f"{prefix}__in": step_model.objects.none()})
+            target_q = Q()
+            for pred in target_predicates:
+                target_q &= pred.q(request, user_roles)
+            # An empty Q() from a predicate chain means "fully bypassed"
+            # — no extra scoping needed beyond tenant.
+            scoped_qs = scoped_qs.filter(target_q)
+
+        q_combined &= Q(**{f"{prefix}__in": scoped_qs.values("pk")})
+
+    return q_combined
+
+
 def check_nested_field_permissions(model, field_path, user, use_cache=True):
     """
     Check permissions for a nested field path using permission snapshots.
