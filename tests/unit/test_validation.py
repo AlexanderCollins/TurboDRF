@@ -141,9 +141,7 @@ class ValidateSearchableFieldsSafetyTests(TestCase):
 
 class PathTraversesPredicateTargetTests(TestCase):
     def test_flat_path_returns_false(self):
-        self.assertFalse(
-            path_traverses_predicate_target(CompiledArticle, "title")
-        )
+        self.assertFalse(path_traverses_predicate_target(CompiledArticle, "title"))
 
     def test_unresolvable_path_returns_false(self):
         self.assertFalse(
@@ -158,9 +156,7 @@ class PathTraversesPredicateTargetTests(TestCase):
 
     def test_predicate_on_target_returns_true(self):
         with _RegistrySnapshot():
-            register_predicates(
-                RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))]
-            )
+            register_predicates(RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
             self.assertTrue(
                 path_traverses_predicate_target(CompiledArticle, "author__name")
             )
@@ -185,26 +181,20 @@ class BuildTraversalScopeQTests(TestCase):
         self.assertEqual(q, Q())
 
     def test_unresolvable_path_returns_empty_q(self):
-        q = build_traversal_scope_q(
-            CompiledArticle, "no_such__field", request=None
-        )
+        q = build_traversal_scope_q(CompiledArticle, "no_such__field", request=None)
         self.assertEqual(q, Q())
 
     def test_safe_traversal_returns_empty_q(self):
         """Path through a target with no predicates / tenant_field is no-op."""
         with _RegistrySnapshot():
-            q = build_traversal_scope_q(
-                CompiledArticle, "author__name", request=None
-            )
+            q = build_traversal_scope_q(CompiledArticle, "author__name", request=None)
             self.assertEqual(q, Q())
 
     def test_predicate_target_emits_subquery(self):
         from django.contrib.auth import get_user_model
 
         with _RegistrySnapshot():
-            register_predicates(
-                RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))]
-            )
+            register_predicates(RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
             User = get_user_model()
             user = User(username="probe")
             request = Mock()
@@ -221,7 +211,5 @@ class BuildTraversalScopeQTests(TestCase):
         """No resolvable request → empty queryset on the target."""
         with _RegistrySnapshot():
             register_tenant_field(RelatedModel, "name")
-            q = build_traversal_scope_q(
-                CompiledArticle, "author__name", request=None
-            )
+            q = build_traversal_scope_q(CompiledArticle, "author__name", request=None)
             self.assertNotEqual(q, Q())

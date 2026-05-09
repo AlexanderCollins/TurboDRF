@@ -179,9 +179,7 @@ class ORFilterBackend(BaseFilterBackend):
                         continue  # silently drop malformed isnull values
                     value = coerced
 
-                queryset = queryset.filter(
-                    Q(**{key: value}) & _scope_path(key)
-                )
+                queryset = queryset.filter(Q(**{key: value}) & _scope_path(key))
             except (ValueError, TypeError, Exception):
                 # Skip filters that cause type conversion errors
                 # (e.g., "true" string for a BooleanField)

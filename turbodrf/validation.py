@@ -179,9 +179,7 @@ def validate_searchable_fields_safety(model):
             target_tenant = get_tenant_field(step_model)
 
             unsafe_predicates = bool(target_predicates)
-            unsafe_tenant_drift = (
-                target_tenant is not None and parent_tenant is None
-            )
+            unsafe_tenant_drift = target_tenant is not None and parent_tenant is None
             if unsafe_predicates or unsafe_tenant_drift:
                 reasons = []
                 if unsafe_predicates:
@@ -204,9 +202,7 @@ def validate_searchable_fields_safety(model):
         if not offending:
             continue
 
-        joined = "; ".join(
-            f"[{m.__name__}] {' / '.join(r)}" for m, r in offending
-        )
+        joined = "; ".join(f"[{m.__name__}] {' / '.join(r)}" for m, r in offending)
         message = (
             f"{model.__name__}.searchable_fields contains "
             f"'{path}', but: {joined}.\n\n"

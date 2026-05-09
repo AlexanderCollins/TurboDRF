@@ -483,25 +483,19 @@ class ValidateCompiledPathSafetyFKTests(TestCase):
         with _RegistrySnapshot():
             plan = compile_model(CompiledSampleModel)
             register_compiled_plan(CompiledSampleModel, plan)
-            register_predicates(
-                RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))]
-            )
+            register_predicates(RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
             with self.assertRaises(ImproperlyConfigured) as cm:
                 validate_compiled_path_safety(CompiledSampleModel)
             msg = str(cm.exception)
             self.assertIn("RelatedModel", msg)
             self.assertIn("Custom", msg)
-            self.assertIn(
-                "docs/security.md#compiled-fk-annotation-bypass", msg
-            )
+            self.assertIn("docs/security.md#compiled-fk-annotation-bypass", msg)
 
     def test_fk_kill_switch_bypasses(self):
         with _RegistrySnapshot():
             plan = compile_model(CompiledSampleModel)
             register_compiled_plan(CompiledSampleModel, plan)
-            register_predicates(
-                RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))]
-            )
+            register_predicates(RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
             with override_settings(TURBODRF_ALLOW_UNSAFE_COMPILED_FK=True):
                 validate_compiled_path_safety(CompiledSampleModel)
 
