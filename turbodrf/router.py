@@ -279,6 +279,27 @@ class TurboDRFRouter(DefaultRouter):
                 continue
             validate_searchable_fields_safety(model)
 
+        # Fourth pass: validate Custom predicate write safety. A Custom
+        # without a write_validator returns [] from validate_write,
+        # silently letting writes through Either(Owner, Custom) and
+        # bypassing Owner's enforcement. See
+        # predicates.validate_predicate_write_safety for the full rule.
+        from .predicates import validate_predicate_write_safety
+
+        for model in apps.get_models():
+            if not issubclass(model, TurboDRFMixin):
+                continue
+            if not model.turbodrf().get("enabled", True):
+                continue
+            validate_predicate_write_safety(model)
+
+        # Fifth pass: validate every TURBODRF_ROLES permission string
+        # resolves to a real model + field + action. Catches typos like
+        # `core.project.titel.read` that silently grant nothing.
+        from .predicates import validate_permission_strings
+
+        validate_permission_strings()
+
     def get_urls(self):
         """
         Generate URL patterns that work with or without trailing slashes.

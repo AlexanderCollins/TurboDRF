@@ -212,6 +212,84 @@ either Author or Profile has its own rules.
   entirely. Logs a loud warning per offending entry. Migrations only;
   not recommended.
 
+## Custom predicate write safety
+
+`Custom(q_func=...)` defaults `validate_write` to `[]` — meaning "this
+predicate doesn't object to the write." When a `Custom` is wrapped in
+`Either(Owner, Custom)` (the common shape for "owner OR external
+grant"), the Either combinator passes if any child returns no errors.
+A no-op `Custom` therefore silently overrides `Owner`'s checks: any
+caller whose role has the model-level write permission can bypass
+owner enforcement via the Custom branch.
+
+The risk is latent — it only becomes exploitable once the role attached
+to the Custom predicate is granted a write permission. But the failure
+mode is silent and the audit trail is confusing after the fact ("we
+always had owner enforcement, why did it stop working?").
+
+### Startup gate
+
+`predicates.validate_predicate_write_safety` walks every model's
+predicate stack (recursing into `Either`) and refuses to start if any
+`Custom` is registered without an explicit `write_validator`.
+
+### Resolution
+
+When the gate fires you have three options:
+
+- **Pass `write_validator=lambda d, i, r: []`** if the predicate is
+  intentionally read-only and writes should pass through. Explicit
+  opt-in to the original behavior.
+- **Pass `write_validator=my_check`** to enforce writes. The function
+  returns a list of error strings (empty = allow, non-empty = block).
+  This is the defense-in-depth fix for predicates intended for
+  read-only role grants:
+
+  ```python
+  def block_role_writes(validated_data, instance, request):
+      from turbodrf.backends import get_user_roles
+      if "legacy_contact" in set(get_user_roles(request.user)):
+          return ["legacy_contact cannot write."]
+      return []
+
+  Custom(q_func=my_q, write_validator=block_role_writes)
+  ```
+
+- **Set `TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE = True`** to bypass the
+  gate entirely. Logs a warning. Migrations only; not recommended.
+
+## Permission string typo gate
+
+`TURBODRF_ROLES` permission strings are unstructured text. A typo at any
+segment — wrong app label, wrong model name, wrong field name, wrong
+action — silently grants nothing. The role appears configured but the
+permission never fires. Bugs of this shape look like "this user
+suddenly can't see X" with no error to point at.
+
+### Startup gate
+
+`predicates.validate_permission_strings` walks every entry in
+`TURBODRF_ROLES`, parses each as `app.model.action` or
+`app.model.field.action`, and verifies:
+
+- Segment count is 3 or 4.
+- The `app.model` resolves via Django's app registry.
+- The action is a valid model-level action (`read`, `create`,
+  `update`, `delete`) or field-level action (`read`, `write`).
+- For 4-segment strings, the field exists on the model. Close
+  matches are listed in the error message via `difflib`.
+
+### Resolution
+
+Fix the typo. The error message names the offending role, the bad
+permission string, and (for field typos) close matches.
+
+For deployments where some models load dynamically (plugin systems,
+lazy apps), set `TURBODRF_ALLOW_UNKNOWN_PERMISSIONS = True` to skip
+checks for permissions whose `app.model` isn't yet registered.
+Permissions on registered models are still validated even with the
+kill-switch on, so typos in field names aren't silenced.
+
 ## URL-driven JOIN scoping
 
 Filter URL params that traverse `__`-paths (e.g.
