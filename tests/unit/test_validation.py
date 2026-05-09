@@ -13,8 +13,12 @@ from tests.test_app.models import (
 )
 from turbodrf.predicates import (
     Custom,
+    Either,
+    Owner,
     register_predicates,
     register_tenant_field,
+    validate_permission_strings,
+    validate_predicate_write_safety,
 )
 from turbodrf.validation import (
     build_traversal_scope_q,
@@ -213,3 +217,159 @@ class BuildTraversalScopeQTests(TestCase):
             register_tenant_field(RelatedModel, "name")
             q = build_traversal_scope_q(CompiledArticle, "author__name", request=None)
             self.assertNotEqual(q, Q())
+
+
+# ---------------------------------------------------------------------------
+# validate_predicate_write_safety — Custom-without-write_validator gate
+# ---------------------------------------------------------------------------
+
+
+class ValidatePredicateWriteSafetyTests(TestCase):
+    def test_no_predicates_is_noop(self):
+        with _RegistrySnapshot():
+            validate_predicate_write_safety(SampleModel)
+
+    def test_owner_alone_is_safe(self):
+        with _RegistrySnapshot():
+            register_predicates(SampleModel, [Owner("title")])
+            validate_predicate_write_safety(SampleModel)
+
+    def test_custom_with_write_validator_is_safe(self):
+        with _RegistrySnapshot():
+            register_predicates(
+                SampleModel,
+                [Custom(q_func=lambda r, ur: Q(pk=1), write_validator=lambda *a: [])],
+            )
+            validate_predicate_write_safety(SampleModel)
+
+    def test_custom_without_write_validator_raises(self):
+        with _RegistrySnapshot():
+            register_predicates(SampleModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
+            with self.assertRaises(ImproperlyConfigured) as cm:
+                validate_predicate_write_safety(SampleModel)
+            msg = str(cm.exception)
+            self.assertIn("Custom", msg)
+            self.assertIn("write_validator", msg)
+            self.assertIn("Either(Owner, Custom)", msg)
+
+    def test_either_owner_custom_without_write_validator_raises(self):
+        """The Either(Owner, Custom) pattern for "owner OR external grant"
+        — Custom defaulting to no-op validate_write silently bypasses
+        Owner's checks under Either."""
+        with _RegistrySnapshot():
+            register_predicates(
+                SampleModel,
+                [Either(Owner("title"), Custom(q_func=lambda r, ur: Q(pk=1)))],
+            )
+            with self.assertRaises(ImproperlyConfigured) as cm:
+                validate_predicate_write_safety(SampleModel)
+            self.assertIn("Either(...)", str(cm.exception))
+
+    def test_either_with_safe_custom_passes(self):
+        with _RegistrySnapshot():
+            register_predicates(
+                SampleModel,
+                [
+                    Either(
+                        Owner("title"),
+                        Custom(
+                            q_func=lambda r, ur: Q(pk=1),
+                            write_validator=lambda *a: ["read-only"],
+                        ),
+                    ),
+                ],
+            )
+            validate_predicate_write_safety(SampleModel)
+
+    def test_kill_switch_bypasses(self):
+        with _RegistrySnapshot():
+            register_predicates(SampleModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
+            with override_settings(TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE=True):
+                validate_predicate_write_safety(SampleModel)
+
+
+# ---------------------------------------------------------------------------
+# validate_permission_strings — TURBODRF_ROLES typo gate
+# ---------------------------------------------------------------------------
+
+
+class ValidatePermissionStringsTests(TestCase):
+    def test_empty_roles_is_noop(self):
+        with override_settings(TURBODRF_ROLES={}):
+            validate_permission_strings()
+
+    def test_valid_model_action_passes(self):
+        with override_settings(TURBODRF_ROLES={"r": ["test_app.samplemodel.read"]}):
+            validate_permission_strings()
+
+    def test_valid_field_action_passes(self):
+        with override_settings(
+            TURBODRF_ROLES={"r": ["test_app.samplemodel.title.read"]}
+        ):
+            validate_permission_strings()
+
+    def test_unknown_model_raises(self):
+        with override_settings(TURBODRF_ROLES={"r": ["test_app.notamodel.read"]}):
+            with self.assertRaises(ImproperlyConfigured) as cm:
+                validate_permission_strings()
+            self.assertIn("notamodel", str(cm.exception))
+            self.assertIn("not registered", str(cm.exception))
+
+    def test_unknown_field_raises_with_close_match(self):
+        with override_settings(
+            TURBODRF_ROLES={"r": ["test_app.samplemodel.titel.read"]}
+        ):
+            with self.assertRaises(ImproperlyConfigured) as cm:
+                validate_permission_strings()
+            self.assertIn("titel", str(cm.exception))
+            self.assertIn("close matches", str(cm.exception))
+
+    def test_invalid_model_action_raises(self):
+        with override_settings(TURBODRF_ROLES={"r": ["test_app.samplemodel.peruse"]}):
+            with self.assertRaises(ImproperlyConfigured) as cm:
+                validate_permission_strings()
+            self.assertIn("peruse", str(cm.exception))
+
+    def test_invalid_field_action_raises(self):
+        # `delete` is not a valid field-level action
+        with override_settings(
+            TURBODRF_ROLES={"r": ["test_app.samplemodel.title.delete"]}
+        ):
+            with self.assertRaises(ImproperlyConfigured) as cm:
+                validate_permission_strings()
+            self.assertIn("title", str(cm.exception))
+
+    def test_wrong_segment_count_raises(self):
+        with override_settings(TURBODRF_ROLES={"r": ["test_app.samplemodel"]}):
+            with self.assertRaises(ImproperlyConfigured) as cm:
+                validate_permission_strings()
+            self.assertIn("3 or 4 dot-separated", str(cm.exception))
+
+    def test_kill_switch_skips_unknown_model(self):
+        with override_settings(
+            TURBODRF_ROLES={"r": ["plugin_app.dynamic.read"]},
+            TURBODRF_ALLOW_UNKNOWN_PERMISSIONS=True,
+        ):
+            validate_permission_strings()
+
+    def test_kill_switch_does_not_skip_typo_in_field(self):
+        """Kill switch is for unknown models only, not for typo'd
+        fields on real models."""
+        with override_settings(
+            TURBODRF_ROLES={"r": ["test_app.samplemodel.titel.read"]},
+            TURBODRF_ALLOW_UNKNOWN_PERMISSIONS=True,
+        ):
+            with self.assertRaises(ImproperlyConfigured):
+                validate_permission_strings()
+
+    def test_non_list_perms_raises(self):
+        with override_settings(TURBODRF_ROLES={"r": "test_app.samplemodel.read"}):
+            with self.assertRaises(ImproperlyConfigured) as cm:
+                validate_permission_strings()
+            self.assertIn("must be a list", str(cm.exception))
+
+    def test_non_string_perm_raises(self):
+        with override_settings(TURBODRF_ROLES={"r": [42]}):
+            with self.assertRaises(ImproperlyConfigured) as cm:
+                validate_permission_strings()
+            self.assertIn("must be a string", str(cm.exception))

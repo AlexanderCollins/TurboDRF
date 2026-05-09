@@ -11,8 +11,242 @@ The system answers four questions per request:
 |---|---|
 | Can this user read orders? | RBAC (existing) |
 | Can this user see the `price` field? | Field perms (existing) |
-| Which orders can this user see? | **Predicates (new)** |
-| Can this user assign this order to that customer? | **Predicates (new)** |
+| Which orders can this user see? | **Predicates** |
+| Can this user assign this order to that customer? | **Predicates** |
+
+---
+
+## Designing predicates: a walkthrough
+
+If you've never written a predicate before, work through this section in
+order. By the end you'll know which shape to reach for and why.
+
+### Step 1: Identify your tenant
+
+Your **tenant** is whatever logical boundary separates your customers from
+each other. Workspace, organisation, account, household — pick the term
+that fits your domain. Every row belongs to exactly one tenant.
+
+If you don't have a tenant model yet, create one:
+
+```python
+class Workspace(models.Model):
+    name = models.CharField(max_length=200)
+```
+
+In `settings.py`:
+
+```python
+TURBODRF_TENANT_MODEL = "accounts.Workspace"
+TURBODRF_TENANT_USER_FIELD = "workspace"  # request.user.workspace → tenant
+TURBODRF_REQUIRE_TENANCY = True           # refuse to boot without tenancy
+```
+
+The third setting is the safety net — with it, the framework refuses to
+register any model that doesn't say how it relates to the tenant.
+
+### Step 2: Decide each model's relationship to the tenant
+
+For every TurboDRFMixin model, ask: **how does this row belong to a
+tenant?** There are exactly three answers:
+
+| Answer | Config |
+|---|---|
+| It has a direct FK to the tenant model | `"tenant_field": "workspace"` |
+| It chains through another model to the tenant | `"tenant_field": "project__workspace"` |
+| It's reference data, not tenant-scoped | `"tenancy": "shared"` |
+
+If none of these apply, you almost certainly have a design issue, not a
+TurboDRF question. Sort the data model first, then come back.
+
+### Step 3: Decide the within-tenant rule
+
+You're now inside a single tenant. Question: **within this tenant, who
+sees which rows?** Pick the simplest answer that fits.
+
+```
+Does each row belong to one user (and that user owns it)?
+├── Yes  → use sugar form: owner_field
+└── No
+    ├── Multiple users have access (members, collaborators)?
+    │   ├── Yes  → use power form: Either(Owner, Custom)
+    │   └── No   → continue
+    └── Anyone in the tenant can see all rows?
+        └── Yes  → leave it tenant-only (no within-tenant rule)
+```
+
+Most models land at "single-owner with admin bypass" — that's the sugar
+form. A few will need `Either(Owner, Custom)` for cross-user grants
+(e.g. a document an owner shares with a designated read-only contact).
+A handful might be tenant-shared (all members of a workspace see all
+projects).
+
+### Step 4: Write the simplest config that fits
+
+**Single owner with admin bypass (90% of models):**
+
+```python
+@classmethod
+def turbodrf(cls):
+    return {
+        "tenant_field": "workspace",
+        "owner_field": "owner",
+        "bypass_owner_roles": ["admin"],
+    }
+```
+
+Translated: "rows belong to a workspace via the `workspace` FK; within a
+workspace, only the user listed on `owner` sees the row, except admins
+who see all rows in their workspace."
+
+**Tenant-only (no within-tenant rule):**
+
+```python
+@classmethod
+def turbodrf(cls):
+    return {
+        "tenant_field": "workspace",
+    }
+```
+
+Translated: "rows belong to a workspace; any workspace member can see
+any row." Useful for shared resources within an organisation.
+
+**Reference data:**
+
+```python
+@classmethod
+def turbodrf(cls):
+    return {
+        "tenancy": "shared",
+    }
+```
+
+Translated: "this isn't tenant-scoped at all — Categories, Tags, Status
+codes, currency lists, etc."
+
+**Cross-user grant (the `Either` case):**
+
+```python
+@classmethod
+def turbodrf(cls):
+    return {
+        "tenant_field": "workspace",
+        "visibility": [
+            Either(
+                Owner("owner", bypass=["admin"]),
+                Custom(
+                    q_func=collaborator_q,
+                    write_validator=block_collaborator_writes,
+                ),
+            ),
+        ],
+    }
+```
+
+Translated: "owners or admins see the row, AND users matched by
+`collaborator_q` also see the row, AND collaborator writes are
+explicitly blocked."
+
+### Step 5: Write your `Custom` predicate's `q_func`
+
+A `q_func` is a regular Python function that returns a Django `Q`
+object. The framework calls it with `(request, user_roles)` and AND's
+the result into the queryset.
+
+The shape that always works:
+
+```python
+from django.db.models import Q
+
+def collaborator_q(request, user_roles):
+    if "collaborator" not in user_roles:
+        return Q(pk__in=[])  # no match — this user isn't a collaborator
+    return Q(collaborators=request.user)
+```
+
+The early-return-empty pattern is important. If your function returns
+`Q()` (no filter) for users who shouldn't see anything, you've silently
+disabled the within-tenant rule. The framework will warn you about
+this at runtime — but you should code it to return `Q(pk__in=[])`
+whenever the user doesn't qualify.
+
+### Step 6: Always write `write_validator` if your model is writable
+
+If your `Custom` predicate is on a writable model, **the framework
+will refuse to start without an explicit `write_validator`**. This is
+intentional — `Custom`'s default `validate_write` returns no errors,
+which inside `Either(Owner, Custom)` silently lets writes bypass
+`Owner`'s checks.
+
+Two valid shapes:
+
+```python
+# Block writes for the role this predicate is meant for:
+def block_collaborator_writes(validated_data, instance, request):
+    from turbodrf.backends import get_user_roles
+    if "collaborator" in set(get_user_roles(request.user)):
+        return ["collaborators cannot write."]
+    return []
+
+Custom(q_func=collaborator_q, write_validator=block_collaborator_writes)
+```
+
+```python
+# Or explicitly opt in to "writes pass through this predicate":
+Custom(q_func=read_only_q, write_validator=lambda d, i, r: [])
+```
+
+Which to use:
+
+- If the role the predicate matches is *read-only by intent*: use the
+  blocking validator. That way, even if the role grants change later
+  to include write actions, the predicate still blocks writes.
+- If the role *should* be able to write and `Owner` will catch the
+  ownership check: use the explicit no-op `lambda d, i, r: []`.
+
+### Step 7: Check the role grants
+
+Predicates only matter once a user has the model-level permission to do
+the action at all. In `TURBODRF_ROLES`, grant your roles the actions
+they need:
+
+```python
+TURBODRF_ROLES = {
+    "member": [
+        "myapp.project.read",
+        "myapp.project.create",
+        "myapp.project.update",
+        "myapp.project.delete",
+        "myapp.project.title.read",
+        "myapp.project.title.write",
+    ],
+    "collaborator": [
+        "myapp.project.read",  # read-only — predicate enforces ownership
+        "myapp.project.title.read",
+    ],
+}
+```
+
+The framework validates these at startup — typos like
+`myapp.project.titel.read` raise a clear error pointing at the role
+and listing close matches.
+
+### Step 8: Boot the app and trust the gates
+
+The router runs five startup passes. If your config has a problem,
+you'll get a directed error before you can serve a request:
+
+1. Tenancy validation (every model has a tenancy decision).
+2. Compiled-path safety (M2M and FK joins to predicate-bearing targets).
+3. Searchable-fields safety (`__`-paths through predicate-bearing
+   targets).
+4. Predicate write safety (`Custom` without `write_validator`).
+5. Permission-string validation (`TURBODRF_ROLES` typos).
+
+If the app boots, the static checks have passed. Run the sanity-check
+project at `~/github/turbodrf-sanity-check/` to verify the runtime
+behaviour matches what you expect.
 
 ---
 
