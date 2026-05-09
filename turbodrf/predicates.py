@@ -296,7 +296,7 @@ class Custom(Predicate):
         if not result.children:
             from django.conf import settings as _s
 
-            if getattr(_s, "TURBODRF_LOG_UNRESTRICTED_CUSTOM", False):
+            if getattr(_s, "TURBODRF_LOG_UNRESTRICTED_CUSTOM", True):
                 import logging
 
                 logging.getLogger(__name__).warning(
@@ -324,7 +324,15 @@ class Custom(Predicate):
 
 
 class Members(Predicate):
-    """Advanced: user must be in the row's M2M-to-User collection."""
+    """Advanced: user must be in the row's M2M-to-User collection.
+
+    Read-only enforcement. ``Members`` does not implement
+    ``auto_fill`` or ``validate_write``, so wiring it onto a writable
+    endpoint will silently let any tenant member create or update a
+    row without the membership check. Use ``Owner`` (or ``Custom`` with
+    explicit write hooks) for writable paths and reserve ``Members``
+    for read-only models.
+    """
 
     def __init__(self, m2m_field):
         self.m2m_field = m2m_field
@@ -335,12 +343,32 @@ class Members(Predicate):
             return _no_match_q()
         return Q(**{self.m2m_field: user})
 
+    def auto_fill(self, validated_data, request):
+        raise NotImplementedError(
+            "Members predicate has no auto_fill — it only enforces "
+            "row reads. For writable endpoints use Owner or Custom "
+            "with explicit write hooks."
+        )
+
+    def validate_write(self, validated_data, instance, request):
+        raise NotImplementedError(
+            "Members predicate has no validate_write — it only "
+            "enforces row reads. For writable endpoints use Owner "
+            "or Custom with explicit write hooks."
+        )
+
 
 class Group(Predicate):
     """Advanced: user must belong to the group/team that owns the row.
 
-    `field` is the FK on the row to the group/team.
-    `user_via` is the reverse-M2M name from group/team to user.
+    ``field`` is the FK on the row to the group/team.
+    ``user_via`` is the reverse-M2M name from group/team to user.
+
+    Read-only enforcement. ``Group`` does not implement ``auto_fill``
+    or ``validate_write``, so wiring it onto a writable endpoint will
+    silently let any tenant member create or update a row without the
+    membership check. Use ``Owner`` (or ``Custom`` with explicit write
+    hooks) for writable paths.
     """
 
     def __init__(self, field, user_via="members"):
@@ -353,9 +381,31 @@ class Group(Predicate):
             return _no_match_q()
         return Q(**{f"{self.field}__{self.user_via}": user})
 
+    def auto_fill(self, validated_data, request):
+        raise NotImplementedError(
+            "Group predicate has no auto_fill — it only enforces "
+            "row reads. For writable endpoints use Owner or Custom "
+            "with explicit write hooks."
+        )
+
+    def validate_write(self, validated_data, instance, request):
+        raise NotImplementedError(
+            "Group predicate has no validate_write — it only "
+            "enforces row reads. For writable endpoints use Owner "
+            "or Custom with explicit write hooks."
+        )
+
 
 class Conditional(Predicate):
-    """Advanced: rows matching `when` are visible only to users with a required role."""
+    """Advanced: rows matching ``when`` are visible only to users with a
+    required role.
+
+    Read-only enforcement. ``Conditional`` does not implement
+    ``auto_fill`` or ``validate_write``; a writable endpoint with a
+    ``Conditional`` predicate would let users freely create or update
+    rows that match ``when`` regardless of role. Use ``Owner`` /
+    ``Custom`` with explicit write hooks for writable paths.
+    """
 
     def __init__(self, when, require_roles):
         if not isinstance(when, Q):
@@ -367,6 +417,20 @@ class Conditional(Predicate):
         if user_roles and (user_roles & self.require_roles):
             return Q()
         return ~self.when
+
+    def auto_fill(self, validated_data, request):
+        raise NotImplementedError(
+            "Conditional predicate has no auto_fill — it only "
+            "enforces row reads. For writable endpoints use Owner "
+            "or Custom with explicit write hooks."
+        )
+
+    def validate_write(self, validated_data, instance, request):
+        raise NotImplementedError(
+            "Conditional predicate has no validate_write — it only "
+            "enforces row reads. For writable endpoints use Owner "
+            "or Custom with explicit write hooks."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -568,3 +632,221 @@ def clear_predicates():
     """Used in tests to reset between runs."""
     _model_predicates.clear()
     _model_tenant_fields.clear()
+
+
+def validate_predicate_write_safety(model):
+    """Refuse to boot if a Custom predicate is registered without an
+    explicit ``write_validator``.
+
+    The bug class this protects against:
+
+    ``Custom`` predicates default to ``validate_write → []`` (no errors,
+    write allowed). When wrapped in ``Either(Owner, Custom)`` — the
+    common pattern for "owner OR external grant" — the Either combinator
+    passes if any child returns no errors. So a no-op ``Custom``
+    silently overrides ``Owner``'s careful checks: any caller whose role
+    has the model-level write permission can bypass owner enforcement
+    via the Custom branch, regardless of whether the Custom predicate
+    was meant to enforce writes or not.
+
+    This is the "5-line fix" footgun documented in the security audit:
+    a Custom predicate intended for read-only role grants (e.g.
+    legacy_contact) can become a write hole the moment its role is
+    granted any write permission.
+
+    Detection is fully static: walk every model's predicate stack
+    (recursing into Either), find any ``Custom`` whose
+    ``write_validator`` is ``None``, and refuse to start.
+
+    Resolution (raised in the error message):
+
+      * Pass ``write_validator=lambda d, i, r: []`` if the predicate is
+        intentionally read-only (writes pass through this branch).
+      * Pass ``write_validator=my_check`` to enforce writes for real.
+      * Set ``TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE = True`` to bypass the
+        gate (logs a warning; for migrations only).
+    """
+    from django.conf import settings
+    from django.core.exceptions import ImproperlyConfigured
+
+    allow_unsafe = getattr(settings, "TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE", False)
+    predicates = get_predicates(model)
+    if not predicates:
+        return
+
+    offending = list(_walk_unsafe_custom(predicates))
+    if not offending:
+        return
+
+    descriptions = "\n".join(f"  • {pred_repr}" for pred_repr in offending)
+    message = (
+        f"{model.__name__} has Custom predicate(s) without an explicit "
+        f"write_validator:\n{descriptions}\n\n"
+        f"By default, Custom.validate_write returns [] (no errors), "
+        f"meaning writes pass through. Inside Either(Owner, Custom) "
+        f"this silently overrides Owner's enforcement — any caller with "
+        f"the model-level write permission can bypass owner checks via "
+        f"the Custom branch.\n\n"
+        f"Fix one of:\n"
+        f"  • Pass write_validator=lambda d, i, r: [] if the predicate "
+        f"is intentionally read-only and writes should pass through.\n"
+        f"  • Pass write_validator=my_check to enforce writes — return "
+        f"a list of error strings to block, [] to allow.\n"
+        f"  • Set TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE=True to bypass "
+        f"this gate (NOT recommended; logs a warning)."
+    )
+
+    if allow_unsafe:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE=True — bypassing Custom "
+            "predicate write-safety gate. %s",
+            message,
+        )
+        return
+
+    raise ImproperlyConfigured(message)
+
+
+def _walk_unsafe_custom(predicates, path=""):
+    """Yield a human description of every Custom-without-write_validator
+    in a predicate stack. Recurses into Either."""
+    for pred in predicates:
+        if isinstance(pred, Either):
+            yield from _walk_unsafe_custom(
+                pred.predicates, path=f"{path}Either(...) → "
+            )
+        elif isinstance(pred, Custom) and pred.write_validator is None:
+            qf_name = getattr(pred.q_func, "__name__", repr(pred.q_func))
+            yield f"{path}Custom(q_func={qf_name})"
+
+
+_MODEL_ACTIONS = {"read", "create", "update", "delete"}
+_FIELD_ACTIONS = {"read", "write"}
+
+
+def validate_permission_strings():
+    """Refuse to boot if ``TURBODRF_ROLES`` contains a permission string
+    that doesn't resolve to a real model + field + action.
+
+    The footgun this protects against:
+
+    Permission strings are parsed as ``"app.model.action"`` or
+    ``"app.model.field.action"``. A typo at any segment — wrong app
+    label, wrong model name, wrong field name, wrong action — silently
+    grants nothing. The role appears configured but doesn't actually
+    have the permission. Bugs of this shape look like "this user
+    suddenly can't see X" with no error to point at.
+
+    Detection is fully static: walk every permission string in
+    ``TURBODRF_ROLES``, parse it, and verify each segment against the
+    Django app registry and the model's field list.
+
+    Resolution (raised in the error message):
+
+      * Fix the typo in ``settings.py``.
+      * If the permission references a model loaded at runtime (plugins,
+        dynamic apps), set
+        ``TURBODRF_ALLOW_UNKNOWN_PERMISSIONS = True`` to skip the check
+        for permissions whose models aren't yet registered.
+
+    Note: only permissions for models defined under the current Django
+    ``apps`` registry are validated. Permissions whose ``app.model``
+    isn't loaded are skipped silently when
+    ``TURBODRF_ALLOW_UNKNOWN_PERMISSIONS`` is set, otherwise they raise.
+    """
+    from django.apps import apps
+    from django.conf import settings as dj_settings
+    from django.core.exceptions import ImproperlyConfigured
+
+    allow_unknown = getattr(dj_settings, "TURBODRF_ALLOW_UNKNOWN_PERMISSIONS", False)
+    roles = getattr(dj_settings, "TURBODRF_ROLES", None)
+    if not roles:
+        return
+
+    errors = []
+
+    def _check(perm, role):
+        parts = perm.split(".")
+        if len(parts) not in (3, 4):
+            errors.append(
+                f"role={role!r} perm={perm!r}: expected 'app.model.action' or "
+                f"'app.model.field.action' (3 or 4 dot-separated segments)"
+            )
+            return
+        app_label, model_name = parts[0], parts[1]
+        try:
+            model = apps.get_model(app_label, model_name)
+        except LookupError:
+            if allow_unknown:
+                return
+            errors.append(
+                f"role={role!r} perm={perm!r}: model {app_label}.{model_name} "
+                f"is not registered in INSTALLED_APPS"
+            )
+            return
+
+        if len(parts) == 3:
+            action = parts[2]
+            if action not in _MODEL_ACTIONS:
+                errors.append(
+                    f"role={role!r} perm={perm!r}: action {action!r} is not "
+                    f"a valid model-level action {sorted(_MODEL_ACTIONS)}"
+                )
+            return
+
+        # 4 parts: app.model.field.action
+        field_name, action = parts[2], parts[3]
+        if action not in _FIELD_ACTIONS:
+            errors.append(
+                f"role={role!r} perm={perm!r}: action {action!r} is not "
+                f"a valid field-level action {sorted(_FIELD_ACTIONS)}"
+            )
+            return
+        try:
+            model._meta.get_field(field_name)
+        except Exception:
+            # Field-level perms can target related-field paths via __,
+            # but TURBODRF_ROLES uses dotted paths. We accept "field" as
+            # a single name — anything else is a typo. List close
+            # matches via difflib for the error message.
+            import difflib
+
+            field_names = [f.name for f in model._meta.get_fields()]
+            close = difflib.get_close_matches(field_name, field_names, n=3, cutoff=0.6)
+            hint = f" (close matches: {close})" if close else ""
+            errors.append(
+                f"role={role!r} perm={perm!r}: field {field_name!r} not "
+                f"found on {app_label}.{model_name}{hint}"
+            )
+
+    for role, perms in roles.items():
+        if not isinstance(perms, (list, tuple, set)):
+            errors.append(
+                f"role={role!r}: permissions must be a list/tuple/set, "
+                f"got {type(perms).__name__}"
+            )
+            continue
+        for perm in perms:
+            if not isinstance(perm, str):
+                errors.append(
+                    f"role={role!r}: each permission must be a string, "
+                    f"got {type(perm).__name__} ({perm!r})"
+                )
+                continue
+            _check(perm, role)
+
+    if not errors:
+        return
+
+    message = (
+        f"TURBODRF_ROLES contains {len(errors)} invalid permission string(s).\n"
+        f"Each permission must be 'app.model.action' or 'app.model.field.action' "
+        f"and resolve to a real registered model.\n\n"
+        + "\n".join(f"  • {e}" for e in errors)
+        + "\n\nFix the typos in settings.py, or set "
+        + "TURBODRF_ALLOW_UNKNOWN_PERMISSIONS=True to skip checks for "
+        + "models that aren't yet registered (plugin systems, lazy apps)."
+    )
+    raise ImproperlyConfigured(message)

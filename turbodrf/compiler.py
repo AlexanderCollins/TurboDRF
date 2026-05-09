@@ -440,3 +440,187 @@ def compile_model(model):
     )
 
     return plan
+
+
+def _walk_fk_annotation_chain(model, path):
+    """Walk an FK annotation path (e.g. 'author__publisher__name') and
+    yield every intermediate model along the JOIN chain (excluding the
+    starting model). Stops at the first non-relational hop — the leaf
+    column itself is not a model.
+
+    Returns a list of (step_model, field_name) tuples for each JOIN
+    target, or an empty list if the path is unresolvable.
+    """
+    parts = path.split("__")
+    chain = []
+    current_model = model
+    for part in parts:
+        try:
+            field = current_model._meta.get_field(part)
+        except FieldDoesNotExist:
+            return []
+        if hasattr(field, "related_model") and field.related_model:
+            current_model = field.related_model
+            chain.append((current_model, part))
+        else:
+            # Reached a column — no further JOINs.
+            break
+    return chain
+
+
+def validate_compiled_path_safety(model):
+    """Refuse to boot if the compiled read path would render related rows
+    the caller shouldn't see.
+
+    Two related cases are checked:
+
+    1. **Compiled M2M target bypass.** The compiled M2M merge issues a
+       separate through-table query (``post_process``, ~line 285-291)
+       that does NOT apply the target model's ``tenant_field`` or
+       registered predicates to the join. The non-compiled DRF path at
+       ``serializers.py:333-363`` does. A model that nests an M2M whose
+       target carries its own visibility rules would therefore leak
+       target rows the caller cannot see via the target's own endpoint.
+
+    2. **Compiled FK annotation bypass.** ``F('author__name')`` produces
+       a SQL JOIN to ``author`` without applying ``author``'s own
+       predicates. Field-level permission gating strips which output
+       keys render, so the response itself doesn't carry the leaked
+       column by default — but the JOIN still executes, leaking row
+       existence and timing/query-count side channels. Same shape as
+       the M2M case; same fix.
+
+    Detection is fully static: walk each compiled plan's ``m2m_specs``
+    and ``fk_annotations``, look up every model along the JOIN chain in
+    the predicate registry, and refuse to start if any link has
+    predicates or a tenant_field the parent doesn't.
+
+    Escape hatches (raised in the error message):
+        * Drop ``<rel>__*`` from the model's ``turbodrf()`` fields.
+        * Set ``'compiled': False`` on the model to use the DRF path,
+          which applies target predicates correctly.
+        * Set ``TURBODRF_ALLOW_UNSAFE_COMPILED_M2M = True`` /
+          ``TURBODRF_ALLOW_UNSAFE_COMPILED_FK = True`` to bypass the
+          relevant gate (logs a loud warning; for migrations only).
+
+    See ``docs/security.md`` for the full bug class.
+    """
+    from django.conf import settings
+
+    from .predicates import get_predicates, get_tenant_field
+
+    plan = get_compiled_plan(model)
+    if plan is None:
+        return
+
+    allow_unsafe_m2m = getattr(settings, "TURBODRF_ALLOW_UNSAFE_COMPILED_M2M", False)
+    allow_unsafe_fk = getattr(settings, "TURBODRF_ALLOW_UNSAFE_COMPILED_FK", False)
+    parent_tenant = get_tenant_field(model)
+
+    def _classify_step(step_model):
+        target_predicates = get_predicates(step_model)
+        target_tenant = get_tenant_field(step_model)
+        reasons = []
+        if target_predicates:
+            reasons.append(
+                f"{step_model.__name__} has "
+                f"{len(target_predicates)} registered predicate(s) "
+                f"({', '.join(type(p).__name__ for p in target_predicates)}) "
+                f"that the compiled read path does not apply"
+            )
+        if target_tenant is not None and parent_tenant is None:
+            reasons.append(
+                f"{step_model.__name__} declares tenant_field="
+                f"{target_tenant!r} but {model.__name__} is shared "
+                f"(no tenant_field) — a shared parent rendering "
+                f"tenanted rows leaks across tenants"
+            )
+        return reasons
+
+    # ----- Case 1: M2M target bypass -----
+    for m2m_base, spec in plan.m2m_specs.items():
+        target = spec["related_model"]
+        reasons = _classify_step(target)
+        if not reasons:
+            continue
+
+        message = (
+            f"{model.__name__}.turbodrf() exposes M2M field "
+            f"'{m2m_base}' (target: {target.__name__}), but: "
+            f"{'; '.join(reasons)}.\n\n"
+            f"This is a real data-leak class — the compiled read path "
+            f"renders {target.__name__} rows the caller cannot see via "
+            f"the {target.__name__} endpoint. See "
+            f"docs/security.md#compiled-m2m-target-bypass.\n\n"
+            f"Fix one of:\n"
+            f"  • Drop '{m2m_base}__*' from {model.__name__}'s "
+            f"turbodrf() 'fields'.\n"
+            f"  • Set 'compiled': False on {model.__name__}.turbodrf() "
+            f"to use the DRF serializer path (applies target predicates "
+            f"correctly at serializers.py:333-363).\n"
+            f"  • Remove predicates / tenant_field from "
+            f"{target.__name__} only if it is genuinely public "
+            f"reference data with no row-level rules.\n"
+            f"  • Set TURBODRF_ALLOW_UNSAFE_COMPILED_M2M=True to "
+            f"bypass this gate (NOT recommended; logs a warning)."
+        )
+
+        if allow_unsafe_m2m:
+            logger.warning(
+                "TURBODRF_ALLOW_UNSAFE_COMPILED_M2M=True — bypassing "
+                "compiled M2M safety gate. %s",
+                message,
+            )
+            continue
+
+        raise ImproperlyConfigured(message)
+
+    # ----- Case 2: FK annotation JOIN bypass -----
+    for output_key, f_expr in plan.fk_annotations.items():
+        path = f_expr.name
+        chain = _walk_fk_annotation_chain(model, path)
+        if not chain:
+            continue
+
+        offending = []
+        for step_model, _name in chain:
+            reasons = _classify_step(step_model)
+            if reasons:
+                offending.append((step_model, reasons))
+
+        if not offending:
+            continue
+
+        joined = "; ".join(f"[{m.__name__}] {' / '.join(r)}" for m, r in offending)
+        terminal = offending[-1][0]
+        message = (
+            f"{model.__name__}.turbodrf() exposes FK annotation "
+            f"'{path}' (output key: '{output_key}'), but: {joined}.\n\n"
+            f"This is the same data-leak class as the compiled M2M "
+            f"target bypass — the F() annotation joins to "
+            f"{terminal.__name__} without applying its own visibility "
+            f"rules. Field-level perms gate which output keys render, "
+            f"but the JOIN still executes and leaks row existence and "
+            f"timing side channels. See "
+            f"docs/security.md#compiled-fk-annotation-bypass.\n\n"
+            f"Fix one of:\n"
+            f"  • Drop '{path}' from {model.__name__}'s turbodrf() "
+            f"'fields'.\n"
+            f"  • Set 'compiled': False on {model.__name__}.turbodrf() "
+            f"to use the DRF serializer path.\n"
+            f"  • Remove predicates / tenant_field from "
+            f"{terminal.__name__} only if it is genuinely public "
+            f"reference data with no row-level rules.\n"
+            f"  • Set TURBODRF_ALLOW_UNSAFE_COMPILED_FK=True to bypass "
+            f"this gate (NOT recommended; logs a warning)."
+        )
+
+        if allow_unsafe_fk:
+            logger.warning(
+                "TURBODRF_ALLOW_UNSAFE_COMPILED_FK=True — bypassing "
+                "compiled FK annotation safety gate. %s",
+                message,
+            )
+            continue
+
+        raise ImproperlyConfigured(message)

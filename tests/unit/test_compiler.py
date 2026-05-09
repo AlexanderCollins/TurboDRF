@@ -4,7 +4,8 @@ from decimal import Decimal
 
 import django
 from django.core.exceptions import ImproperlyConfigured
-from django.test import TestCase
+from django.db.models import Q
+from django.test import TestCase, override_settings
 
 from tests.test_app.models import (
     Category,
@@ -18,6 +19,11 @@ from turbodrf.compiler import (
     get_compiled_plan,
     is_compiled,
     register_compiled_plan,
+    validate_compiled_path_safety,
+)
+from turbodrf.predicates import (
+    Custom,
+    register_predicates,
 )
 
 
@@ -388,3 +394,117 @@ class CompiledM2MExecutionTests(TestCase):
         self.assertEqual(rows[0]["author_name"], "Author")
         # M2M merge
         self.assertIsInstance(rows[0]["categories"], list)
+
+
+# ---------------------------------------------------------------------------
+# Startup gate: validate_compiled_path_safety
+# ---------------------------------------------------------------------------
+
+
+class _RegistrySnapshot:
+    """Snapshot/restore the predicate + compiled-plan registries so tests
+    can mutate them without polluting the rest of the xdist worker."""
+
+    def __enter__(self):
+        from turbodrf.compiler import _compiled_plans
+        from turbodrf.predicates import _model_predicates, _model_tenant_fields
+
+        self._saved_p = dict(_model_predicates)
+        self._saved_t = dict(_model_tenant_fields)
+        self._saved_c = dict(_compiled_plans)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        from turbodrf.compiler import _compiled_plans
+        from turbodrf.predicates import _model_predicates, _model_tenant_fields
+
+        _model_predicates.clear()
+        _model_predicates.update(self._saved_p)
+        _model_tenant_fields.clear()
+        _model_tenant_fields.update(self._saved_t)
+        _compiled_plans.clear()
+        _compiled_plans.update(self._saved_c)
+
+
+class ValidateCompiledPathSafetyM2MTests(TestCase):
+    """Cover the M2M branch of validate_compiled_path_safety."""
+
+    def test_skips_uncompiled_model(self):
+        """No registered plan → no-op."""
+
+        class NotCompiled:
+            pass
+
+        # Should not raise.
+        validate_compiled_path_safety(NotCompiled)
+
+    def test_safe_target_passes(self):
+        """Category has no predicates and no tenant_field → pass."""
+        with _RegistrySnapshot():
+            plan = compile_model(CompiledArticle)
+            register_compiled_plan(CompiledArticle, plan)
+            # Category should be unregistered → safe.
+            validate_compiled_path_safety(CompiledArticle)
+
+    def test_target_with_predicates_raises(self):
+        with _RegistrySnapshot():
+            plan = compile_model(CompiledArticle)
+            register_compiled_plan(CompiledArticle, plan)
+            register_predicates(Category, [Custom(q_func=lambda r, ur: Q(pk=1))])
+            with self.assertRaises(ImproperlyConfigured) as cm:
+                validate_compiled_path_safety(CompiledArticle)
+            msg = str(cm.exception)
+            self.assertIn("Category", msg)
+            self.assertIn("Custom", msg)
+            self.assertIn("docs/security.md#compiled-m2m-target-bypass", msg)
+
+    def test_kill_switch_bypasses_with_warning(self):
+        with _RegistrySnapshot():
+            plan = compile_model(CompiledArticle)
+            register_compiled_plan(CompiledArticle, plan)
+            register_predicates(Category, [Custom(q_func=lambda r, ur: Q(pk=1))])
+            with override_settings(TURBODRF_ALLOW_UNSAFE_COMPILED_M2M=True):
+                # Should NOT raise.
+                validate_compiled_path_safety(CompiledArticle)
+
+
+class ValidateCompiledPathSafetyFKTests(TestCase):
+    """Cover the FK-annotation branch of validate_compiled_path_safety."""
+
+    def test_safe_fk_target_passes(self):
+        """RelatedModel has no predicates → FK chain through it is safe."""
+        with _RegistrySnapshot():
+            plan = compile_model(CompiledSampleModel)
+            register_compiled_plan(CompiledSampleModel, plan)
+            # RelatedModel unregistered → safe.
+            validate_compiled_path_safety(CompiledSampleModel)
+
+    def test_fk_target_with_predicates_raises(self):
+        with _RegistrySnapshot():
+            plan = compile_model(CompiledSampleModel)
+            register_compiled_plan(CompiledSampleModel, plan)
+            register_predicates(RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
+            with self.assertRaises(ImproperlyConfigured) as cm:
+                validate_compiled_path_safety(CompiledSampleModel)
+            msg = str(cm.exception)
+            self.assertIn("RelatedModel", msg)
+            self.assertIn("Custom", msg)
+            self.assertIn("docs/security.md#compiled-fk-annotation-bypass", msg)
+
+    def test_fk_kill_switch_bypasses(self):
+        with _RegistrySnapshot():
+            plan = compile_model(CompiledSampleModel)
+            register_compiled_plan(CompiledSampleModel, plan)
+            register_predicates(RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
+            with override_settings(TURBODRF_ALLOW_UNSAFE_COMPILED_FK=True):
+                validate_compiled_path_safety(CompiledSampleModel)
+
+    def test_fk_kill_switch_does_not_cover_m2m(self):
+        """FK kill-switch must not silently bypass M2M leaks."""
+        with _RegistrySnapshot():
+            plan = compile_model(CompiledArticle)
+            register_compiled_plan(CompiledArticle, plan)
+            register_predicates(Category, [Custom(q_func=lambda r, ur: Q(pk=1))])
+            with override_settings(TURBODRF_ALLOW_UNSAFE_COMPILED_FK=True):
+                with self.assertRaises(ImproperlyConfigured):
+                    validate_compiled_path_safety(CompiledArticle)

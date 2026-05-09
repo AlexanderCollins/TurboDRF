@@ -74,6 +74,18 @@ class User(AbstractUser):
 
 Authenticated users with no roles get 403.
 
+### Static vs database mode
+
+`TURBODRF_PERMISSION_MODE` controls where role definitions live:
+
+- **`'static'`** (default) — read from the `TURBODRF_ROLES` dict in
+  settings. Fastest; changes require a deploy.
+- **`'database'`** — read from `TurboDRFRole` / `RolePermission` /
+  `UserRole` tables. Permissions can be mutated at runtime by an admin
+  UI without redeploying. Subject to `TURBODRF_PERMISSION_CACHE_TIMEOUT`
+  (default 300s) so high-stakes systems with frequent revocations
+  should set a lower TTL.
+
 ### Database-backed permissions
 
 For runtime changes without redeployment:
@@ -90,6 +102,15 @@ role = TurboDRFRole.objects.create(name='editor')
 RolePermission.objects.create(role=role, app_label='books', model_name='book', action='read')
 UserRole.objects.create(user=user, role=role)
 ```
+
+### Caching
+
+Permission resolutions are cached per `(user, model)` for the duration
+of `TURBODRF_PERMISSION_CACHE_TIMEOUT` seconds (default 300). The cache
+key prefix is `TURBODRF_PERMISSION_CACHE_PREFIX` (default
+`"turbodrf_perm"`). Clear the cache after a role mutation in database
+mode if you can't wait for the TTL — the snapshot machinery uses
+Django's default cache backend, so any standard `cache.delete()` works.
 
 ### Nested field permissions
 
