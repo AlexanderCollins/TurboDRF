@@ -36,6 +36,10 @@ upgrade with zero behavior change.
 | `TURBODRF_REQUIRE_TENANCY` | **`True`** | Hard-fail at startup if a model has no tenancy decision (`tenant_field`, `visibility`, or `'tenancy': 'shared'`). Only triggers when `TURBODRF_TENANT_MODEL` is also set. | [tenancy.md](tenancy.md#hard-fail-at-startup) |
 | `TURBODRF_AUTODETECT_TENANT` | **`False`** | Walk the FK graph at startup to find the shortest unique path to the tenant model. Off by default — explicit declarations are easier to reason about. | [tenancy.md](tenancy.md) |
 | `TURBODRF_LOG_UNRESTRICTED_CUSTOM` | **`False`** | When `True`, log a warning whenever a `Custom` predicate's `q_func` returns an empty Q. Useful for catching developer footguns where a Custom predicate accidentally returns "no within-tenant restriction". | — |
+| `TURBODRF_ALLOW_UNSAFE_COMPILED_M2M` | **`False`** | Bypass the startup gate that blocks compiled-path M2M nesting into predicate-bearing targets. Logs a loud warning per offending model. Intended for migrations only. | [security.md](security.md#compiled-m2m-target-bypass) |
+| `TURBODRF_ALLOW_UNSAFE_COMPILED_FK` | **`False`** | Bypass the startup gate that blocks compiled-path FK annotations whose target model carries predicates the JOIN does not apply. Logs a loud warning per offending pair. Intended for migrations only. | [security.md](security.md#compiled-fk-annotation-bypass) |
+| `TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS` | **`False`** | Bypass the startup gate that blocks `searchable_fields` paths whose target model carries predicates DRF's `SearchFilter` does not apply to the join. Logs a loud warning per offending entry. Intended for migrations only. | [security.md](security.md#search-field-target-bypass) |
+| `TURBODRF_ALLOW_UNSAFE_FILTER_TRAVERSAL` | **`False`** | Disable the request-time scoping that wraps `__`-path filter URLs with target-model predicate / tenant Q's. When `True`, `?fk__field=...` JOINs without applying the target's own visibility rules. Migrations only; not recommended. | [security.md](security.md#url-driven-join-scoping) |
 
 ## Documentation (Swagger / OpenAPI)
 
