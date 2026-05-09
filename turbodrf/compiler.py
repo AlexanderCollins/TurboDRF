@@ -591,9 +591,7 @@ def validate_compiled_path_safety(model):
         if not offending:
             continue
 
-        joined = "; ".join(
-            f"[{m.__name__}] {' / '.join(r)}" for m, r in offending
-        )
+        joined = "; ".join(f"[{m.__name__}] {' / '.join(r)}" for m, r in offending)
         terminal = offending[-1][0]
         message = (
             f"{model.__name__}.turbodrf() exposes FK annotation "
