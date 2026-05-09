@@ -125,6 +125,30 @@ class ORFilterBackend(BaseFilterBackend):
                         queryset.model.__name__,
                     )
 
+        # Traversal scoping: for `__`-paths to a target with registered
+        # predicates / tenant_field, the JOIN must be scoped to rows the
+        # caller can see via the target's own endpoint. Otherwise
+        # `?fk__field=secret` joins the target without applying its own
+        # rules and leaks row existence (same bug class as the compiled
+        # M2M / search-field bypasses; URL-driven so it's gated here at
+        # request time).
+        from .validation import build_traversal_scope_q, validate_filter_field
+
+        allow_unsafe_traversal = getattr(
+            _s, "TURBODRF_ALLOW_UNSAFE_FILTER_TRAVERSAL", False
+        )
+
+        def _scope_path(key):
+            if allow_unsafe_traversal or "__" not in key:
+                return Q()
+            try:
+                field_path, _lookup = validate_filter_field(queryset.model, key)
+            except Exception:
+                return Q()
+            if "__" not in field_path:
+                return Q()
+            return build_traversal_scope_q(queryset.model, field_path, request)
+
         # Build OR queries
         if or_params:
             q_objects = Q()
@@ -133,6 +157,8 @@ class ORFilterBackend(BaseFilterBackend):
                 field_q = Q()
                 for value in values:
                     field_q |= Q(**{field_name: value})
+                # AND in target scoping for this OR-group's path
+                field_q &= _scope_path(field_name)
                 # Combine with AND between different fields
                 q_objects &= field_q
 
@@ -153,7 +179,7 @@ class ORFilterBackend(BaseFilterBackend):
                         continue  # silently drop malformed isnull values
                     value = coerced
 
-                queryset = queryset.filter(**{key: value})
+                queryset = queryset.filter(Q(**{key: value}) & _scope_path(key))
             except (ValueError, TypeError, Exception):
                 # Skip filters that cause type conversion errors
                 # (e.g., "true" string for a BooleanField)

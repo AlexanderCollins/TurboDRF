@@ -255,6 +255,51 @@ class TurboDRFRouter(DefaultRouter):
         _bypass_roles_validated = True
         globals()["_bypass_roles_validated"] = True
 
+        # Second pass: validate compiled-path safety. Must run AFTER the
+        # main loop so every model's predicates / tenant_field are
+        # registered — model A's M2M target may be model B, and B's
+        # predicates may not have registered yet during A's compile.
+        # See compiler.validate_compiled_path_safety for the full rule.
+        from .compiler import _compiled_plans, validate_compiled_path_safety
+
+        for compiled_model in list(_compiled_plans.keys()):
+            validate_compiled_path_safety(compiled_model)
+
+        # Third pass: validate searchable_fields safety. Same class of
+        # bug as the compiled M2M target bypass — DRF's SearchFilter
+        # joins to the target model without applying the target's own
+        # predicates. Runs over every TurboDRF-mixin model regardless
+        # of compile mode.
+        from .validation import validate_searchable_fields_safety
+
+        for model in apps.get_models():
+            if not issubclass(model, TurboDRFMixin):
+                continue
+            if not model.turbodrf().get("enabled", True):
+                continue
+            validate_searchable_fields_safety(model)
+
+        # Fourth pass: validate Custom predicate write safety. A Custom
+        # without a write_validator returns [] from validate_write,
+        # silently letting writes through Either(Owner, Custom) and
+        # bypassing Owner's enforcement. See
+        # predicates.validate_predicate_write_safety for the full rule.
+        from .predicates import validate_predicate_write_safety
+
+        for model in apps.get_models():
+            if not issubclass(model, TurboDRFMixin):
+                continue
+            if not model.turbodrf().get("enabled", True):
+                continue
+            validate_predicate_write_safety(model)
+
+        # Fifth pass: validate every TURBODRF_ROLES permission string
+        # resolves to a real model + field + action. Catches typos like
+        # `core.project.titel.read` that silently grant nothing.
+        from .predicates import validate_permission_strings
+
+        validate_permission_strings()
+
     def get_urls(self):
         """
         Generate URL patterns that work with or without trailing slashes.

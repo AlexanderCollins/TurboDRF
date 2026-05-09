@@ -1650,30 +1650,32 @@ class LoggingSecurityTests(AdversaryBase):
         for rec in cm.records:
             self.assertNotIn("\n[FAKE LOG]\n", rec.getMessage())
 
-    def test_unrestricted_custom_warning_off_by_default_safe_when_on(self):
-        """Default: silent. With TURBODRF_LOG_UNRESTRICTED_CUSTOM=True:
-        warning emitted but no request data leaks."""
+    def test_unrestricted_custom_warning_default_safe_can_be_silenced(self):
+        """Default: warning emitted (loud-by-default catches the
+        accidental ``return Q()`` footgun). With
+        TURBODRF_LOG_UNRESTRICTED_CUSTOM=False: silent. Either way, no
+        request data leaks into log records."""
         c = Custom(q_func=lambda r, u: Q())
         rf = APIRequestFactory()
         req = rf.post("/api/deals/", data={"title": VICTIM_SECRET_DEAL})
         req.user = self.attacker
 
-        # OFF (default)
-        handler, detach = _attach_capture("turbodrf.predicates")
-        try:
-            c.q(req, set())
-        finally:
-            detach()
-        self.assertEqual(
-            [r for r in handler.records if r.levelname == "WARNING"],
-            [],
-        )
-
-        # ON
-        with override_settings(TURBODRF_LOG_UNRESTRICTED_CUSTOM=True):
-            with self.assertLogs("turbodrf.predicates", level="WARNING") as cm:
-                c.q(req, {"underwriter"})
+        # ON (default)
+        with self.assertLogs("turbodrf.predicates", level="WARNING") as cm:
+            c.q(req, {"underwriter"})
         _assert_no_secrets_in_records(self, cm.records)
+
+        # OFF (explicit opt-out)
+        with override_settings(TURBODRF_LOG_UNRESTRICTED_CUSTOM=False):
+            handler, detach = _attach_capture("turbodrf.predicates")
+            try:
+                c.q(req, set())
+            finally:
+                detach()
+            self.assertEqual(
+                [r for r in handler.records if r.levelname == "WARNING"],
+                [],
+            )
 
     def test_debug_mode_5xx_no_secret_no_traceback(self):
         """Both DEBUG=True and DEBUG=False: no secret in body, no
