@@ -9,7 +9,7 @@
 project = "TurboDRF"
 copyright = "2025, TurboDRF Team"
 author = "TurboDRF Team"
-release = "0.4.3"
+release = "0.4.4"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
