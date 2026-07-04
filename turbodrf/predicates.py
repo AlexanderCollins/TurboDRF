@@ -149,7 +149,7 @@ class Tenant(Predicate):
                 f"tenant FK column."
             )
         col = self.field if self.field.endswith("_id") else f"{self.field}_id"
-        return f"{col} = current_setting('app.tenant_id')::int"
+        return f"{col} = (select current_setting('app.tenant_id')::int)"
 
 
 class Owner(Predicate):
@@ -216,13 +216,13 @@ class Owner(Predicate):
         col_clauses = []
         for f in self.fields:
             col = f if f.endswith("_id") else f"{f}_id"
-            col_clauses.append(f"{col} = current_setting('app.user_id')::int")
+            col_clauses.append(f"{col} = (select current_setting('app.user_id')::int)")
         owner_clause = " OR ".join(col_clauses)
         if self.bypass:
             roles = "|".join(sorted(self.bypass))
             return (
                 f"({owner_clause}) OR "
-                f"current_setting('app.user_roles') ~ E'\\\\m({roles})\\\\M'"
+                f"(select current_setting('app.user_roles')) ~ E'\\\\m({roles})\\\\M'"
             )
         return owner_clause
 

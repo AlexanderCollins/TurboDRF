@@ -23,11 +23,11 @@ from turbodrf.predicates import (
 class TestTenantRLS(TestCase):
     def test_simple_field(self):
         clause = Tenant("brokerage").to_rls_using_clause()
-        self.assertEqual(clause, "brokerage_id = current_setting('app.tenant_id')::int")
+        self.assertEqual(clause, "brokerage_id = (select current_setting('app.tenant_id')::int)")
 
     def test_field_already_with_id_suffix(self):
         clause = Tenant("brokerage_id").to_rls_using_clause()
-        self.assertEqual(clause, "brokerage_id = current_setting('app.tenant_id')::int")
+        self.assertEqual(clause, "brokerage_id = (select current_setting('app.tenant_id')::int)")
 
     def test_chained_path_raises(self):
         with self.assertRaises(NotImplementedError):
@@ -37,24 +37,24 @@ class TestTenantRLS(TestCase):
         sql = Tenant("brokerage").to_rls_policy("deal_table")
         self.assertIn("CREATE POLICY", sql)
         self.assertIn("ON deal_table", sql)
-        self.assertIn("brokerage_id = current_setting", sql)
+        self.assertIn("brokerage_id = (select current_setting", sql)
 
 
 class TestOwnerRLS(TestCase):
     def test_simple_owner(self):
         clause = Owner("assigned_to").to_rls_using_clause()
-        self.assertEqual(clause, "assigned_to_id = current_setting('app.user_id')::int")
+        self.assertEqual(clause, "assigned_to_id = (select current_setting('app.user_id')::int)")
 
     def test_owner_with_bypass(self):
         clause = Owner("assigned_to", bypass=["admin", "manager"]).to_rls_using_clause()
-        self.assertIn("assigned_to_id = current_setting('app.user_id')::int", clause)
-        self.assertIn("current_setting('app.user_roles')", clause)
+        self.assertIn("assigned_to_id = (select current_setting('app.user_id')::int)", clause)
+        self.assertIn("(select current_setting('app.user_roles'))", clause)
         self.assertIn("admin|manager", clause)
 
     def test_multi_owner_or(self):
         clause = Owner(["author", "editor"]).to_rls_using_clause()
-        self.assertIn("author_id = current_setting('app.user_id')::int", clause)
-        self.assertIn("editor_id = current_setting('app.user_id')::int", clause)
+        self.assertIn("author_id = (select current_setting('app.user_id')::int)", clause)
+        self.assertIn("editor_id = (select current_setting('app.user_id')::int)", clause)
         self.assertIn(" OR ", clause)
 
     def test_chained_owner_raises(self):
