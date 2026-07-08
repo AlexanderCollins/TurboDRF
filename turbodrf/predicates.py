@@ -5,7 +5,6 @@ Predicates declare visibility rules per model. They:
 - Produce Django Q objects for read filtering (get_queryset / get_object)
 - Auto-fill mandatory fields on create (tenant FK)
 - Validate that writes don't violate the predicate
-- Optionally generate Postgres RLS policies
 
 Stack with AND. Use Either(...) for OR. Multi-role users are OR'd across roles
 (more roles = more access).
@@ -66,7 +65,6 @@ class Predicate:
         q(request, user_roles)             → Q for read filter
         auto_fill(validated_data, request) → dict (mutated) for create
         validate_write(validated_data, instance, request) → list[str] errors
-        to_rls_using_clause()              → SQL bool expr for Postgres RLS
     """
 
     mandatory = False
@@ -79,16 +77,6 @@ class Predicate:
 
     def validate_write(self, validated_data, instance, request):
         return []
-
-    def to_rls_using_clause(self):
-        raise NotImplementedError(
-            f"{type(self).__name__} does not generate RLS clauses."
-        )
-
-    def to_rls_policy(self, table_name, policy_name=None):
-        clause = self.to_rls_using_clause()
-        name = policy_name or f"{table_name}_{type(self).__name__.lower()}"
-        return f"CREATE POLICY {name} ON {table_name} USING ({clause});"
 
 
 class Tenant(Predicate):
@@ -140,16 +128,6 @@ class Tenant(Predicate):
         if provided_pk != expected_pk:
             return [f"Cannot set {self.field} to a different tenant."]
         return []
-
-    def to_rls_using_clause(self):
-        if "__" in self.field:
-            raise NotImplementedError(
-                f"Tenant RLS does not support chained paths ({self.field!r}). "
-                f"Add a Tenant policy on each table referencing its closest "
-                f"tenant FK column."
-            )
-        col = self.field if self.field.endswith("_id") else f"{self.field}_id"
-        return f"{col} = current_setting('app.tenant_id')::int"
 
 
 class Owner(Predicate):
@@ -210,22 +188,6 @@ class Owner(Predicate):
                     errors.append(f"Cannot set {f} to a different user.")
         return errors
 
-    def to_rls_using_clause(self):
-        if any("__" in f for f in self.fields):
-            raise NotImplementedError("Owner RLS does not support chained paths.")
-        col_clauses = []
-        for f in self.fields:
-            col = f if f.endswith("_id") else f"{f}_id"
-            col_clauses.append(f"{col} = current_setting('app.user_id')::int")
-        owner_clause = " OR ".join(col_clauses)
-        if self.bypass:
-            roles = "|".join(sorted(self.bypass))
-            return (
-                f"({owner_clause}) OR "
-                f"current_setting('app.user_roles') ~ E'\\\\m({roles})\\\\M'"
-            )
-        return owner_clause
-
 
 class Either(Predicate):
     """OR of child predicates.
@@ -260,9 +222,6 @@ class Either(Predicate):
                 return []
             all_errors.extend(errors)
         return all_errors
-
-    def to_rls_using_clause(self):
-        return " OR ".join(f"({p.to_rls_using_clause()})" for p in self.predicates)
 
 
 class Custom(Predicate):

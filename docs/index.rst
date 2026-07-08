@@ -20,14 +20,22 @@ Dead simple Django REST Framework API generator with role-based permissions.
    permissions
    filtering
    performance
-   security
    commands
    integrations
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Authorization & Tenancy:
+
+   tenancy
+   security
+   migration_to_predicates
 
 .. toctree::
    :maxdepth: 1
    :caption: Reference:
 
+   settings_reference
    api
 
 

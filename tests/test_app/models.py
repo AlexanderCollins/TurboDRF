@@ -3,7 +3,9 @@ Test models for TurboDRF tests.
 """
 
 from django.db import models
+from rest_framework.response import Response
 
+from turbodrf.decorators import turbodrf_action
 from turbodrf.mixins import TurboDRFMixin
 
 
@@ -337,4 +339,66 @@ class CompiledArticle(TurboDRFMixin, models.Model):
                     "categories__description",
                 ],
             },
+        }
+
+
+@turbodrf_action(detail=True, methods=["get"], url_path="ping")
+def widget_ping(self, request, pk=None):
+    """Custom action handler — inherits get_object() scoping from the viewset."""
+    obj = self.get_object()
+    return Response({"pong": obj.name})
+
+
+class Widget(TurboDRFMixin, models.Model):
+    """Read-only model with a custom action.
+
+    Exercises the turbodrf() config keys ``read_only`` (writes -> 405) and
+    ``actions`` (a custom endpoint attached to the generated viewset).
+    """
+
+    name = models.CharField(max_length=100)
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "public_access": True,
+            "read_only": True,
+            "fields": ["id", "name"],
+            "actions": [widget_ping],
+        }
+
+
+class Gadget(TurboDRFMixin, models.Model):
+    """Writable, non-compiled model exercising full_clean + computed fields.
+
+    ``label`` is a @property (a computed read field); ``clean()`` enforces a
+    business rule surfaced as a 400 via the ``full_clean: True`` config.
+    """
+
+    name = models.CharField(max_length=100)
+    qty = models.IntegerField(default=0)
+
+    @property
+    def label(self):
+        return f"{self.name} x{self.qty}"
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if self.name == "forbidden":
+            raise ValidationError({"name": "name cannot be 'forbidden'"})
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "public_access": True,
+            "compiled": False,
+            "full_clean": True,
+            "fields": ["id", "name", "qty", "label"],
         }

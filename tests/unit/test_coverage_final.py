@@ -170,58 +170,6 @@ class TestSerializerCreateSnapshotFallback(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# serializers.py — line 438: _get_permitted_fields with __all__
-# ---------------------------------------------------------------------------
-
-
-class TestGetPermittedFieldsAll(TestCase):
-    """Exercise _get_permitted_fields when fields == '__all__' (line 438)."""
-
-    def setUp(self):
-        self.user = User.objects.create_user(username="pf_user")
-        self.user._test_roles = ["admin"]
-
-    def test_permitted_fields_with_all(self):
-        permitted = TurboDRFSerializerFactory._get_permitted_fields(
-            SampleModel, "__all__", self.user
-        )
-        # Should resolve __all__ to actual field names
-        self.assertIsInstance(permitted, list)
-        self.assertIn("title", permitted)
-        self.assertIn("price", permitted)
-
-
-# ---------------------------------------------------------------------------
-# serializers.py — lines 471-473: model-level perm fallback (no field-level
-# read perms defined for a field)
-# ---------------------------------------------------------------------------
-
-
-class TestGetPermittedFieldsModelLevelFallback(TestCase):
-    """Exercise model-level permission fallback in _get_permitted_fields."""
-
-    def setUp(self):
-        self.user = User.objects.create_user(username="ml_user")
-        self.user._test_roles = ["model_only"]
-
-    @override_settings(
-        TURBODRF_ROLES={
-            "model_only": [
-                "test_app.relatedmodel.read",
-                # No field-level read perms for relatedmodel
-            ]
-        }
-    )
-    def test_model_level_perm_grants_all_fields(self):
-        """When no field-level read perms exist, model-level perm grants access."""
-        permitted = TurboDRFSerializerFactory._get_permitted_fields(
-            RelatedModel, ["name", "description"], self.user
-        )
-        self.assertIn("name", permitted)
-        self.assertIn("description", permitted)
-
-
-# ---------------------------------------------------------------------------
 # serializers.py — line 509: _get_permitted_fields_with_snapshot __all__
 # ---------------------------------------------------------------------------
 
@@ -281,28 +229,6 @@ class TestNestingDepthExceeded(TestCase):
         )
         self.assertIn("title", permitted)
         self.assertNotIn("a__b__c__d", permitted)
-
-
-# ---------------------------------------------------------------------------
-# serializers.py — lines 535-541: _get_user_permissions_set
-# ---------------------------------------------------------------------------
-
-
-class TestGetUserPermissionsSet(TestCase):
-    """Exercise _get_user_permissions_set."""
-
-    def test_returns_set_of_permissions(self):
-        user = MagicMock()
-        user.roles = ["admin"]
-        perms = TurboDRFSerializerFactory._get_user_permissions_set(user)
-        self.assertIsInstance(perms, set)
-        self.assertIn("test_app.samplemodel.read", perms)
-
-    def test_empty_roles_returns_empty_set(self):
-        user = MagicMock()
-        user.roles = ["nonexistent_role"]
-        perms = TurboDRFSerializerFactory._get_user_permissions_set(user)
-        self.assertEqual(perms, set())
 
 
 # ---------------------------------------------------------------------------
@@ -1208,15 +1134,15 @@ class TestGetSchemaWithRoleFiltering(TestCase):
             info=openapi.Info(title="Test", default_version="v1"),
         )
 
-        from django.contrib.auth.models import AnonymousUser
-
         mock_request = MagicMock()
         mock_request.GET = {}
         mock_request.session = {"api_role": "viewer"}
-        mock_request.user = AnonymousUser()  # anon doc browsing
+        mock_request.user = MagicMock(is_authenticated=True)  # caller holds 'viewer'
 
         fake_schema = {"paths": {}}
-        with patch.object(
+        with patch(
+            "turbodrf.backends.get_user_roles", return_value=["viewer"]
+        ), patch.object(
             RoleBasedSchemaGenerator.__bases__[0],
             "get_schema",
             return_value=fake_schema,
@@ -1404,7 +1330,10 @@ class TestCompiledReadableFieldsWithSnapshot(TestCase):
 
         self.assertEqual(result, {"title", "price"})
 
-    def test_returns_none_when_snapshot_has_no_readable_fields(self):
+    def test_returns_empty_set_when_snapshot_has_no_readable_fields(self):
+        # A snapshot with zero readable fields must DENY ALL (empty set), not
+        # return None — None means "no snapshot / fall through to config" and
+        # would leak fields the role has no permission to read.
         from turbodrf.backends import PermissionSnapshot
         from turbodrf.views import TurboDRFViewSet
 
@@ -1425,7 +1354,7 @@ class TestCompiledReadableFieldsWithSnapshot(TestCase):
         ):
             result = viewset._get_compiled_readable_fields(request)
 
-        self.assertIsNone(result)
+        self.assertEqual(result, set())
 
 
 # ---------------------------------------------------------------------------
@@ -1465,7 +1394,9 @@ class TestFilterableFieldsWithSnapshot(TestCase):
 
         self.assertEqual(result, {"title", "description"})
 
-    def test_returns_none_when_no_readable_fields(self):
+    def test_returns_empty_set_when_no_readable_fields(self):
+        # Zero readable fields → deny all (empty set), never None (which would
+        # fall through and expose fields the role cannot read).
         from turbodrf.backends import PermissionSnapshot
         from turbodrf.views import TurboDRFViewSet
 
@@ -1487,7 +1418,7 @@ class TestFilterableFieldsWithSnapshot(TestCase):
         ):
             result = viewset._get_filterable_fields()
 
-        self.assertIsNone(result)
+        self.assertEqual(result, set())
 
 
 # ---------------------------------------------------------------------------

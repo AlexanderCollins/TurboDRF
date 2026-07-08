@@ -190,13 +190,13 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
                 "/api/relatedmodels/": {"get": {"responses": {}}},
             }
         }
-        from django.contrib.auth.models import AnonymousUser
-
         req = MagicMock()
         req.GET = {"role": "viewer"}
         req.session = {}
-        req.user = AnonymousUser()  # anon browsing — accept ?role= for docs
-        with patch.object(
+        req.user = MagicMock(is_authenticated=True)  # caller actually holds 'viewer'
+        with patch(
+            "turbodrf.backends.get_user_roles", return_value=["viewer"]
+        ), patch.object(
             RoleBasedSchemaGenerator.__bases__[0],
             "get_schema",
             return_value=fake_schema,
@@ -208,14 +208,14 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
         self.assertIn("/api/relatedmodels/", result["paths"])
 
     def test_get_schema_role_from_session(self):
-        from django.contrib.auth.models import AnonymousUser
-
         gen = self._gen()
         req = MagicMock()
         req.GET = {}
         req.session = {"api_role": "admin"}
-        req.user = AnonymousUser()
-        with patch.object(
+        req.user = MagicMock(is_authenticated=True)  # caller holds 'admin'
+        with patch(
+            "turbodrf.backends.get_user_roles", return_value=["admin"]
+        ), patch.object(
             RoleBasedSchemaGenerator.__bases__[0],
             "get_schema",
             return_value={"paths": {}},
@@ -223,19 +223,24 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
             gen.get_schema(request=req, public=True)
         self.assertEqual(gen.current_role, "admin")
 
-    def test_get_schema_no_role_returns_unfiltered(self):
+    def test_get_schema_no_role_returns_empty(self):
+        # No role requested or held → the schema filters down to EMPTY, never
+        # the full unfiltered schema (the original anonymous-disclosure bug).
+        from django.contrib.auth.models import AnonymousUser
+
         gen = self._gen()
         fake_schema = {"paths": {"/api/samplemodels/": {"get": {}, "post": {}}}}
         req = MagicMock()
         req.GET = {}
         req.session = {}
+        req.user = AnonymousUser()
         with patch.object(
             RoleBasedSchemaGenerator.__bases__[0],
             "get_schema",
             return_value=fake_schema,
         ):
             result = gen.get_schema(request=req, public=True)
-        self.assertIn("post", result["paths"]["/api/samplemodels/"])
+        self.assertEqual(result["paths"], {})
 
     @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
     def test_get_schema_filters_response_schema_fields(self):
@@ -260,13 +265,13 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
                 }
             }
         }
-        from django.contrib.auth.models import AnonymousUser
-
         req = MagicMock()
         req.GET = {"role": "viewer"}
         req.session = {}
-        req.user = AnonymousUser()  # anon browsing — accept ?role= for docs
-        with patch.object(
+        req.user = MagicMock(is_authenticated=True)  # caller actually holds 'viewer'
+        with patch(
+            "turbodrf.backends.get_user_roles", return_value=["viewer"]
+        ), patch.object(
             RoleBasedSchemaGenerator.__bases__[0],
             "get_schema",
             return_value=fake_schema,

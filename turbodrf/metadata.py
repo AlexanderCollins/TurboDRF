@@ -49,11 +49,9 @@ class TurboDRFMetadata(SimpleMetadata):
 
     def _get_snapshot(self, request, model):
         """Get the user's permission snapshot for this model, or None."""
-        from django.conf import settings
+        from .permissions import permissions_bypassed
 
-        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
-            return None
-        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+        if permissions_bypassed():
             return None
         from .backends import attach_snapshot_to_request
 

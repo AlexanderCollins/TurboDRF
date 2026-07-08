@@ -6,7 +6,7 @@ compiled-path DictProxy / fields-parameter / annotation tampering,
 JSON parser/encoder quirks, logging side-channels, race conditions
 across permission cache and tenant resolution, and
 authentication-integration corner cases (Keycloak claim traversal,
-allauth, custom user models, RLS middleware).
+allauth, custom user models).
 """
 
 import json
@@ -15,7 +15,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal
 from unittest import skip
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
@@ -1583,7 +1583,6 @@ _TURBODRF_LOGGERS = (
     "turbodrf.serializers",
     "turbodrf.router",
     "turbodrf.filter_backends",
-    "turbodrf.rls.middleware",
     "turbodrf.validation",
     "turbodrf.integrations.keycloak",
     "turbodrf.integrations.sentry",
@@ -1899,25 +1898,19 @@ class LoggingSecurityTests(AdversaryBase):
                 self.assertNotIn(s, body)
 
     def test_log_format_string_contracts(self):
-        """Source-level checks: views.py has no logger calls; RLS uses
-        parameterized format; serializers uses DEBUG-level for stripping;
-        keycloak uses %r for role names; compiler info log doesn't dump
-        rows; router warning doesn't reference request.user/data."""
+        """Source-level checks: views.py has no logger calls; serializers
+        uses DEBUG-level for stripping; keycloak uses %r for role names;
+        compiler info log doesn't dump rows; router warning doesn't
+        reference request.user/data."""
         from turbodrf import compiler as compiler_mod
         from turbodrf import router as router_mod
         from turbodrf import serializers as serializers_mod
         from turbodrf import views as views_mod
         from turbodrf.integrations import keycloak as keycloak_mod
-        from turbodrf.rls import middleware as rls_mw
 
         views_src = open(views_mod.__file__).read()
         self.assertNotIn("logger.", views_src)
         self.assertNotIn("logging.getLogger", views_src)
-
-        rls_src = open(rls_mw.__file__).read()
-        self.assertIn("Failed to set RLS session vars: %s", rls_src)
-        self.assertNotIn("user_id=%s", rls_src)
-        self.assertNotIn("tenant_id=%s", rls_src)
 
         ser_src = open(serializers_mod.__file__).read()
         self.assertIn('logger.debug(f"Stripping sensitive field', ser_src)
@@ -1961,11 +1954,14 @@ class ConcurrencyTests(AdversaryBase):
         self.assertNotEqual(attacker_key, victim_key)
         self.assertNotEqual(attacker_key, anon_key)
 
-        # Static-mode cache key invariant under role mutation (documented)
+        # Static-mode cache key now folds in the user's own assigned roles, so
+        # a runtime role mutation changes the key and invalidates the cached
+        # snapshot (previously the key was invariant under role mutation, which
+        # served stale field/action permissions until the TTL expired).
         k1 = get_cache_key(self.attacker, Deal)
         self.attacker._test_roles = ["admin"]
         k2 = get_cache_key(self.attacker, Deal)
-        self.assertEqual(k1, k2)
+        self.assertNotEqual(k1, k2)
         # Reset
         self.attacker._test_roles = ["underwriter"]
 
@@ -2431,13 +2427,8 @@ class ConcurrencyTests(AdversaryBase):
 
     def test_documented_untestable_hypotheses_local_invariants(self):
         """Local invariants for hypotheses we can't fully test without
-        Postgres+pgbouncer / multi-worker / async ASGI: middleware exists,
-        snapshots are content-equal across builds, request.user
-        assignment is observably atomic."""
-        from turbodrf.rls import middleware as rls_mw
-
-        self.assertTrue(hasattr(rls_mw, "TurboDRFTenancyMiddleware"))
-
+        multi-worker / async ASGI: snapshots are content-equal across
+        builds, request.user assignment is observably atomic."""
         s1 = build_permission_snapshot(self.attacker, Deal, use_cache=False)
         s2 = build_permission_snapshot(self.attacker, Deal, use_cache=False)
         self.assertEqual(s1.allowed_actions, s2.allowed_actions)
@@ -2609,14 +2600,13 @@ class RealConcurrencyTests(_AdversaryWorldMixin, TransactionTestCase):
 
 # ---------------------------------------------------------------------------
 # Integrations: Keycloak (mapping, claim traversal, social-auth, middleware),
-# Allauth, RLS middleware, custom users, auth backends, CSRF combinations,
-# anonymous edges. Merged from KeycloakMappingCornerCases through
-# AnonymousAndEdge.
+# Allauth, custom users, auth backends, CSRF combinations, anonymous
+# edges. Merged from KeycloakMappingCornerCases through AnonymousAndEdge.
 # ---------------------------------------------------------------------------
 
 
 class IntegrationTests(AdversaryBase):
-    """Auth / RLS / Keycloak / allauth integration regression tests."""
+    """Auth / Keycloak / allauth integration regression tests."""
 
     # ---- Keycloak mapping ------------------------------------------------
 
@@ -3132,79 +3122,6 @@ class IntegrationTests(AdversaryBase):
         self.assertFalse(validate_role_mapping({42: "admin"}))
         self.assertFalse(validate_role_mapping("not-a-dict"))
 
-    # ---- RLS middleware --------------------------------------------------
-
-    def test_rls_middleware_behavior(self):
-        """SQLite no-op; anon early-returns; user-no-tenant uses '';
-        SQL is parameterized; exception during set_config swallowed."""
-        from turbodrf.rls.middleware import TurboDRFTenancyMiddleware
-
-        # SQLite no-op
-        get_response = MagicMock(return_value="response")
-        mw = TurboDRFTenancyMiddleware(get_response)
-        request = MagicMock()
-        request.user = self.attacker
-        self.assertEqual(mw(request), "response")
-        get_response.assert_called_once_with(request)
-
-        # Anon early return
-        get_response = MagicMock(return_value="response")
-        mw = TurboDRFTenancyMiddleware(get_response)
-        request = MagicMock()
-        request.user = AnonymousUser()
-        with patch("turbodrf.rls.middleware._is_postgres", return_value=True):
-            with patch("django.db.connection.cursor") as mock_cursor:
-                mw(request)
-                mock_cursor.assert_not_called()
-
-        # No-tenant user: tenant_id passed as ''
-        no_tenant = User.objects.create_user(username="notenant", password="x")
-        no_tenant._test_roles = ["underwriter"]
-        get_response = MagicMock(return_value="response")
-        mw = TurboDRFTenancyMiddleware(get_response)
-        request = MagicMock()
-        request.user = no_tenant
-        cursor_mock = MagicMock()
-        cursor_mock.__enter__ = MagicMock(return_value=cursor_mock)
-        cursor_mock.__exit__ = MagicMock(return_value=False)
-        with patch("turbodrf.rls.middleware._is_postgres", return_value=True):
-            with patch("django.db.connection.cursor", return_value=cursor_mock):
-                try:
-                    mw(request)
-                except Exception:
-                    pass
-                tenant_calls = [
-                    c
-                    for c in cursor_mock.execute.call_args_list
-                    if "tenant_id" in (c[0][0] if c[0] else "")
-                ]
-                for c in tenant_calls:
-                    self.assertEqual(c[0][1], [""])
-
-        # Source-level: parameterized SQL
-        import inspect
-
-        from turbodrf.rls import middleware as mw_mod
-
-        src = inspect.getsource(mw_mod.TurboDRFTenancyMiddleware._set_session_vars)
-        self.assertIn("set_config('app.user_id', %s, true)", src)
-        self.assertIn("set_config('app.tenant_id', %s, true)", src)
-        self.assertIn("set_config('app.user_roles', %s, true)", src)
-        self.assertNotIn("f\"SELECT set_config('app.tenant_id'", src)
-
-        # Exception during set_config -> swallowed, request continues
-        get_response = MagicMock(return_value="response")
-        mw = TurboDRFTenancyMiddleware(get_response)
-        request = MagicMock()
-        request.user = self.attacker
-        cursor_mock = MagicMock()
-        cursor_mock.__enter__ = MagicMock(return_value=cursor_mock)
-        cursor_mock.__exit__ = MagicMock(return_value=False)
-        cursor_mock.execute = MagicMock(side_effect=Exception("boom"))
-        with patch("turbodrf.rls.middleware._is_postgres", return_value=True):
-            with patch("django.db.connection.cursor", return_value=cursor_mock):
-                self.assertEqual(mw(request), "response")
-
     # ---- API exploit attempts --------------------------------------------
 
     def test_admin_underwriter_combined_does_not_grant_victim(self):
@@ -3222,3 +3139,77 @@ class IntegrationTests(AdversaryBase):
         r = self.client.get(f"/api/deals/{self.victim_deal.pk}/")
         self.assertNotEqual(r.status_code, 200)
         self.assert_no_victim_leak(r)
+
+
+# ---------------------------------------------------------------------------
+# scoped_target_queryset — the compiled-M2M merge scoper (F4). Direct tests
+# of its fail-closed `.none()` branches: on any miss (no request, anonymous,
+# tenantless user) it must yield ZERO target rows, never all of them.
+# ---------------------------------------------------------------------------
+
+
+class ScopedTargetQuerysetFailClosed(AdversaryBase):
+    def _scoped(self, model, request):
+        from turbodrf.validation import scoped_target_queryset
+
+        return scoped_target_queryset(model, request)
+
+    def test_unscoped_target_returns_none_sentinel(self):
+        # No predicates, no tenant_field → None ("public, no scoping needed"),
+        # which callers treat as "leave the merge query unfiltered".
+        self.assertIsNone(self._scoped(RelatedModel, self._attacker_request()))
+
+    def test_tenanted_target_no_request_fails_closed(self):
+        self.assertEqual(self._scoped(Deal, None).count(), 0)
+
+    def test_tenanted_target_anonymous_fails_closed(self):
+        self.assertEqual(self._scoped(Deal, self._anon_request()).count(), 0)
+
+    def test_tenanted_target_missing_user_fails_closed(self):
+        self.assertEqual(self._scoped(Deal, self._no_user_request()).count(), 0)
+
+    def test_tenanted_target_user_without_tenant_fails_closed(self):
+        # Authenticated but no brokerage (get_user_tenant → None): must see
+        # nothing, not everything.
+        drifter = User.objects.create_user(username="tenantless_drifter", password="x")
+        drifter._test_roles = ["underwriter"]
+        self.assertEqual(self._scoped(Deal, _MockRequest(user=drifter)).count(), 0)
+
+    def test_tenanted_target_scopes_to_own_tenant_only(self):
+        titles = set(
+            self._scoped(Deal, self._attacker_request()).values_list(
+                "title", flat=True
+            )
+        )
+        self.assertIn("ATTACKER_DEAL", titles)
+        self.assertNotIn(VICTIM_SECRET_DEAL, titles)
+
+    def test_predicated_target_no_request_fails_closed(self):
+        from turbodrf.predicates import get_predicates, register_predicates
+
+        orig = list(get_predicates(RelatedModel))
+        register_predicates(
+            RelatedModel, [Custom(q_func=lambda r, ur: Q(pk__in=[]))]
+        )
+        try:
+            self.assertEqual(self._scoped(RelatedModel, None).count(), 0)
+        finally:
+            register_predicates(RelatedModel, orig)
+
+    def test_predicated_target_applies_predicate_q(self):
+        from turbodrf.predicates import get_predicates, register_predicates
+
+        orig = list(get_predicates(RelatedModel))
+        marker = RelatedModel.objects.create(name="scoped_only", description="x")
+        register_predicates(
+            RelatedModel, [Custom(q_func=lambda r, ur: Q(name="scoped_only"))]
+        )
+        try:
+            pks = set(
+                self._scoped(RelatedModel, self._attacker_request()).values_list(
+                    "pk", flat=True
+                )
+            )
+            self.assertEqual(pks, {marker.pk})
+        finally:
+            register_predicates(RelatedModel, orig)

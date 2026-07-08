@@ -6,36 +6,31 @@ from rest_framework import serializers
 logger = logging.getLogger(__name__)
 
 
-def _apply_predicate_writes(model, validated_data, instance, request):
-    """Run write enforcement for create/update under the two-layer model.
+def _model_has_concrete_field(model, name):
+    """True if ``name`` is a concrete model field (vs a @property / method)."""
+    try:
+        model._meta.get_field(name)
+        return True
+    except Exception:
+        return False
 
-    Layer 1 (mandatory tenant boundary):
-      - Validate that any provided tenant_field value matches caller's tenant
-      - Auto-fill tenant_field if missing
-    Layer 2 (within-tenant predicates):
-      - Run validate_write on each predicate
-      - Run auto_fill on each predicate (Owner fills assigned_to, etc.)
-    Layer 3 (FK injection / co-tenant checks):
-      - Every FK provided must be visible under the related model's predicates
-      - Every FK target with a tenant attribute must share the caller's tenant
 
-    Raises serializers.ValidationError on violations.
-    """
-    from django.db import models as dj_models
+def _report_write_security_event(event, message, **kwargs):
+    """Best-effort Sentry breadcrumb (no-op when Sentry is not enabled)."""
+    try:
+        from .integrations.sentry import report_security_event
 
-    from .backends import get_user_roles
-    from .predicates import get_predicates, get_tenant_field, get_user_tenant
+        report_security_event(event, message, **kwargs)
+    except Exception:
+        pass
 
-    # Defensive: if a caller passes a non-dict body (list, string), pass it
-    # through unchanged. The HTTP layer already rejects these upstream;
-    # this guard makes the helper safe for direct programmatic use.
-    if not isinstance(validated_data, dict):
-        return validated_data
 
-    tenant_field = get_tenant_field(model)
-    predicates = get_predicates(model)
-    if not tenant_field and not predicates:
-        return validated_data
+def _validate_predicate_writes(
+    model, validated_data, instance, request, tenant_field, predicates
+):
+    """Layer 1 (mandatory tenant boundary) + Layer 2 (within-tenant predicate)
+    write validation. Returns a list of error strings ([] when allowed)."""
+    from .predicates import get_user_tenant
 
     errors = []
 
@@ -55,20 +50,13 @@ def _apply_predicate_writes(model, validated_data, instance, request):
     # Layer 2: within-tenant predicate validate_write
     for pred in predicates:
         errors.extend(pred.validate_write(validated_data, instance, request))
-    if errors:
-        # Optional Sentry breadcrumb (no-op when Sentry not enabled)
-        try:
-            from .integrations.sentry import report_security_event
+    return errors
 
-            report_security_event(
-                "predicate_validate_write_rejected",
-                f"Write rejected on {model.__name__}",
-                model=model.__name__,
-                errors=errors,
-            )
-        except Exception:
-            pass
-        raise serializers.ValidationError({"detail": errors})
+
+def _autofill_predicate_writes(validated_data, request, tenant_field, predicates):
+    """Layer 1 (tenant) + Layer 2 (predicate) auto-fill. The tenant FK is always
+    overwritten with the caller's tenant — never trust the client."""
+    from .predicates import get_user_tenant
 
     # Layer 1 auto-fill (always overwrite — never trust client)
     if (
@@ -86,91 +74,156 @@ def _apply_predicate_writes(model, validated_data, instance, request):
     # Layer 2 auto-fill
     for pred in predicates:
         validated_data = pred.auto_fill(validated_data, request)
+    return validated_data
 
-    # Layer 3a: FK injection check — every FK target must be visible under
-    #            the related model's predicate stack + tenant boundary.
-    # Layer 3b: Co-tenant check — when the host has a tenant_field set, any
-    #            FK target with a tenant attribute (via TURBODRF_TENANT_USER_FIELD)
-    #            must share the caller's tenant. Catches User-FK assignment
-    #            cross-tenant since User typically has no predicates.
-    # Layer 3c: Unified error messages — same text whether the FK target
-    #            doesn't exist or just isn't visible. Distinct messages
-    #            would let an attacker enumerate other tenants' PKs.
-    if request and getattr(request, "user", None) and request.user.is_authenticated:
-        from django.conf import settings as django_settings
 
-        user_roles = set(get_user_roles(request.user))
-        fk_errors = {}
+def _check_fk_injection_writes(model, validated_data, request, tenant_field):
+    """Layer 3: FK-injection + co-tenant checks. Returns a ``{field: [errors]}``
+    dict ({} when every provided FK is allowed).
 
-        tenant_user_field = getattr(django_settings, "TURBODRF_TENANT_USER_FIELD", None)
-        caller_tenant_pk = None
-        if tenant_user_field and tenant_field:
-            caller_tenant = get_user_tenant(request.user)
-            caller_tenant_pk = getattr(caller_tenant, "pk", caller_tenant)
+    Layer 3a: every provided FK target must be visible under the related model's
+      predicate stack + tenant boundary.
+    Layer 3b: when the host is tenant-scoped, any FK target with a tenant
+      attribute (via TURBODRF_TENANT_USER_FIELD) must share the caller's tenant
+      — catches cross-tenant User-FK assignment (User typically has no
+      predicates).
+    Layer 3c: unified error text (same whether the target doesn't exist or just
+      isn't visible) so an attacker can't enumerate other tenants' PKs.
+    """
+    from django.conf import settings as django_settings
+    from django.db import models as dj_models
+    from django.db.models import Q
 
-        for field in model._meta.fields:
-            if not isinstance(field, dj_models.ForeignKey):
+    from .backends import get_user_roles
+    from .predicates import get_predicates, get_tenant_field, get_user_tenant
+
+    fk_errors = {}
+    if not (
+        request and getattr(request, "user", None) and request.user.is_authenticated
+    ):
+        return fk_errors
+
+    user_roles = set(get_user_roles(request.user))
+
+    tenant_user_field = getattr(django_settings, "TURBODRF_TENANT_USER_FIELD", None)
+    caller_tenant_pk = None
+    if tenant_user_field and tenant_field:
+        caller_tenant = get_user_tenant(request.user)
+        caller_tenant_pk = getattr(caller_tenant, "pk", caller_tenant)
+
+    for field in model._meta.fields:
+        if not isinstance(field, dj_models.ForeignKey):
+            continue
+        if field.name not in validated_data:
+            continue
+        value = validated_data[field.name]
+        if value is None:
+            continue
+        related_model = field.related_model
+        value_pk = getattr(value, "pk", value)
+
+        # Build the visibility filter for the related model: tenant +
+        # within-tenant predicates.
+        q = Q()
+        related_tenant_field = get_tenant_field(related_model)
+        if related_tenant_field:
+            related_tenant_q = Q()
+            if request.user.is_authenticated:
+                rtenant = get_user_tenant(request.user)
+                if rtenant is not None:
+                    related_tenant_q = Q(**{related_tenant_field: rtenant})
+                else:
+                    related_tenant_q = Q(pk__in=[])  # fail closed
+            q &= related_tenant_q
+
+        for rp in get_predicates(related_model):
+            q &= rp.q(request, user_roles)
+
+        # If the related model is scoped at all (predicates or tenant), check
+        # the FK target is visible.
+        if get_predicates(related_model) or related_tenant_field:
+            if not related_model.objects.filter(pk=value_pk).filter(q).exists():
+                fk_errors[field.name] = [
+                    f"Invalid {field.name}: not found or not accessible."
+                ]
                 continue
-            if field.name not in validated_data:
-                continue
-            value = validated_data[field.name]
-            if value is None:
-                continue
-            related_model = field.related_model
-            value_pk = getattr(value, "pk", value)
 
-            # Build the visibility filter for the related model: tenant +
-            # within-tenant predicates.
-            from django.db.models import Q
-
-            q = Q()
-            related_tenant_field = get_tenant_field(related_model)
-            if related_tenant_field:
-                related_tenant_q = Q()
-                if request.user.is_authenticated:
-                    rtenant = get_user_tenant(request.user)
-                    if rtenant is not None:
-                        related_tenant_q = Q(**{related_tenant_field: rtenant})
-                    else:
-                        related_tenant_q = Q(pk__in=[])  # fail closed
-                q &= related_tenant_q
-
-            for rp in get_predicates(related_model):
-                q &= rp.q(request, user_roles)
-
-            # If the related model is scoped at all (predicates or tenant),
-            # check the FK target is visible.
-            if get_predicates(related_model) or related_tenant_field:
-                if not related_model.objects.filter(pk=value_pk).filter(q).exists():
+        # Co-tenant check: the FK target's tenant attribute must match the
+        # caller's, even when the related model has no predicates (typical for
+        # User).
+        if caller_tenant_pk is not None and tenant_user_field:
+            target_tenant = getattr(value, tenant_user_field, None)
+            if target_tenant is not None:
+                target_tenant_pk = getattr(target_tenant, "pk", target_tenant)
+                if target_tenant_pk != caller_tenant_pk:
+                    # Unified message (identical to the not-visible case) so the
+                    # error can't be used as a cross-tenant PK existence oracle.
                     fk_errors[field.name] = [
                         f"Invalid {field.name}: not found or not accessible."
                     ]
-                    continue
+    return fk_errors
 
-            # Co-tenant check: the FK target's tenant attribute must match
-            # the caller's, even when the related model has no predicates
-            # (typical for User).
-            if caller_tenant_pk is not None and tenant_user_field:
-                target_tenant = getattr(value, tenant_user_field, None)
-                if target_tenant is not None:
-                    target_tenant_pk = getattr(target_tenant, "pk", target_tenant)
-                    if target_tenant_pk != caller_tenant_pk:
-                        fk_errors[field.name] = [
-                            f"{field.name} belongs to a different tenant."
-                        ]
-        if fk_errors:
-            try:
-                from .integrations.sentry import report_security_event
 
-                report_security_event(
-                    "fk_injection_rejected",
-                    f"FK injection blocked on {model.__name__}",
-                    model=model.__name__,
-                    fields=list(fk_errors.keys()),
-                )
-            except Exception:
-                pass
-            raise serializers.ValidationError(fk_errors)
+def _apply_predicate_writes(model, validated_data, instance, request):
+    """Run write enforcement for create/update under the two-layer model.
+
+    Layer 1 (mandatory tenant boundary):
+      - Validate that any provided tenant_field value matches caller's tenant
+      - Auto-fill tenant_field if missing
+    Layer 2 (within-tenant predicates):
+      - Run validate_write on each predicate
+      - Run auto_fill on each predicate (Owner fills assigned_to, etc.)
+    Layer 3 (FK injection / co-tenant checks):
+      - Every FK provided must be visible under the related model's predicates
+      - Every FK target with a tenant attribute must share the caller's tenant
+
+    Raises serializers.ValidationError on violations. The per-layer logic lives
+    in _validate_predicate_writes / _autofill_predicate_writes /
+    _check_fk_injection_writes.
+    """
+    from .predicates import get_predicates, get_tenant_field
+
+    # Defensive: if a caller passes a non-dict body (list, string), pass it
+    # through unchanged. The HTTP layer already rejects these upstream;
+    # this guard makes the helper safe for direct programmatic use.
+    if not isinstance(validated_data, dict):
+        return validated_data
+
+    tenant_field = get_tenant_field(model)
+    predicates = get_predicates(model)
+    if not tenant_field and not predicates:
+        return validated_data
+
+    # Layers 1 + 2: validate the write.
+    errors = _validate_predicate_writes(
+        model, validated_data, instance, request, tenant_field, predicates
+    )
+    if errors:
+        _report_write_security_event(
+            "predicate_validate_write_rejected",
+            f"Write rejected on {model.__name__}",
+            model=model.__name__,
+            errors=errors,
+        )
+        raise serializers.ValidationError({"detail": errors})
+
+    # Layers 1 + 2: auto-fill (tenant FK + predicate auto-fills).
+    validated_data = _autofill_predicate_writes(
+        validated_data, request, tenant_field, predicates
+    )
+
+    # Layer 3: FK-injection + co-tenant checks.
+    fk_errors = _check_fk_injection_writes(
+        model, validated_data, request, tenant_field
+    )
+    if fk_errors:
+        _report_write_security_event(
+            "fk_injection_rejected",
+            f"FK injection blocked on {model.__name__}",
+            model=model.__name__,
+            fields=list(fk_errors.keys()),
+        )
+        raise serializers.ValidationError(fk_errors)
 
     return validated_data
 
@@ -288,6 +341,22 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                                 exc,
                             )
 
+        # Inject model @property / method fields (read-only), computed on the
+        # real instance. NOTE: gated only by model-level read and run UNSCOPED
+        # (see the mixin docs); the compiled read path drops properties for
+        # role-scoped users, so list (compiled) and detail (DRF) can differ.
+        for prop_name in getattr(self.Meta, "_property_fields", []):
+            try:
+                value = getattr(instance, prop_name, None)
+                data[prop_name] = value() if callable(value) else value
+            except Exception as exc:
+                logger.warning(
+                    "Property field %s on %s failed: %r",
+                    prop_name,
+                    instance.__class__.__name__,
+                    exc,
+                )
+
         return data
 
     def _is_many_to_many_field(self, instance, field_name):
@@ -330,37 +399,24 @@ class TurboDRFSerializer(serializers.ModelSerializer):
             if m2m_manager is None:
                 return []
 
-            # I-3 fix: apply the target model's tenant_field + within-tenant
-            # predicates to the M2M render. Without this, a nested array in
-            # a parent response could leak target rows the user can't see
-            # via the target's own endpoint.
+            # Scope the M2M render to target rows the caller can see via the
+            # target's own endpoint. scoped_target_queryset() returns None for a
+            # public target (no scoping needed) and a scoped queryset otherwise
+            # — which is .none() for an anonymous caller on a tenant-scoped
+            # target, so the render fails closed for anon. (Previously the
+            # scoping was skipped entirely for unauthenticated requests, leaking
+            # a tenant-scoped M2M target to anonymous callers.)
             related_objects = m2m_manager.all()
             related_model = getattr(m2m_manager, "model", None)
             if related_model is not None:
-                from django.db.models import Q
-
-                from .backends import get_user_roles
-                from .predicates import (
-                    get_predicates,
-                    get_tenant_field,
-                    get_user_tenant,
-                )
+                from .validation import scoped_target_queryset
 
                 request = self.context.get("request")
-                user = getattr(request, "user", None) if request else None
-                if user is not None and getattr(user, "is_authenticated", False):
-                    user_roles = set(get_user_roles(user))
-                    q = Q()
-                    target_tenant_field = get_tenant_field(related_model)
-                    if target_tenant_field:
-                        tenant = get_user_tenant(user)
-                        if tenant is None:
-                            return []  # fail closed
-                        q &= Q(**{target_tenant_field: tenant})
-                    for pred in get_predicates(related_model):
-                        q &= pred.q(request, user_roles)
-                    if q != Q():
-                        related_objects = related_objects.filter(q)
+                scoped = scoped_target_queryset(related_model, request)
+                if scoped is not None:
+                    related_objects = related_objects.filter(
+                        pk__in=scoped.values("pk")
+                    )
 
             # Extract the field names to include (strip the base_field__ prefix)
             fields_to_extract = set()
@@ -387,6 +443,48 @@ class TurboDRFSerializer(serializers.ModelSerializer):
 
         except Exception:
             return []
+
+    def validate(self, attrs):
+        """Optionally run Django model validation (``full_clean``) so model
+        ``clean()`` / constraints surface as clean 400s instead of 500s.
+
+        Opt in per model via ``turbodrf()`` config ``{"full_clean": True}``;
+        off by default (DRF's field-level validation is unchanged).
+        """
+        attrs = super().validate(attrs)
+        model = getattr(getattr(self, "Meta", None), "model", None)
+        if model is None or not hasattr(model, "turbodrf"):
+            return attrs
+        config = model.turbodrf()
+        if not (isinstance(config, dict) and config.get("full_clean")):
+            return attrs
+
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        m2m_names = {f.name for f in model._meta.many_to_many}
+        instance = self.instance or model()
+        for key, value in attrs.items():
+            if key not in m2m_names:
+                setattr(instance, key, value)
+
+        exclude = set(m2m_names)
+        if self.instance is not None and getattr(self, "partial", False):
+            provided = set(attrs.keys())
+            for f in model._meta.get_fields():
+                fname = getattr(f, "name", None)
+                if fname and fname not in provided:
+                    exclude.add(fname)
+
+        try:
+            instance.full_clean(exclude=exclude or None, validate_unique=False)
+        except DjangoValidationError as exc:
+            detail = (
+                exc.message_dict
+                if hasattr(exc, "message_dict")
+                else {"non_field_errors": list(exc.messages)}
+            )
+            raise serializers.ValidationError(detail)
+        return attrs
 
     def update(self, instance, validated_data):
         """
@@ -587,6 +685,27 @@ class TurboDRFSerializerFactory:
             if base_field not in simple_fields:
                 simple_fields.append(base_field)
 
+        # Split out model @property / method fields — they can't live in
+        # Meta.fields (not model fields), so they're injected read-only in
+        # to_representation. SENSITIVE-named properties are dropped entirely
+        # (the same deny-list the response/filter/search pathways enforce).
+        # SECURITY NOTE: property fields are gated only by MODEL-level read (a
+        # property can't carry a field-level read rule) and run UNSCOPED — a
+        # property that derives from a restricted column or queries other rows
+        # will leak. See the mixin docs before exposing one.
+        from .validation import is_field_path_sensitive
+
+        _prop_candidates = [
+            f
+            for f in simple_fields
+            if not _model_has_concrete_field(model, f) and hasattr(model, f)
+        ]
+        if _prop_candidates:
+            simple_fields = [f for f in simple_fields if f not in _prop_candidates]
+        property_fields_meta = [
+            f for f in _prop_candidates if not is_field_path_sensitive(f)
+        ]
+
         # Create variables for the closure
         model_class = model
         # Only include simple fields in the final field list, not the
@@ -760,90 +879,10 @@ class TurboDRFSerializerFactory:
                 fields = all_fields
                 read_only_fields = read_only_fields_list
                 _nested_fields = nested_fields_meta
+                _property_fields = property_fields_meta
                 ref_name = ref_name_value
 
         return DynamicSerializer
-
-    @classmethod
-    def _get_permitted_fields(cls, model, fields, user):
-        """
-        Filter fields based on user's read permissions.
-
-        This method checks each field against the user's permissions and returns
-        only those fields the user is allowed to read. It supports both simple
-        field names and nested field notation.
-
-        Args:
-            model: The Django model class.
-            fields: List of field names to check, may include nested fields.
-            user: User object with 'roles' attribute containing role names.
-
-        Returns:
-            list: Filtered list of field names the user can read.
-
-        Permission Format:
-            - Field-level: '{app_label}.{model_name}.{field_name}.read'
-            - Model-level: '{app_label}.{model_name}.read' (grants all fields)
-
-        Example:
-            # User with permissions: ['myapp.article.title.read', 'myapp.article.read']
-            # Input fields: ['title', 'content', 'author__name']
-            # Output: ['title', 'content', 'author__name']
-            # (model-level permission grants all)
-        """
-        from django.conf import settings
-
-        TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
-
-        user_permissions = set()
-        for role in user.roles:
-            user_permissions.update(TURBODRF_ROLES.get(role, []))
-
-        permitted = []
-        app_label = model._meta.app_label
-        model_name = model._meta.model_name
-
-        # First check if we should handle fields as "__all__"
-        if fields == "__all__":
-            # Get all model fields
-            fields = [f.name for f in model._meta.fields]
-
-        # Get all defined field permissions for this model across
-        # ALL roles
-        # Only check read permissions - write permissions alone don't
-        # restrict reading
-        all_field_perms_read = set()
-        for role_name, role_perms in TURBODRF_ROLES.items():
-            for perm in role_perms:
-                parts = perm.split(".")
-                if (
-                    len(parts) == 4
-                    and parts[0] == app_label
-                    and parts[1] == model_name
-                    and parts[3] == "read"
-                ):
-                    # This is a field read permission for this model
-                    all_field_perms_read.add(parts[2])
-
-        for field in fields:
-            base_field = field.split("__")[0]
-
-            # Check if there are any field-level READ permissions
-            # defined for this field
-            if base_field in all_field_perms_read:
-                # Field-level read permissions exist, so check for
-                # read permission
-                field_perm = f"{app_label}.{model_name}.{base_field}.read"
-                if field_perm in user_permissions:
-                    permitted.append(field)
-            else:
-                # No field-level read permissions defined, fall back to
-                # model-level permission
-                model_perm = f"{app_label}.{model_name}.read"
-                if model_perm in user_permissions:
-                    permitted.append(field)
-
-        return permitted
 
     @classmethod
     def _get_permitted_fields_with_snapshot(cls, model, fields, user):
@@ -895,65 +934,6 @@ class TurboDRFSerializerFactory:
         return permitted
 
     @classmethod
-    def _get_user_permissions_set(cls, user):
-        """Get all permissions for a user as a set."""
-        from django.conf import settings
-
-        TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
-        user_permissions = set()
-        for role in user.roles:
-            user_permissions.update(TURBODRF_ROLES.get(role, []))
-        return user_permissions
-
-    @classmethod
-    def _get_read_only_fields(cls, model, fields, user):
-        """
-        Determine which fields should be read-only based on write permissions.
-
-        This method identifies fields that the user can read but not write to,
-        ensuring data integrity by preventing unauthorized modifications.
-
-        Args:
-            model: The Django model class.
-            fields: List of field names to check for write permissions.
-            user: User object with 'roles' attribute.
-
-        Returns:
-            list: Field names that should be marked as read-only.
-
-        Permission Format:
-            - Write permission: '{app_label}.{model_name}.{field_name}.write'
-
-        Note:
-            Fields without write permission are automatically made read-only,
-            even if the user has read permission. This prevents validation
-            errors when users attempt to modify restricted fields.
-
-        Example:
-            # User has 'myapp.article.title.read' but not 'myapp.article.title.write'
-            # Result: 'title' will be in the read-only fields list
-        """
-        from django.conf import settings
-
-        TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", {})
-
-        user_permissions = set()
-        for role in user.roles:
-            user_permissions.update(TURBODRF_ROLES.get(role, []))
-
-        read_only = []
-        app_label = model._meta.app_label
-        model_name = model._meta.model_name
-
-        for field in fields:
-            # Check field write permission
-            field_perm = f"{app_label}.{model_name}.{field}.write"
-            if field_perm not in user_permissions:
-                read_only.append(field)
-
-        return read_only
-
-    @classmethod
     def _get_read_only_fields_with_snapshot(cls, model, fields, snapshot):
         """
         Determine which fields should be read-only based on write permissions.
@@ -977,54 +957,3 @@ class TurboDRFSerializerFactory:
 
         return read_only
 
-    @classmethod
-    def _create_nested_serializer(cls, model, fields, user):
-        """
-        Create a nested serializer for related model fields.
-
-        This method generates a simple serializer for related objects that
-        includes only the specified fields. It's used internally to handle
-        nested field relationships.
-
-        Args:
-            model: The related model class to serialize.
-            fields: List of field names to include in the nested serializer.
-            user: User object (currently unused but available for future
-                 permission filtering at nested levels).
-
-        Returns:
-            type: A dynamically created ModelSerializer subclass.
-
-        Note:
-            Currently creates a simple serializer without permission checking
-            at the nested level. Future versions may implement recursive
-            permission filtering for nested serializers.
-
-        Example:
-            # For author__name field on Article model
-            nested_serializer = cls._create_nested_serializer(
-                model=User,
-                fields=['name'],
-                user=request.user
-            )
-            # Returns serializer that only includes 'name' field from User model
-        """
-
-        # Create variables for the closure
-        model_class = model
-        field_list = fields
-
-        # Generate unique ref_name for swagger schema generation
-        fields_hash = hashlib.md5(",".join(sorted(field_list)).encode()).hexdigest()[:8]
-        app_label = model_class._meta.app_label
-        model_name = model_class._meta.model_name
-        nested_ref_name = f"{app_label}_{model_name}_nested_{fields_hash}"
-
-        class NestedSerializer(serializers.ModelSerializer):
-            class Meta:
-                model = model_class
-                fields = field_list
-                # Unique ref_name for swagger schema generation
-                ref_name = nested_ref_name
-
-        return NestedSerializer

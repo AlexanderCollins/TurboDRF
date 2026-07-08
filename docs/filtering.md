@@ -2,19 +2,33 @@
 
 ## Search
 
-Define searchable fields on the model:
+Define searchable fields in the `turbodrf()` config dict (preferred) or as a `searchable_fields` class attribute:
 
 ```python
 class Book(models.Model, TurboDRFMixin):
     title = models.CharField(max_length=200)
     description = models.TextField()
 
+    @classmethod
+    def turbodrf(cls):
+        return {
+            'fields': ['title', 'description', 'author__name'],
+            'searchable_fields': ['title', 'description', 'author__name'],
+        }
+```
+
+The legacy class-attribute form still works and is used as a fallback:
+
+```python
+class Book(models.Model, TurboDRFMixin):
     searchable_fields = ['title', 'description']
 ```
 
 ```
 GET /api/books/?search=django
 ```
+
+Entries may be plain field names or `__`-paths (`author__name`). Search is gated by field-level read permissions -- a caller without read access to a field cannot search by it -- and the whole list is validated at startup (unresolvable paths are dropped, and paths that would join into a predicate-bearing target are refused unless `TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS` is set).
 
 ## Filtering
 

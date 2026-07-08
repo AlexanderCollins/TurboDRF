@@ -99,25 +99,38 @@ coverage table, and configuration reference.
   a different tenant.
 - **Owner write check** — non-bypass roles cannot assign rows to other users.
 
-### Optional: Postgres RLS as defense in depth
+### Defense-in-depth options
 
-For Postgres deployments, TurboDRF can additionally generate Row Level Security
-policies that enforce the same rules at the database layer (catches raw SQL,
-admin scripts, ORM bugs). See `docs/rls.md`.
+TurboDRF enforces row-level access at the application layer. For Postgres
+deployments that need DB-layer enforcement on top of that — specific
+compliance findings, ad-hoc operator SQL against production, a database
+shared with other applications — Postgres Row Level Security is the
+standard mechanism. TurboDRF does not ship tooling to generate or
+manage RLS policies: keeping them in sync with the predicate config is
+hard to get right, and a stale or misconfigured policy is a worse
+failure mode than not having one. Teams that need DB-layer enforcement
+should author and version policies in Django `RunSQL` migrations
+directly against the Postgres docs, and verify drift with a
+custom check in CI.
 
 ## Compiled M2M target bypass
 
 The compiled read path (default for all models) renders nested many-to-many
 arrays via a separate two-query merge: one query for the parent rows, a
-second on the M2M through-table. The second query joins to the **target**
-model but does NOT apply the target's own `tenant_field` setting or
-registered predicates to the join. The non-compiled DRF serializer path
-does (`serializers.py:333-363`).
+second on the M2M through-table joining to the **target** model. If that
+join ran unscoped, a model nesting an M2M whose target carries its own
+visibility rules (predicates or tenant_field) would render rows the caller
+could not see by hitting the target's own endpoint — a real
+cross-permission read leak. Two layers prevent it:
 
-When a model exposes an M2M whose target carries its own visibility rules
-(predicates or tenant_field), the compiled merge renders rows the caller
-would not be able to see by hitting the target's own endpoint. This is a
-real cross-permission read leak — not a theoretical one.
+1. **Request-time scoping** — the merge's second query is filtered to
+   targets visible via the target's own endpoint
+   (`scoped_target_queryset` in `views._compiled_list`), matching what
+   the non-compiled DRF serializer path enforces (`serializers.py`).
+   This holds even when the startup gate below is bypassed.
+2. **The startup gate** — unsafe parent/target pairings are refused at
+   boot, so misconfigurations surface at deploy time rather than as
+   silently-filtered output.
 
 ### Startup gate
 

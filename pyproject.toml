@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "turbodrf"
-version = "0.4.4"
+version = "0.5.0"
 description = "Dead simple Django REST API generator with role-based permissions"
 readme = "README.md"
 authors = [
@@ -38,6 +38,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+fast = [
+    "msgspec>=0.18.0",
+]
 dev = [
     "pytest>=6.0",
     "pytest-django>=4.0",
@@ -47,6 +50,7 @@ dev = [
     "flake8>=4.0",
     "isort>=5.0",
     "mypy>=0.9",
+    "msgspec>=0.18.0",
 ]
 docs = [
     "sphinx>=5.0",
@@ -72,11 +76,11 @@ turbodrf = ["templates/turbodrf/*.html"]
 DJANGO_SETTINGS_MODULE = "tests.settings"
 python_files = ["test_*.py", "*_test.py", "testing/python/*.py"]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --ignore=setup.py --ignore=performance_test.py -n auto --dist=loadfile"
+addopts = "-ra --strict-markers --ignore=performance_test.py -n auto --dist=loadfile"
 
 [tool.black]
 line-length = 88
-target-version = ['py38', 'py39', 'py310', 'py311']
+target-version = ['py310', 'py311', 'py312', 'py313']
 include = '\.pyi?$'
 extend-exclude = '''
 /(

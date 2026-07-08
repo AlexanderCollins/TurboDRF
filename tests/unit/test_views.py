@@ -9,10 +9,11 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.filters import OrderingFilter
 from rest_framework.test import APIRequestFactory
 
 from tests.test_app.models import RelatedModel, SampleModel
+from turbodrf.filter_backends import TurboDRFSearchFilter
 from turbodrf.permissions import TurboDRFPermission
 from turbodrf.views import TurboDRFPagination, TurboDRFViewSet
 
@@ -108,7 +109,7 @@ class TestTurboDRFViewSet(TestCase):
         self.assertEqual(self.viewset.permission_classes, [TurboDRFPermission])
         self.assertEqual(self.viewset.pagination_class, TurboDRFPagination)
         self.assertIn(DjangoFilterBackend, self.viewset.filter_backends)
-        self.assertIn(SearchFilter, self.viewset.filter_backends)
+        self.assertIn(TurboDRFSearchFilter, self.viewset.filter_backends)
         self.assertIn(OrderingFilter, self.viewset.filter_backends)
 
     def test_get_serializer_class_list_action(self):

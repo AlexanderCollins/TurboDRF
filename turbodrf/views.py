@@ -1,15 +1,62 @@
 from django.conf import settings
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import status
-from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.filters import OrderingFilter
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
-from .filter_backends import ORFilterBackend
+from .filter_backends import ORFilterBackend, TurboDRFSearchFilter
 from .metadata import TurboDRFMetadata
-from .permissions import DefaultDjangoPermission, TurboDRFPermission
+from .permissions import (
+    DefaultDjangoPermission,
+    TurboDRFPermission,
+    permissions_bypassed,
+)
 from .serializers import TurboDRFSerializer
 from .tracking import get_viewset_base_classes
+
+_UNSET = object()
+
+
+class Authorization:
+    """The single authorization decision for one request — the chokepoint every
+    data route routes through.
+
+    Produced once by ``TurboDRFViewSet.authorize()``. It carries the row-level
+    scope (tenant + within-tenant predicate ``Q`` objects, applied by
+    ``scope()``) and the field-level allowlist (``readable_fields``). The tenant
+    ``Q`` is applied as a SEPARATE filter, outside the predicate algebra, so an
+    ``Either()`` can never OR-compose it away.
+
+    ``readable_fields`` is computed lazily so the hot ``get_queryset`` path does
+    not build a permission snapshot it does not need.
+    """
+
+    __slots__ = ("tenant_q", "predicate_q", "_fields_fn", "_fields")
+
+    def __init__(self, tenant_q, predicate_q, fields_fn):
+        self.tenant_q = tenant_q
+        self.predicate_q = predicate_q
+        self._fields_fn = fields_fn
+        self._fields = _UNSET
+
+    @property
+    def readable_fields(self):
+        """Field-level allowlist (a set of base field names), or ``None`` when
+        no role system applies. Computed on first access."""
+        if self._fields is _UNSET:
+            self._fields = self._fields_fn()
+        return self._fields
+
+    def scope(self, queryset):
+        """Apply row-level access — the one place row scoping happens. Tenant
+        then predicate, as two separate filters (behaviour-identical to the
+        original two-layer code)."""
+        if self.tenant_q is not None:
+            queryset = queryset.filter(self.tenant_q)
+        if self.predicate_q is not None:
+            queryset = queryset.filter(self.predicate_q)
+        return queryset
 
 
 class TurboDRFPagination(PageNumberPagination):
@@ -157,38 +204,41 @@ class TurboDRFViewSet(*_viewset_bases):
         filter_backends: Enables filtering, searching, and ordering
     """
 
-    # Use default Django permissions if configured,
-    # otherwise use TurboDRF's role-based permissions
-    permission_classes = (
-        [
-            (
-                DefaultDjangoPermission
-                if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False)
-                else TurboDRFPermission
-            )
-        ]
-        if not getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False)
-        else []
-    )
+    # Declared default for introspection; the ACTUAL permission instances are
+    # resolved per-request in get_permissions() so settings (and
+    # override_settings) take effect live instead of being frozen at import.
+    permission_classes = [TurboDRFPermission]
     metadata_class = TurboDRFMetadata
     pagination_class = TurboDRFPagination
     filter_backends = [
         DjangoFilterBackend,
-        SearchFilter,
+        TurboDRFSearchFilter,
         OrderingFilter,
         ORFilterBackend,
     ]
 
-    # Use fast JSON renderer if available (msgspec > orjson > stdlib)
-    try:
-        from .renderers import FAST_JSON_AVAILABLE, TurboDRFRenderer
+    def get_renderers(self):
+        """Resolve renderers per request, upgrading stock JSONRenderer to the
+        fast msgspec/orjson-backed TurboDRFRenderer when available.
 
-        if FAST_JSON_AVAILABLE:
-            from rest_framework.renderers import BrowsableAPIRenderer
+        Unlike a class-level ``renderer_classes`` override, this respects the
+        project's ``DEFAULT_RENDERER_CLASSES`` — e.g. a production config that
+        removes BrowsableAPIRenderer keeps working, and a project's custom
+        JSONRenderer subclass is left untouched (only the exact stock class
+        is swapped).
+        """
+        renderers = super().get_renderers()
+        try:
+            from .renderers import FAST_JSON_AVAILABLE, TurboDRFRenderer
+        except ImportError:
+            return renderers
+        if not FAST_JSON_AVAILABLE:
+            return renderers
+        from rest_framework.renderers import JSONRenderer
 
-            renderer_classes = [TurboDRFRenderer, BrowsableAPIRenderer]
-    except ImportError:
-        pass
+        return [
+            TurboDRFRenderer() if type(r) is JSONRenderer else r for r in renderers
+        ]
 
     # Set custom swagger schema class for better OpenAPI documentation
     # This prevents custom actions from incorrectly showing all model fields
@@ -208,6 +258,19 @@ class TurboDRFViewSet(*_viewset_bases):
     # self.get_object() or self.get_queryset() inherit scoping automatically.
     # If you bypass those (e.g. self.model.objects.get(...) directly), scoping
     # is bypassed too — you must apply it manually.
+
+    def get_permissions(self):
+        """Resolve permission instances per request from current settings.
+
+        Evaluated at request time (not frozen on the class at import) so
+        ``TURBODRF_DISABLE_PERMISSIONS`` / ``TURBODRF_USE_DEFAULT_PERMISSIONS``
+        and ``override_settings`` take effect without a process restart.
+        """
+        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
+            return []
+        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+            return [DefaultDjangoPermission()]
+        return [TurboDRFPermission()]
 
     def _get_base_queryset(self):
         """Override point for subclasses that need a custom base
@@ -263,6 +326,43 @@ class TurboDRFViewSet(*_viewset_bases):
             return _no_match_q()
         return Q(**{self._tenant_field: tenant})
 
+    def _authorized_readable_fields(self, request):
+        """Single source for the field-level read allowlist: a set of readable
+        base field names, or ``None`` when no role system applies (permissions
+        disabled, or an anonymous caller on a public_access model with no
+        ``guest`` role — the legacy pass-through). The compiled / search /
+        ordering field gates derive from this so they cannot drift apart."""
+        if permissions_bypassed():
+            return None
+        from .backends import attach_snapshot_to_request, get_user_roles
+
+        user = getattr(request, "user", None)
+        if not get_user_roles(user):
+            return None
+        snapshot = attach_snapshot_to_request(request, self.model)
+        if snapshot and snapshot.readable_fields:
+            return snapshot.readable_fields
+        # Roles present but ZERO readable fields → DENY ALL (empty set), not the
+        # `None` pass-through. `None` means "no gating applies"; conflating the
+        # two let the compiled path render every column for a model-read-only
+        # role whose fields are all individually gated.
+        return set()
+
+    def authorize(self, request):
+        """THE authorization chokepoint.
+
+        Computes, once for ``request``, the row-level scope (mandatory tenant
+        boundary + discretionary within-tenant predicates) and the field-level
+        allowlist, returned as an :class:`Authorization`. Every data route —
+        list/detail, filter, search, ordering, OPTIONS, compiled — derives its
+        access decision from this single result so the pathways cannot drift.
+        """
+        tenant_q = self._get_tenant_q(request) if self._tenant_field else None
+        predicate_q = self._get_predicate_q(request) if self._predicates else None
+        return Authorization(
+            tenant_q, predicate_q, lambda: self._authorized_readable_fields(request)
+        )
+
     def list(self, request, *args, **kwargs):
         """List action with optional compiled read path.
 
@@ -298,6 +398,19 @@ class TurboDRFViewSet(*_viewset_bases):
         # Filters operate on the normal queryset before .values() is applied
         queryset = self.filter_queryset(queryset)
 
+        # F4: scope compiled FK-annotation JOINs to rows visible via the
+        # target's own endpoint. No-op unless an unsafe-compiled bypass flag
+        # exposed a predicate-bearing FK target (those are refused at startup).
+        from django.db.models import Q as _Q
+
+        from .validation import build_traversal_scope_q as _btsq
+
+        _fk_scope = _Q()
+        for _f_expr in plan.fk_annotations.values():
+            _fk_scope &= _btsq(self.model, _f_expr.name, request)
+        if _fk_scope:
+            queryset = queryset.filter(_fk_scope)
+
         # Get readable fields from permission snapshot
         readable_fields = self._get_compiled_readable_fields(request)
 
@@ -325,13 +438,28 @@ class TurboDRFViewSet(*_viewset_bases):
             allowed_m2m_subfields=allowed_m2m,
         )
 
+        # F4: scope the M2M merge's second query to targets visible via the
+        # target's own endpoint (no-op for public M2M targets). active_plan[2]
+        # is the active M2M spec map.
+        from .validation import scoped_target_queryset as _stq
+
+        _m2m_filters = {}
+        for _m2m_name, _spec in active_plan[2].items():
+            _scoped = _stq(_spec["related_model"], request)
+            if _scoped is not None:
+                _m2m_filters[_m2m_name] = _scoped.values("pk")
+
         # Paginate the .values() queryset (works because it's still a queryset)
         page = self.paginate_queryset(compiled_qs)
         if page is not None:
-            data = plan.post_process(list(page), active_plan)
+            data = plan.post_process(
+                list(page), active_plan, m2m_target_filters=_m2m_filters
+            )
             return self.get_paginated_response(data)
 
-        data = plan.post_process(list(compiled_qs), active_plan)
+        data = plan.post_process(
+            list(compiled_qs), active_plan, m2m_target_filters=_m2m_filters
+        )
         return Response(data)
 
     def _parse_client_fields(self, request, plan):
@@ -381,30 +509,13 @@ class TurboDRFViewSet(*_viewset_bases):
         return requested if requested else None
 
     def _get_compiled_readable_fields(self, request):
-        """Set of readable BASE fields for the compiled path's filter step.
+        """Readable BASE fields for the compiled path's filter step.
 
-        Anon users with a `guest` role configured get the guest snapshot's
-        readable_fields. Anon without a guest role returns None — legacy
-        behavior keeps public_access models showing configured fields when
-        no guest role exists.
+        Delegates to the single field-allowlist source
+        ``_authorized_readable_fields`` so the compiled path and the row
+        chokepoint agree.
         """
-        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
-            return None
-        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
-            return None
-
-        from .backends import attach_snapshot_to_request, get_user_roles
-
-        user = getattr(request, "user", None)
-        # No roles at all → no permission system applies. Legacy behavior:
-        # public_access without guest role lets anon see configured fields.
-        if not get_user_roles(user):
-            return None
-
-        snapshot = attach_snapshot_to_request(request, self.model)
-        if snapshot and snapshot.readable_fields:
-            return snapshot.readable_fields
-        return None
+        return self._authorized_readable_fields(request)
 
     def _filter_compiled_fk_annotations(self, plan, request):
         """Per-nested-FK-path permission check for the compiled path.
@@ -414,9 +525,7 @@ class TurboDRFViewSet(*_viewset_bases):
         shouldn't see. Returns None when no permission system applies
         (anon without guest role configured).
         """
-        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
-            return None
-        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+        if permissions_bypassed():
             return None
 
         from .backends import get_user_roles
@@ -439,9 +548,7 @@ class TurboDRFViewSet(*_viewset_bases):
         a dict {m2m_base: {allowed_subfield, ...}} or None when no role
         system applies.
         """
-        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
-            return None
-        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+        if permissions_bypassed():
             return None
 
         from .backends import get_user_roles
@@ -668,17 +775,53 @@ class TurboDRFViewSet(*_viewset_bases):
         if select_related_fields:
             queryset = queryset.select_related(*select_related_fields)
 
-        # Apply row-level access in two layers:
-        # 1. MANDATORY tenant boundary (setting, never bypassable)
-        # 2. DISCRETIONARY within-tenant predicates (composable, bypassable)
-        # Layer 1 is applied separately so it can't be OR-composed away
-        # by an Either() in the predicate stack.
+        # Route row-level access through the single authorization chokepoint.
+        # `scope()` applies the MANDATORY tenant boundary and the DISCRETIONARY
+        # within-tenant predicates as separate filters — tenant outside the
+        # algebra, never OR-composable away by an Either().
         request = getattr(self, "request", None)
-        if self._tenant_field:
-            queryset = queryset.filter(self._get_tenant_q(request))
-        if self._predicates:
-            queryset = queryset.filter(self._get_predicate_q(request))
+        return self.authorize(request).scope(queryset)
 
+    def filter_queryset(self, queryset):
+        """Run DRF's filter backends, then close the search/ordering JOIN-target
+        leak: scope nested ``__``-paths used by an active search or ordering to
+        rows the caller can see via the target's own endpoint.
+
+        In any config that passed the startup safety gates this is a NO-OP (no
+        searchable/orderable nested path reaches a predicate-bearing target, so
+        ``build_traversal_scope_q`` returns an empty ``Q``). It bites only when
+        an ``ALLOW_UNSAFE_*`` bypass flag exposed such a path — making those
+        flags safe at REQUEST time, not just at boot.
+        """
+        queryset = super().filter_queryset(queryset)
+        request = getattr(self, "request", None)
+        if request is None:
+            return queryset
+
+        from django.db.models import Q
+
+        from .validation import build_traversal_scope_q
+
+        paths = set()
+        if request.query_params.get("search"):
+            for f in self.search_fields or []:
+                base = f.lstrip("^=$@")  # strip DRF search-field prefixes
+                if "__" in base:
+                    paths.add(base)
+        ordering = request.query_params.get("ordering", "") or ""
+        if ordering:
+            allowed_order = self.ordering_fields
+            if isinstance(allowed_order, (list, tuple, set)):
+                for token in ordering.split(","):
+                    token = token.strip().lstrip("-")
+                    if "__" in token and token in allowed_order:
+                        paths.add(token)
+
+        scope = Q()
+        for path in paths:
+            scope &= build_traversal_scope_q(self.model, path, request)
+        if scope:
+            queryset = queryset.filter(scope)
         return queryset
 
     @property
@@ -693,7 +836,9 @@ class TurboDRFViewSet(*_viewset_bases):
         Without a request attached (unit test / programmatic use), returns
         the raw list. The HTTP layer always has a request.
         """
-        base = getattr(self.model, "searchable_fields", None) or []
+        from .mixins import get_searchable_fields
+
+        base = get_searchable_fields(self.model)
         if not base:
             return []
         # Drop entries that aren't resolvable model fields. A misconfigured
@@ -704,9 +849,7 @@ class TurboDRFViewSet(*_viewset_bases):
         if not base:
             return []
 
-        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
-            return list(base)
-        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+        if permissions_bypassed():
             return list(base)
 
         request = getattr(self, "request", None)
@@ -733,9 +876,7 @@ class TurboDRFViewSet(*_viewset_bases):
 
         Returns '__all__' only when permissions are disabled.
         """
-        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
-            return "__all__"
-        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+        if permissions_bypassed():
             return "__all__"
 
         from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
@@ -901,9 +1042,7 @@ class TurboDRFViewSet(*_viewset_bases):
         Returns None if permissions are disabled (all fields filterable),
         or a set of field names the user has read access to.
         """
-        if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
-            return None
-        if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
+        if permissions_bypassed():
             return None
 
         request = getattr(self, "request", None)
@@ -925,7 +1064,10 @@ class TurboDRFViewSet(*_viewset_bases):
         snapshot = attach_snapshot_to_request(request, self.model)
         if snapshot and snapshot.readable_fields:
             return snapshot.readable_fields
-        return None
+        # Authenticated caller (already past has_permission, so they hold a role)
+        # with zero readable fields → DENY ALL for ordering/filtering, not the
+        # `None` "all non-sensitive fields" fallback.
+        return set()
 
     @property
     def filterset_fields(self):

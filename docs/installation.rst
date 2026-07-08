@@ -4,9 +4,11 @@ Installation
 Requirements
 ------------
 
-* Python 3.8+
-* Django 3.2+
-* Django REST Framework 3.12+
+* Python 3.10+
+* Django 4.2+
+* Django REST Framework 3.14+
+
+``pyproject.toml`` is the source of truth for supported versions.
 
 Install from PyPI
 -----------------
@@ -43,15 +45,18 @@ Add ``turbodrf`` to your ``INSTALLED_APPS``:
        # Your apps...
    ]
 
-Add TurboDRF settings (optional):
+Define your roles (required for anything but public models):
 
 .. code-block:: python
 
-   # TurboDRF Settings
-   TURBODRF_PAGINATION_SIZE = 20
-   TURBODRF_MAX_PAGINATION_SIZE = 100
-   TURBODRF_DEFAULT_PERMISSION_CLASSES = ['turbodrf.permissions.TurboDRFPermission']
-   TURBODRF_ENABLE_SWAGGER = True
+   TURBODRF_ROLES = {
+       'admin': ['myapp.book.read', 'myapp.book.create',
+                 'myapp.book.update', 'myapp.book.delete'],
+       'viewer': ['myapp.book.read'],
+   }
+
+See :doc:`settings_reference <settings_reference>` for every ``TURBODRF_*``
+setting and its default.
 
 Add URLs to your project:
 

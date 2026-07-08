@@ -35,7 +35,8 @@ return {'tenancy': 'shared'}
 
 # Power form (when sugar doesn't fit)
 return {
-    'visibility': [Tenant('workspace'), Either(Owner('a'), Owner('b'))],
+    'tenant_field': 'workspace',   # mandatory boundary — a setting, not a predicate
+    'visibility': [Either(Owner('a'), Owner('b'))],
 }
 ```
 
@@ -66,8 +67,3 @@ TURBODRF_REQUIRE_TENANCY = False
 Disables the startup hard-fail so models without tenancy declarations still
 register (with no row scoping applied to them). Migrate models one at a
 time, then flip the setting back to `True`.
-
-## Optional: Postgres RLS
-
-For Postgres deployments, see `docs/rls.md` for defense-in-depth at the
-database layer.

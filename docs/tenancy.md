@@ -244,9 +244,8 @@ you'll get a directed error before you can serve a request:
 4. Predicate write safety (`Custom` without `write_validator`).
 5. Permission-string validation (`TURBODRF_ROLES` typos).
 
-If the app boots, the static checks have passed. Run the sanity-check
-project at `~/github/turbodrf-sanity-check/` to verify the runtime
-behaviour matches what you expect.
+If the app boots, the static checks have passed. Exercise the runtime
+behaviour against your own test suite to confirm it matches what you expect.
 
 ---
 
@@ -461,6 +460,5 @@ a Q clause are restricted to specified roles). These are usable in
 ## See also
 
 - `docs/security.md` — threat model, sensitive fields, error responses
-- `docs/rls.md` — optional Postgres RLS as defense-in-depth
 - `docs/migration_to_predicates.md` — migrating an existing project
-- `SECURITY_AUDIT.md` — audit history
+- `docs/security_audit.md` — audit history

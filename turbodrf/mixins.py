@@ -8,6 +8,25 @@ for Django models.
 from django.core.exceptions import FieldDoesNotExist
 
 
+def get_searchable_fields(model):
+    """Searchable fields for ``model`` — the fields enabled for ``?search=``.
+
+    Read from the ``turbodrf()`` config dict (``'searchable_fields': [...]``)
+    first, falling back to a ``searchable_fields`` class attribute. The
+    config-dict form is preferred — it lives alongside ``fields`` /
+    ``tenant_field`` and is honored by both the ``?search=`` handling and the
+    boot-time searchable-fields safety check. (Previously only the class
+    attribute was read, so declaring it in the config dict silently did
+    nothing.)
+    """
+    config = model.turbodrf() if hasattr(model, "turbodrf") else None
+    if isinstance(config, dict):
+        from_config = config.get("searchable_fields")
+        if from_config:
+            return list(from_config)
+    return list(getattr(model, "searchable_fields", None) or [])
+
+
 class TurboDRFMixin:
     """
     Mixin to add TurboDRF capabilities to Django models.
@@ -83,6 +102,21 @@ class TurboDRFMixin:
                   Conditional, Either, Custom) that compose with AND.
                   Use this when sugar form (tenant_field/owner_field) doesn't
                   fit the access pattern.
+                - 'searchable_fields' (list[str]): Field names (or '__'-paths)
+                  enabled for ``?search=``. Gated by field-level read
+                  permissions and validated at startup. May also be declared as
+                  a ``searchable_fields`` class attribute (legacy location).
+                - 'read_only' (bool): When True, only list/retrieve are served;
+                  writes (POST/PUT/PATCH/DELETE) return 405. Good for audit logs
+                  and reference data.
+                - 'http_methods' (list[str]): Explicit allow-list of HTTP
+                  methods for the endpoint (e.g. ['get', 'post']); disallowed
+                  methods return 405. ('read_only' is the common shorthand.)
+                - 'actions' (list): Custom endpoints — a list of handlers each
+                  decorated with ``@turbodrf_action(...)`` (import from
+                  ``turbodrf``). Each is attached to the generated viewset and
+                  inherits get_object()/get_queryset() tenant + predicate
+                  scoping, so custom verbs don't re-implement access control.
 
         Example:
             >>> @classmethod
