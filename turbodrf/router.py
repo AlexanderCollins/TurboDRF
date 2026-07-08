@@ -222,6 +222,44 @@ class TurboDRFRouter(DefaultRouter):
                     if lookup_field:
                         viewset_attrs["lookup_field"] = lookup_field
 
+                    # Restrict HTTP methods: `read_only: True` (list/retrieve
+                    # only) or an explicit `http_methods` allow-list. Disallowed
+                    # verbs return 405.
+                    read_only = config.get("read_only", False)
+                    http_methods = config.get("http_methods")
+                    if read_only:
+                        viewset_attrs["http_method_names"] = [
+                            "get",
+                            "head",
+                            "options",
+                        ]
+                    elif http_methods:
+                        methods = [m.lower() for m in http_methods]
+                        for always in ("head", "options"):
+                            if always not in methods:
+                                methods.append(always)
+                        viewset_attrs["http_method_names"] = methods
+
+                    # Custom endpoints: attach @turbodrf_action-decorated
+                    # handlers from the config to the generated viewset. They
+                    # inherit get_object()/get_queryset() tenant + predicate
+                    # scoping like the CRUD routes. Reject any handler whose name
+                    # collides with a TurboDRFViewSet method/attribute — silently
+                    # overwriting e.g. get_queryset/authorize/scope would replace
+                    # the row-scoping chokepoint.
+                    reserved_names = set(dir(TurboDRFViewSet))
+                    for action_func in config.get("actions") or []:
+                        action_name = getattr(action_func, "__name__", None)
+                        if not action_name:
+                            continue
+                        if action_name in reserved_names:
+                            raise ImproperlyConfigured(
+                                f"{model.__name__} turbodrf() action "
+                                f"'{action_name}' collides with a TurboDRFViewSet "
+                                f"method/attribute — rename the handler function."
+                            )
+                        viewset_attrs[action_name] = action_func
+
                     # Create a custom viewset for this model
                     viewset_class = type(
                         f"{model.__name__}ViewSet",

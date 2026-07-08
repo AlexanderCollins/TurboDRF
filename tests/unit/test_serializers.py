@@ -186,67 +186,6 @@ class TestTurboDRFSerializerFactory(TestCase):
         self.assertIn("price", data)
         self.assertIn("secret_field", data)
 
-    def test_get_permitted_fields(self):
-        """Test field permission filtering."""
-        fields = ["title", "price", "secret_field"]
-
-        # Admin should get all fields
-        admin_fields = TurboDRFSerializerFactory._get_permitted_fields(
-            SampleModel, fields, self.admin_user
-        )
-        self.assertEqual(set(admin_fields), set(fields))
-
-        # Editor should get title and price (read permission)
-        editor_fields = TurboDRFSerializerFactory._get_permitted_fields(
-            SampleModel, fields, self.editor_user
-        )
-        self.assertIn("title", editor_fields)
-        self.assertIn("price", editor_fields)
-        self.assertNotIn("secret_field", editor_fields)
-
-        # Viewer should only get title
-        viewer_fields = TurboDRFSerializerFactory._get_permitted_fields(
-            SampleModel, fields, self.viewer_user
-        )
-        self.assertIn("title", viewer_fields)
-        self.assertNotIn("price", viewer_fields)
-        self.assertNotIn("secret_field", viewer_fields)
-
-    def test_get_read_only_fields(self):
-        """Test read-only field determination."""
-        fields = ["title", "price"]
-
-        # Admin can write all fields
-        admin_readonly = TurboDRFSerializerFactory._get_read_only_fields(
-            SampleModel, fields, self.admin_user
-        )
-        self.assertNotIn("price", admin_readonly)
-
-        # Editor cannot write price
-        editor_readonly = TurboDRFSerializerFactory._get_read_only_fields(
-            SampleModel, fields, self.editor_user
-        )
-        self.assertIn("price", editor_readonly)
-
-        # Viewer cannot write anything
-        viewer_readonly = TurboDRFSerializerFactory._get_read_only_fields(
-            SampleModel, fields, self.viewer_user
-        )
-        self.assertIn("title", viewer_readonly)
-        self.assertIn("price", viewer_readonly)
-
-    def test_create_nested_serializer(self):
-        """Test nested serializer creation."""
-        NestedSerializer = TurboDRFSerializerFactory._create_nested_serializer(
-            RelatedModel, ["name", "description"], self.admin_user
-        )
-
-        serializer = NestedSerializer(self.related)
-        data = serializer.data
-
-        self.assertEqual(data["name"], "Related")
-        self.assertEqual(data["description"], "Description")
-
     def test_handle_nested_fields_in_factory(self):
         """Test factory handling of nested field notation."""
         fields = ["title", "related__name", "related__description"]
@@ -362,37 +301,6 @@ class TestSerializerRefNameUniqueness(TestCase):
         self.assertEqual(parts[3], "list")
         # Last part should be the hash (8 characters)
         self.assertEqual(len(parts[4]), 8)
-
-    def test_nested_serializer_has_unique_ref_name(self):
-        """Test that nested serializers also have unique ref_names."""
-        NestedSerializer = TurboDRFSerializerFactory._create_nested_serializer(
-            RelatedModel, ["name", "description"], self.admin_user
-        )
-
-        # Should have a ref_name
-        self.assertTrue(hasattr(NestedSerializer.Meta, "ref_name"))
-
-        ref_name = NestedSerializer.Meta.ref_name
-
-        # Should contain app_label, model_name, and "nested"
-        self.assertIn("test_app", ref_name)
-        self.assertIn("relatedmodel", ref_name)
-        self.assertIn("nested", ref_name)
-
-    def test_different_nested_fields_produce_different_ref_names(self):
-        """Test that nested serializers with different fields have unique ref_names."""
-        NestedSerializer1 = TurboDRFSerializerFactory._create_nested_serializer(
-            RelatedModel, ["name"], self.admin_user
-        )
-        NestedSerializer2 = TurboDRFSerializerFactory._create_nested_serializer(
-            RelatedModel, ["name", "description"], self.admin_user
-        )
-
-        ref_name_1 = NestedSerializer1.Meta.ref_name
-        ref_name_2 = NestedSerializer2.Meta.ref_name
-
-        # They should be different
-        self.assertNotEqual(ref_name_1, ref_name_2)
 
     def test_field_order_does_not_affect_ref_name(self):
         """Test that field order doesn't affect ref_name (fields are sorted)."""

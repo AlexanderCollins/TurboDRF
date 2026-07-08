@@ -8,9 +8,26 @@ django-filter provides out of the box.
 import logging
 
 from django.db.models import Q
-from rest_framework.filters import BaseFilterBackend
+from rest_framework.filters import BaseFilterBackend, SearchFilter
 
 logger = logging.getLogger(__name__)
+
+
+class TurboDRFSearchFilter(SearchFilter):
+    """SearchFilter that caps the length of each ``?search=`` term.
+
+    The ORFilterBackend length guard intentionally skips the search/ordering
+    params; without a cap here a huge ``?search=<100KB>`` runs an unbounded
+    multi-field ILIKE (SQLite raises "LIKE pattern too complex" → 500; Postgres
+    burns O(N*len) CPU). Over-length terms are dropped.
+    """
+
+    def get_search_terms(self, request):
+        from django.conf import settings
+
+        terms = super().get_search_terms(request)
+        max_len = getattr(settings, "TURBODRF_MAX_FILTER_VALUE_LENGTH", 1000)
+        return [t for t in terms if len(t) <= max_len]
 
 
 class ORFilterBackend(BaseFilterBackend):
@@ -255,8 +272,6 @@ class ORFilterBackend(BaseFilterBackend):
         """
         import logging
 
-        from django.conf import settings
-
         logger = logging.getLogger(__name__)
 
         # Basic validation - check if field exists in the model
@@ -272,6 +287,7 @@ class ORFilterBackend(BaseFilterBackend):
         try:
             from .validation import (
                 check_nested_field_permissions,
+                is_field_path_sensitive,
                 validate_filter_field,
             )
 
@@ -282,13 +298,19 @@ class ORFilterBackend(BaseFilterBackend):
                 logger.debug(f"Filter validation failed for '{field_name}': {str(e)}")
                 return False
 
-            # Check field permissions if TurboDRF role-based permissions are active
-            disable_perms = getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False)
-            use_default_perms = getattr(
-                settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False
-            )
+            # Sensitive fields are NEVER filterable, regardless of permissions.
+            # A filter on a field that's stripped from responses would be a
+            # value-confirmation / substring oracle for the hidden value
+            # (e.g. ?api_key__istartswith=sk-a). This mirrors the deny-list
+            # already enforced on the response and search pathways.
+            if is_field_path_sensitive(field_path):
+                logger.debug(f"Filter denied for sensitive field '{field_name}'")
+                return False
 
-            if not disable_perms and not use_default_perms:
+            # Check field permissions if TurboDRF role-based permissions are active
+            from .permissions import permissions_bypassed
+
+            if not permissions_bypassed():
                 from .backends import get_user_roles
 
                 try:

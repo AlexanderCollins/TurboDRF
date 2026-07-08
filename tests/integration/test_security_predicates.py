@@ -704,12 +704,32 @@ class TestManagerLevelBypass(SecurityBase):
         assert_no_secrets(self, r)
 
     def test_no_unknown_action_decorators_on_viewset(self):
-        """Custom @action methods on viewsets could bypass scope. Confirm
-        none exist beyond the standard DRF set."""
+        """Custom @action methods could bypass scope. Confirm every @action is
+        either a standard DRF route OR explicitly declared in the model's
+        turbodrf() ``actions`` config (which the router attaches on purpose, and
+        which inherits get_object()/get_queryset() scoping). An @action that is
+        neither would be an accidental, unscoped endpoint — that still fails."""
         from turbodrf.router import TurboDRFRouter
 
+        standard = {
+            "create",
+            "destroy",
+            "list",
+            "partial_update",
+            "retrieve",
+            "update",
+        }
         router = TurboDRFRouter()
         for prefix, viewset, _ in router.registry:
+            model = getattr(viewset, "model", None)
+            declared = set()
+            if model is not None and hasattr(model, "turbodrf"):
+                config = model.turbodrf()
+                if isinstance(config, dict):
+                    declared = {
+                        getattr(f, "__name__", None)
+                        for f in (config.get("actions") or [])
+                    }
             for attr_name in dir(viewset):
                 if attr_name.startswith("_"):
                     continue
@@ -719,16 +739,9 @@ class TestManagerLevelBypass(SecurityBase):
                 ):
                     self.assertIn(
                         attr_name,
-                        {
-                            "create",
-                            "destroy",
-                            "list",
-                            "partial_update",
-                            "retrieve",
-                            "update",
-                        },
+                        standard | declared,
                         f"Unexpected custom @action {attr_name!r} on "
-                        f"{viewset.__name__}",
+                        f"{viewset.__name__} (not declared in turbodrf() actions)",
                     )
 
     def test_no_custom_for_user_managers_and_default_matches_public(self):
@@ -828,8 +841,7 @@ class TestSelectRelatedAndDetail(SecurityBase):
 
 class TestSignals(SecurityBase):
     def test_no_turbodrf_production_signal_handlers(self):
-        """No signal receiver in turbodrf.* (excluding rls) mucks with
-        tenant data."""
+        """No signal receiver in turbodrf.* mucks with tenant data."""
         from django.db.models.signals import (
             post_delete,
             post_save,
@@ -844,7 +856,7 @@ class TestSignals(SecurityBase):
                     continue
                 module = getattr(receiver, "__module__", "")
                 self.assertFalse(
-                    module.startswith("turbodrf.") and "rls" not in module,
+                    module.startswith("turbodrf."),
                     f"Production turbodrf signal receiver: "
                     f"{module}.{getattr(receiver, '__name__', '')}",
                 )
@@ -896,8 +908,7 @@ class TestSignals(SecurityBase):
 
 
 # ============================================================================
-# 12. Static audits: no raw SQL, parameterised RLS, schema invariants,
-#     unregistered endpoints
+# 12. Static audits: no raw SQL, schema invariants, unregistered endpoints
 # ============================================================================
 
 
@@ -923,24 +934,9 @@ class TestStaticAudits(SecurityBase):
             for needle in needles:
                 self.assertNotIn(needle, src, f"{needle!r} in {mod.__name__}")
 
-    def test_rls_middleware_uses_parameterised_sql(self):
-        """RLS middleware uses %s placeholders, not f-strings."""
-        import inspect
-
-        from turbodrf.rls import middleware
-
-        src = inspect.getsource(middleware)
-        for needle in (
-            "set_config('app.user_id', %s, true)",
-            "set_config('app.tenant_id', %s, true)",
-            "set_config('app.user_roles', %s, true)",
-        ):
-            self.assertIn(needle, src)
-        self.assertNotIn("set_config('app.user_id', '{", src)
-
-    def test_no_runsql_in_migrations_outside_rls_and_tenant_fk_not_null(self):
-        """No raw RunSQL in production migrations (except RLS) AND tenant FK
-        must be NOT NULL with the right related model."""
+    def test_no_runsql_in_migrations_and_tenant_fk_not_null(self):
+        """No raw RunSQL in production migrations AND tenant FK must be
+        NOT NULL with the right related model."""
         import os
 
         mig_dir = os.path.normpath(
@@ -957,8 +953,7 @@ class TestStaticAudits(SecurityBase):
                     continue
                 with open(os.path.join(mig_dir, fname)) as f:
                     src = f.read()
-                if "RunSQL" in src:
-                    self.assertIn("rls", src.lower())
+                self.assertNotIn("RunSQL", src)
 
         field = Deal._meta.get_field("brokerage")
         self.assertFalse(field.null)

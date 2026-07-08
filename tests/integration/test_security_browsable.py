@@ -1494,15 +1494,16 @@ class SwaggerRoleParam(SecBase):
         _attempt_role(gen2, req2)
         self.assertNotEqual(gen2.current_role, "admin")
 
-    def test_anon_admin_accepted_but_no_role_user_is_none(self):
-        # Anonymous: by design, gets the doc role they asked for (schema
-        # body doesn't leak DB rows — covered elsewhere). Authenticated
-        # user with empty roles list + ?role=admin → falls through to None.
+    def test_anon_and_no_role_user_cannot_adopt_admin(self):
+        # Neither an anonymous caller nor an authenticated caller without the
+        # admin role may adopt ?role=admin. A role is honoured only when the
+        # caller actually holds it — otherwise current_role stays None and the
+        # schema filters to empty (no privileged-schema disclosure).
         gen = _gen()
         _attempt_role(
             gen, _direct_request("/swagger/?role=admin", user=AnonymousUser())
         )
-        self.assertEqual(gen.current_role, "admin")
+        self.assertIsNone(gen.current_role)
 
         gen2 = _gen()
         _attempt_role(

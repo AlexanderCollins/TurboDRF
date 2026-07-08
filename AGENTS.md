@@ -234,7 +234,6 @@ assert snap.can_perform_action('update')
 - `docs/permissions.md` — RBAC, sensitive fields, field-perm syntax
 - `docs/security.md` — threat model + known limitations
 - `docs/settings_reference.md` — every setting
-- `docs/rls.md` — optional Postgres RLS for defense-in-depth
 - `docs/migration_to_predicates.md` — upgrading existing TurboDRF apps
 
 ---

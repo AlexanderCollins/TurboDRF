@@ -341,12 +341,20 @@ class TestHiddenFieldExposure(SecurityTestBase):
         r_desc = self.client.get("/api/samplemodels/?ordering=-secret_field")
         self.assertEqual(r_asc.status_code, status.HTTP_200_OK)
         self.assertEqual(r_desc.status_code, status.HTTP_200_OK)
-        ids_asc = [d.get("id") for d in r_asc.data["data"]]
-        ids_desc = [d.get("id") for d in r_desc.data["data"]]
-        if len(ids_asc) > 1 and ids_asc == ids_desc[::-1]:
+        # Compare a READABLE field (title) rather than id: `id` may not be in
+        # the configured fields (it isn't for SampleModel), in which case the
+        # serializer path renders it as None and an id-based check would flag a
+        # false positive. title is always present and reveals a real reorder.
+        titles_asc = [d.get("title") for d in r_asc.data["data"]]
+        titles_desc = [d.get("title") for d in r_desc.data["data"]]
+        if (
+            len(titles_asc) > 1
+            and titles_asc == titles_desc[::-1]
+            and titles_asc != titles_desc
+        ):
             self.fail(
                 f"VULNERABILITY: ordering=secret_field leaks order info. "
-                f"asc={ids_asc} desc={ids_desc}."
+                f"asc={titles_asc} desc={titles_desc}."
             )
 
     def test_secret_field_not_in_response_for_viewer(self):
@@ -1190,13 +1198,14 @@ class TestPredicateAlgebraInvariants(TestCase):
         )
 
     def test_co_tenant_check_fires_only_when_tenant_field_present(self):
-        """serializers._apply_predicate_writes runs the co-tenant check only
-        when the host has a `tenant_field` setting."""
+        """The Layer-3 co-tenant check runs only when the host has a
+        `tenant_field` setting (gated on `tenant_user_field and tenant_field`).
+        Lives in the _check_fk_injection_writes helper since the refactor."""
         from inspect import getsource
 
-        from turbodrf.serializers import _apply_predicate_writes
+        from turbodrf.serializers import _check_fk_injection_writes
 
-        src = getsource(_apply_predicate_writes)
+        src = getsource(_check_fk_injection_writes)
         self.assertIn("tenant_user_field and tenant_field", src)
 
 

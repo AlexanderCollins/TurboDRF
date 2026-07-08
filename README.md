@@ -81,13 +81,12 @@ GET    /api/books/?fields=title,price       # Select fields
 
 ## Documentation
 
-- [Configuration](docs/configuration.md) -- all `turbodrf()` options, field selection, nested fields
+- [Configuration](docs/configuration.md) -- all `turbodrf()` options: field selection, nested & computed fields, custom endpoints (`actions`), read-only endpoints, method allow-lists, `full_clean` validation
 - [Permissions](docs/permissions.md) -- role-based, field-level, and Django default permissions
 - [Tenancy & row-level access](docs/tenancy.md) -- predicates, multi-tenancy, FK injection defense
-- [RLS (Postgres)](docs/rls.md) -- optional defense-in-depth at the database layer
 - [Performance](docs/performance.md) -- compiled read path, fast JSON rendering, benchmarking
 - [Filtering & Search](docs/filtering.md) -- filtering, search, ordering, OR queries
-- [Integrations](docs/integrations.md) -- allauth, Keycloak, drf-api-tracking (all experimental)
+- [Integrations](docs/integrations.md) -- allauth, Keycloak, drf-api-tracking, Sentry (all experimental)
 - [Security](docs/security.md) -- sensitive fields, secure defaults, error responses
 - [Management Commands](docs/commands.md) -- turbodrf_check, turbodrf_benchmark, turbodrf_explain
 - **[Settings Reference](docs/settings_reference.md)** -- every TURBODRF_* setting in one place
@@ -156,10 +155,6 @@ WHERE project.workspace_id = <ABC's workspace id>
 ```
 
 Manager sees all ABC projects, but still can't see XYZ — the tenant boundary is **mandatory** and applied separately from the predicate algebra (it's a setting, not a predicate). This rules out an entire class of compositional bugs where bypass roles could OR-compose their way past the tenant wall.
-
-### Optional: Postgres Row Level Security (defense in depth)
-
-For Postgres deployments, TurboDRF can additionally generate RLS policies that enforce the same rules **at the database layer** — every connection is filtered by Postgres itself, so even raw SQL or admin scripts are blocked. App-layer is the source of truth; RLS is a backup. See [docs/rls.md](docs/rls.md). RLS is **off by default** (three manual steps to enable: install middleware, run `turbodrf_emit_rls`, apply the SQL).
 
 ### Performance
 

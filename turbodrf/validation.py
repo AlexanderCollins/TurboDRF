@@ -151,7 +151,9 @@ def validate_searchable_fields_safety(model):
 
     from .predicates import get_predicates, get_tenant_field
 
-    searchable = getattr(model, "searchable_fields", None) or []
+    from .mixins import get_searchable_fields
+
+    searchable = get_searchable_fields(model)
     if not searchable:
         return
 
@@ -353,6 +355,52 @@ def build_traversal_scope_q(parent_model, field_path, request):
         q_combined &= Q(**{f"{prefix}__in": scoped_qs.values("pk")})
 
     return q_combined
+
+
+def scoped_target_queryset(target_model, request):
+    """Queryset of ``target_model`` rows visible to ``request``'s user via the
+    target's OWN tenant + predicates, or ``None`` when the target is unscoped
+    (public — no predicates, no ``tenant_field``) and needs no scoping.
+
+    Mirrors a single step of :func:`build_traversal_scope_q`; used to scope the
+    compiled M2M merge's second query (finding F4), where the leak is a separate
+    query rather than a JOIN on the parent queryset.
+    """
+    from django.db.models import Q
+
+    from .backends import get_user_roles
+    from .predicates import get_predicates, get_tenant_field, get_user_tenant
+
+    predicates = get_predicates(target_model)
+    tenant_field = get_tenant_field(target_model)
+    if not predicates and tenant_field is None:
+        return None
+
+    user = getattr(request, "user", None) if request is not None else None
+    qs = target_model.objects.all()
+
+    if tenant_field is not None:
+        if (
+            request is None
+            or user is None
+            or not getattr(user, "is_authenticated", False)
+        ):
+            return target_model.objects.none()
+        tenant = get_user_tenant(user)
+        if tenant is None:
+            return target_model.objects.none()
+        qs = qs.filter(**{tenant_field: tenant})
+
+    if predicates:
+        if request is None:
+            return target_model.objects.none()
+        roles = set(get_user_roles(user)) if user is not None else set()
+        target_q = Q()
+        for pred in predicates:
+            target_q &= pred.q(request, roles)
+        qs = qs.filter(target_q)
+
+    return qs
 
 
 def check_nested_field_permissions(model, field_path, user, use_cache=True):

@@ -51,24 +51,19 @@ Router
 Settings
 --------
 
-Available settings for TurboDRF:
+Every ``TURBODRF_*`` setting, with its default and purpose, lives in one
+place: :doc:`settings_reference <settings_reference>`. A few commonly used
+ones:
 
 .. code-block:: python
 
-   # Pagination settings
-   TURBODRF_PAGINATION_SIZE = 20
-   TURBODRF_MAX_PAGINATION_SIZE = 100
+   # Permissions
+   TURBODRF_ROLES = {}                       # role -> permission strings
+   TURBODRF_USE_DEFAULT_PERMISSIONS = False  # use Django model perms instead
 
-   # Permission settings
-   TURBODRF_DEFAULT_PERMISSION_CLASSES = ['turbodrf.permissions.TurboDRFPermission']
-   TURBODRF_USE_DEFAULT_PERMISSIONS = False
+   # Documentation
+   TURBODRF_ENABLE_DOCS = True               # Swagger/ReDoc at /swagger/, /redoc/
 
-   # Documentation settings
-   TURBODRF_ENABLE_SWAGGER = True
-   TURBODRF_SWAGGER_TITLE = "TurboDRF API"
-   TURBODRF_SWAGGER_VERSION = "v1"
-
-   # Search and filter settings
-   TURBODRF_DEFAULT_SEARCH_FIELDS = ['name', 'title', 'description']
-   TURBODRF_DEFAULT_ORDERING_FIELDS = '__all__'
-   TURBODRF_DEFAULT_FILTERSET_FIELDS = '__all__'
+Pagination is standard DRF pagination and is configured through
+``REST_FRAMEWORK`` (``DEFAULT_PAGINATION_CLASS`` / ``PAGE_SIZE``), not
+through TurboDRF-specific settings.

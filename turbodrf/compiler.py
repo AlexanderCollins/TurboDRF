@@ -260,8 +260,15 @@ class CompiledQueryPlan:
         compiled_qs = queryset.values(*active_simple, **active_fk)
         return compiled_qs, (active_simple, active_fk, active_m2m, active_props)
 
-    def post_process(self, rows, active_plan):
-        """Apply type coercion, property fields, and M2M merge to result rows."""
+    def post_process(self, rows, active_plan, m2m_target_filters=None):
+        """Apply type coercion, property fields, and M2M merge to result rows.
+
+        ``m2m_target_filters`` optionally maps an M2M output name to a queryset
+        of target PKs the caller may see (finding F4). When present, the M2M
+        merge's second query is scoped to those targets so a compiled M2M cannot
+        render rows from a predicate/tenant-protected target. ``None`` = no
+        scoping (public targets, or non-compiled callers).
+        """
         active_simple, active_fk, active_m2m, active_props = active_plan
 
         # 1. Type coercion (Decimal -> str, etc.)
@@ -284,10 +291,16 @@ class CompiledQueryPlan:
 
             for m2m_name, spec in active_m2m.items():
                 # Second query on through table
+                through_qs = spec["through_model"].objects.filter(
+                    **{f"{spec['source_fk']}__in": pk_values}
+                )
+                # F4: scope to target rows visible via the target's endpoint.
+                if m2m_target_filters and m2m_name in m2m_target_filters:
+                    through_qs = through_qs.filter(
+                        **{f"{spec['target_fk']}__in": m2m_target_filters[m2m_name]}
+                    )
                 m2m_rows = list(
-                    spec["through_model"]
-                    .objects.filter(**{f"{spec['source_fk']}__in": pk_values})
-                    .values(spec["source_fk"], **spec["annotations"])
+                    through_qs.values(spec["source_fk"], **spec["annotations"])
                 )
 
                 # Apply M2M type coercion

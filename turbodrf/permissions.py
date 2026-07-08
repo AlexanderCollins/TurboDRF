@@ -5,7 +5,17 @@ This module provides the permission classes that enforce role-based
 access control for the auto-generated APIs.
 """
 
+from django.conf import settings
 from rest_framework.permissions import BasePermission, DjangoModelPermissions
+
+
+def permissions_bypassed():
+    """True when TurboDRF's field/permission gating should be skipped —
+    permissions are globally disabled or default Django permissions are in use.
+    """
+    return getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False) or getattr(
+        settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False
+    )
 
 
 class TurboDRFPermission(BasePermission):

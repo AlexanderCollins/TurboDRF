@@ -5,6 +5,7 @@ This module provides high-performance permission checking by building
 policy snapshots once per request and caching them for reuse.
 """
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Optional, Set
 
@@ -335,34 +336,47 @@ def get_cache_key(user, model) -> str:
     app_label = model._meta.app_label
     model_name = model._meta.model_name
 
-    # Include role versions for cache invalidation
+    # The user's own assigned roles are part of the key so a runtime role
+    # change invalidates the cached snapshot — not only a change to the global
+    # role->permission map.
+    user_roles = get_user_roles(user)
+
     mode = get_permission_mode()
     if mode == "database":
         from .models import TurboDRFRole
 
-        # Get version numbers for all user's roles
-        user_roles = get_user_roles(user)
         if user_roles:
-            versions = TurboDRFRole.objects.filter(name__in=user_roles).values_list(
-                "version", flat=True
+            # (name, version) pairs — include role identity so two roles that
+            # happen to share a version number don't produce the same key.
+            sig = tuple(
+                sorted(
+                    TurboDRFRole.objects.filter(name__in=user_roles).values_list(
+                        "name", "version"
+                    )
+                )
             )
-            version_hash = hash(tuple(sorted(versions)))
         else:
-            version_hash = 0
+            sig = ()
     else:
-        # Static mode: hash TURBODRF_ROLES so the cache key changes when
-        # the role configuration changes — including when tests use
-        # override_settings(TURBODRF_ROLES=...). Without this, a snapshot
-        # built under restricted roles in one test pollutes the cache for
-        # later tests reusing the same user.pk.
+        # Static mode: fold in TURBODRF_ROLES so the key changes when the role
+        # configuration changes — including override_settings(TURBODRF_ROLES=...)
+        # in tests. Without this a snapshot built under restricted roles in one
+        # test pollutes the cache for later tests reusing the same user.pk.
         roles = getattr(settings, "TURBODRF_ROLES", {})
         try:
-            roles_signature = tuple(
+            sig = tuple(
                 sorted((role, tuple(sorted(perms))) for role, perms in roles.items())
             )
-            version_hash = hash(roles_signature)
         except (TypeError, AttributeError):
-            version_hash = 1
+            sig = ("__unhashable__",)
+
+    # hashlib (not builtin hash()) so the key is stable across processes.
+    # Builtin hash() is PYTHONHASHSEED-randomized per worker, which fragments a
+    # shared cache (each Gunicorn worker computing a different key for the same
+    # config, silently collapsing the hit rate).
+    version_hash = hashlib.sha256(
+        repr((tuple(sorted(user_roles)), sig)).encode("utf-8")
+    ).hexdigest()[:16]
 
     return f"{cache_prefix}:{user_id}:{app_label}:{model_name}:{version_hash}"
 

@@ -34,7 +34,7 @@ This automatically creates:
 For more information, see: https://github.com/alexandercollins/turbodrf
 """
 
-__version__ = "0.4.4"
+__version__ = "0.5.0"
 __author__ = "Alexander Collins"
 __email__ = ""
 __license__ = "MIT"
@@ -67,6 +67,10 @@ def __getattr__(name):
         from .views import TurboDRFViewSet
 
         return TurboDRFViewSet
+    elif name == "turbodrf_action":
+        from .decorators import turbodrf_action
+
+        return turbodrf_action
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
@@ -77,4 +81,5 @@ __all__ = [
     "TurboDRFPermission",
     "TurboDRFSerializer",
     "TurboDRFSerializerFactory",
+    "turbodrf_action",
 ]

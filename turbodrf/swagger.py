@@ -67,78 +67,74 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
                  operations, and fields accessible to the current role.
 
         Role Selection:
-            1. Query parameter: ?role=admin
-            2. Session storage: request.session['api_role']
-            3. No role: Shows unfiltered schema (for backwards compatibility)
+            1. ?role=<role> or session['api_role'] — honoured ONLY if the
+               caller actually holds that role (never trusted for privilege).
+            2. Otherwise current_role stays None → the schema filters to empty.
 
         Example:
             GET /api/schema/?role=editor
             Returns schema showing only endpoints and fields accessible
-            to users with the 'editor' role.
+            to users with the 'editor' role — and only if the caller holds it.
         """
-        # Role selection with validation:
-        # - Authenticated user passing ?role=X: validate X is one of their
-        #   actual roles. If not, fall back to user's roles (no escalation).
-        # - Anonymous browsing: accept ?role=X for documentation purposes
-        #   (anon can't actually call protected endpoints — schema is doc).
-        # An authenticated viewer cannot use ?role=admin to see the admin
-        # schema unless that role is actually one of theirs — otherwise
-        # any authenticated user could enumerate higher-privilege schema.
+        # Strict role selection. A client-supplied ?role (or session api_role)
+        # is NEVER trusted for privilege: a role is adopted only when the CALLER
+        # actually holds it. This stops an anonymous or low-privilege caller from
+        # passing ?role=admin to read the privileged schema. We also do NOT
+        # auto-adopt the caller's own role when none is requested — without an
+        # explicit, held role current_role stays None and the schema below
+        # filters down to empty, never the full unfiltered one (the original
+        # anon-sees-everything leak).
         if request:
             requested = request.GET.get("role", request.session.get("api_role"))
             user = getattr(request, "user", None)
-            is_authenticated = bool(user and user.is_authenticated)
 
-            if requested and is_authenticated:
-                from .backends import get_user_roles
+            from .backends import get_user_roles
 
-                user_roles = set(get_user_roles(user) or [])
-                if requested in user_roles:
-                    self.current_role = requested
-                else:
-                    # Reject the escalation attempt — fall back to one of
-                    # the user's actual roles (or None)
-                    self.current_role = next(iter(user_roles)) if user_roles else None
-            else:
-                # Anonymous browsing or no role requested
+            user_roles = set(get_user_roles(user) or [])
+            if requested and requested in user_roles:
                 self.current_role = requested
+            else:
+                self.current_role = None
 
         schema = super().get_schema(request, public)
 
-        if self.current_role:
-            # Filter paths based on role permissions
-            filtered_paths = {}
-            from django.conf import settings as _django_settings
+        # Always filter the schema to the caller's role. When the caller holds
+        # no role (anonymous with no guest role → current_role is None),
+        # permissions is empty, so the result is an EMPTY schema — never the
+        # full, unfiltered one.
+        from django.conf import settings as _django_settings
 
-            from .settings import TURBODRF_ROLES as _default_roles
+        from .settings import TURBODRF_ROLES as _default_roles
 
-            roles = getattr(_django_settings, "TURBODRF_ROLES", _default_roles)
-            permissions = set(roles.get(self.current_role, []))
+        roles = getattr(_django_settings, "TURBODRF_ROLES", _default_roles)
+        permissions = (
+            set(roles.get(self.current_role, [])) if self.current_role else set()
+        )
 
-            for path, methods in schema["paths"].items():
-                filtered_methods = {}
+        filtered_paths = {}
+        for path, methods in schema["paths"].items():
+            filtered_methods = {}
 
-                for method, operation in methods.items():
-                    # Extract model info from path
-                    model_info = self._extract_model_info(path)
-                    if model_info and self._has_permission(
-                        model_info, method, permissions
-                    ):
-                        # Filter response schema fields
-                        if "responses" in operation:
-                            for status_code, response in operation["responses"].items():
-                                if "schema" in response:
-                                    response["schema"] = self._filter_schema_fields(
-                                        response["schema"], model_info, permissions
-                                    )
+            for method, operation in methods.items():
+                # Extract model info from path
+                model_info = self._extract_model_info(path)
+                if model_info and self._has_permission(
+                    model_info, method, permissions
+                ):
+                    # Filter response schema fields
+                    if "responses" in operation:
+                        for status_code, response in operation["responses"].items():
+                            if "schema" in response:
+                                response["schema"] = self._filter_schema_fields(
+                                    response["schema"], model_info, permissions
+                                )
 
-                        filtered_methods[method] = operation
+                    filtered_methods[method] = operation
 
-                if filtered_methods:
-                    filtered_paths[path] = filtered_methods
+            if filtered_methods:
+                filtered_paths[path] = filtered_methods
 
-            schema["paths"] = filtered_paths
-
+        schema["paths"] = filtered_paths
         return schema
 
     def _extract_model_info(self, path):

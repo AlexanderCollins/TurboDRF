@@ -1,38 +1,68 @@
 Quick Start Guide
 =================
 
+.. note::
+
+   This mirrors the quickstart in the project ``README.md`` and
+   ``INSTALL.md``. Those Markdown docs are the source of truth if this page
+   ever drifts.
+
 Basic Usage
 -----------
 
-1. Create a model with ``TurboDRFMixin``:
+1. Add ``turbodrf`` to ``INSTALLED_APPS``:
+
+.. code-block:: python
+
+   INSTALLED_APPS = [
+       'rest_framework',
+       'turbodrf',
+   ]
+
+2. Add ``TurboDRFMixin`` to a model and define a ``turbodrf()`` classmethod:
 
 .. code-block:: python
 
    from django.db import models
-   from turbodrf import TurboDRFMixin
+   from turbodrf.mixins import TurboDRFMixin
 
-   class Book(TurboDRFMixin, models.Model):
+   class Book(models.Model, TurboDRFMixin):
        title = models.CharField(max_length=200)
-       author = models.CharField(max_length=100)
-       isbn = models.CharField(max_length=13)
-       published_date = models.DateField()
+       author = models.ForeignKey(Author, on_delete=models.CASCADE)
        price = models.DecimalField(max_digits=10, decimal_places=2)
 
-       class Meta:
-           turbodrf_config = {
-               'search_fields': ['title', 'author'],
-               'ordering_fields': ['title', 'published_date', 'price'],
-               'filterset_fields': ['author', 'published_date'],
+       searchable_fields = ['title']
+
+       @classmethod
+       def turbodrf(cls):
+           return {
+               'fields': {
+                   'list': ['title', 'author__name', 'price'],
+                   'detail': ['title', 'author__name', 'author__email', 'price'],
+               }
            }
 
-2. The following endpoints are automatically available:
+3. Register the router:
 
-   * ``GET /api/books/`` - List all books
-   * ``POST /api/books/`` - Create a new book
-   * ``GET /api/books/{id}/`` - Retrieve a book
-   * ``PUT /api/books/{id}/`` - Update a book
-   * ``PATCH /api/books/{id}/`` - Partially update a book
-   * ``DELETE /api/books/{id}/`` - Delete a book
+.. code-block:: python
+
+   from django.urls import path, include
+   from turbodrf.router import TurboDRFRouter
+
+   router = TurboDRFRouter()
+
+   urlpatterns = [
+       path('api/', include(router.urls)),
+   ]
+
+The following endpoints are automatically available:
+
+* ``GET /api/books/`` - List all books
+* ``POST /api/books/`` - Create a new book
+* ``GET /api/books/{id}/`` - Retrieve a book
+* ``PUT /api/books/{id}/`` - Update a book
+* ``PATCH /api/books/{id}/`` - Partially update a book
+* ``DELETE /api/books/{id}/`` - Delete a book
 
 API Features
 ------------
@@ -40,7 +70,7 @@ API Features
 Search
 ~~~~~~
 
-Search across multiple fields:
+Search across a model's ``searchable_fields``:
 
 .. code-block:: bash
 
@@ -49,11 +79,12 @@ Search across multiple fields:
 Filtering
 ~~~~~~~~~
 
-Filter results by field values:
+Filter results by field values (Django lookups supported):
 
 .. code-block:: bash
 
-   GET /api/books/?author=John%20Doe
+   GET /api/books/?author__name=John%20Doe
+   GET /api/books/?price__lt=20
 
 Ordering
 ~~~~~~~~
@@ -73,42 +104,15 @@ Results are automatically paginated:
 
    GET /api/books/?page=2&page_size=10
 
-Field Expansion
+Field Selection
 ~~~~~~~~~~~~~~~
 
-Expand related fields:
-
-.. code-block:: python
-
-   class Author(TurboDRFMixin, models.Model):
-       name = models.CharField(max_length=100)
-       bio = models.TextField()
-
-   class Book(TurboDRFMixin, models.Model):
-       title = models.CharField(max_length=200)
-       author = models.ForeignKey(Author, on_delete=models.CASCADE)
-
-Request with expanded author:
+Request a subset of the configured fields with ``?fields=``:
 
 .. code-block:: bash
 
-   GET /api/books/?expand=author
+   GET /api/books/?fields=title,price
 
-Response:
-
-.. code-block:: json
-
-   {
-       "count": 1,
-       "results": [
-           {
-               "id": 1,
-               "title": "Django for Beginners",
-               "author": {
-                   "id": 1,
-                   "name": "John Doe",
-                   "bio": "A Django enthusiast..."
-               }
-           }
-       ]
-   }
+Nested relationships are declared with ``__`` paths in the ``turbodrf()``
+config (e.g. ``author__name``), not with a request-time ``expand`` parameter.
+See :doc:`configuration <configuration>` for the full ``turbodrf()`` contract.
