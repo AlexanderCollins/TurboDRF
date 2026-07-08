@@ -12,11 +12,15 @@ coverage with Hypothesis-generated request shapes — the property under test is
 
 from decimal import Decimal
 
-from django.contrib.auth import get_user_model
-from hypothesis import HealthCheck, given, settings
-from hypothesis import strategies as st
-from hypothesis.extra.django import TestCase as HypothesisTestCase
-from rest_framework.test import APIClient
+import pytest
+
+pytest.importorskip("hypothesis", reason="hypothesis not installed (dev/test extra)")
+
+from django.contrib.auth import get_user_model  # noqa: E402
+from hypothesis import HealthCheck, given, settings  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
+from hypothesis.extra.django import TestCase as HypothesisTestCase  # noqa: E402
+from rest_framework.test import APIClient  # noqa: E402
 
 from tests.test_app.apps import _test_user_brokerages, set_test_brokerage
 from tests.test_app.models import (
