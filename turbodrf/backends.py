@@ -316,23 +316,43 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
     return snapshot
 
 
-def get_cache_key(user, model) -> str:
+def get_cache_key(user, model) -> Optional[str]:
     """
-    Generate cache key for permission snapshot.
+    Generate cache key for a user's permission snapshot.
 
     Args:
         user: Django user object
         model: Django model class
 
     Returns:
-        str: Cache key
+        str: the cache key, or ``None`` when the snapshot must not be cached
+        (an authenticated user with no persistent primary key). Callers treat
+        ``None`` as "build fresh, do not read or write the cache".
     """
     cache_prefix = getattr(
         settings, "TURBODRF_PERMISSION_CACHE_PREFIX", "turbodrf_perm"
     )
-    user_id = (
-        getattr(user, "id", "mock") if user and user.is_authenticated else "anonymous"
-    )
+
+    if user and user.is_authenticated:
+        # Key on `.pk`, NEVER `.id`. A custom user model with a non-'id'
+        # primary key (e.g. a UUID pk) has no `.id` attribute, so the old
+        # `getattr(user, "id", "mock")` silently collapsed EVERY such user to
+        # one shared sentinel — one identity's action/field snapshot then
+        # served to all others until the TTL expired (privilege escalation,
+        # OWASP A01). `.pk` resolves the real primary key on every Django
+        # model regardless of the field's name.
+        user_id = getattr(user, "pk", None)
+        if user_id is None:
+            # Authenticated but no persistent identity (unsaved / mock user).
+            # Refuse to cache rather than fall back to a shared sentinel —
+            # sharing one snapshot across distinct identities is exactly the
+            # bug being fixed here.
+            return None
+    else:
+        # All anonymous callers legitimately share one identity: they resolve
+        # to the same guest/none role, and row-level visibility (predicates)
+        # is never cached in the snapshot.
+        user_id = "anonymous"
     app_label = model._meta.app_label
     model_name = model._meta.model_name
 
@@ -393,6 +413,8 @@ def get_cached_snapshot(user, model) -> Optional[PermissionSnapshot]:
         PermissionSnapshot or None if not cached
     """
     cache_key = get_cache_key(user, model)
+    if cache_key is None:
+        return None
     return cache.get(cache_key)
 
 
@@ -406,6 +428,10 @@ def set_cached_snapshot(user, model, snapshot: PermissionSnapshot):
         snapshot: PermissionSnapshot to cache
     """
     cache_key = get_cache_key(user, model)
+    if cache_key is None:
+        # Uncacheable identity (authenticated, no pk) — never persist a
+        # snapshot under a shared key.
+        return
     cache_timeout = getattr(
         settings, "TURBODRF_PERMISSION_CACHE_TIMEOUT", 300
     )  # 5 minutes default

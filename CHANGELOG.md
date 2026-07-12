@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.1 — Permission-snapshot cache isolation fix
+
+### Security
+
+- **Fixed a permission-snapshot cache collision on user models with a
+  non-`id` primary key (HIGH, broken access control / OWASP A01).** The
+  cache key derived the user segment from `getattr(user, "id", "mock")`.
+  A custom user model whose primary key is not named `id` (e.g. a UUID pk)
+  has no `.id` attribute, so *every* such user collapsed to the single
+  literal `"mock"` — one identity's cached action/field-permission snapshot
+  was then served to all other users until the cache TTL expired
+  (`TURBODRF_PERMISSION_CACHE_TIMEOUT`, default 300s). Row-level visibility
+  predicates are not cached, so cross-row *reads* were unaffected; the
+  exposure was action/field-level write escalation.
+
+  The key now derives from `user.pk`, which resolves the real primary key
+  on every Django user model regardless of field name. An authenticated
+  user with no persistent pk (unsaved / mock) is treated as **uncacheable**
+  (the snapshot is rebuilt per request) rather than falling back to a
+  shared sentinel — a permissions snapshot is never shared across distinct
+  identities. Anonymous callers continue to share one key by design (same
+  guest/none role; predicates uncached).
+
+  Reported against the 0.4.x line; on 0.5.0 the specific escalation was
+  already mitigated because the user's own resolved roles were folded into
+  the key hash (0.5.0), but the broken user segment was still a latent
+  isolation defect and is now fixed outright.
+
 ## 0.5.0 — Security hardening, custom actions, conformance suite
 
 ### Security

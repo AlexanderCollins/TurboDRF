@@ -2866,17 +2866,14 @@ class IntegrationTests(AdversaryBase):
         u.__dict__["roles"] = ["admin"]
         self.assertNotIn("admin", get_user_roles(u))
 
-        # pk=0 / pk=None handling
+        # pk=0 / pk=None handling — keyed on .pk, and pk=None is uncacheable.
         m = MagicMock()
-        m.id = 0
+        m.pk = 0
         m.is_authenticated = True
         m._meta = MagicMock()
         self.assertIn("0", get_cache_key(m, Deal))
-        m.id = None
-        try:
-            get_cache_key(m, Deal)
-        except Exception:
-            pass
+        m.pk = None
+        self.assertIsNone(get_cache_key(m, Deal))
 
     def test_user_brokerage_none_blocks_reads(self):
         """User with no brokerage -> 200 with empty list, no leak."""
