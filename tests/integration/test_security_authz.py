@@ -1747,15 +1747,16 @@ class TestOptionsAndMisc(AuthzSecurityBase):
         self._assert_no_victim_leak(r)
 
     def test_fake_user_cache_key_robust(self):
-        """Adversarial users (no pk; flipping pk) — cache_key returns a string,
-        no crash, format includes ':'."""
+        """Adversarial users — no crash. An authenticated user with no pk is
+        uncacheable (None); a user with a pk yields a ':'-delimited string."""
         from unittest.mock import MagicMock
 
         from turbodrf.backends import get_cache_key
 
+        # Authenticated but pk-less: must be uncacheable, NOT a shared sentinel.
         fake = MagicMock(is_authenticated=True, id=None, pk=None)
         fake.roles = ["underwriter"]
-        self.assertIn(":", get_cache_key(fake, Deal))
+        self.assertIsNone(get_cache_key(fake, Deal))
 
         class FlipUser:
             is_authenticated = True
@@ -1776,6 +1777,47 @@ class TestOptionsAndMisc(AuthzSecurityBase):
         fu = FlipUser()
         self.assertIsInstance(get_cache_key(fu, Deal), str)
         self.assertIsInstance(get_cache_key(fu, Deal), str)
+
+    def test_cache_key_uuid_pk_no_collision_and_pkless_uncacheable(self):
+        """Regression (0.5.1): permission-snapshot cache collision.
+
+        A custom user model with a non-'id' primary key (e.g. UUID) has no
+        `.id`, so the old `getattr(user, "id", "mock")` collapsed EVERY such
+        user to one shared cache key — the first caller's action/field snapshot
+        was then served to all others until the TTL (privilege escalation).
+        The key must derive from `.pk`, distinct identities must get distinct
+        keys, and an authenticated user with no pk must be uncacheable.
+        """
+        import uuid as _uuid
+
+        from turbodrf.backends import get_cache_key
+
+        class _UUIDUser:
+            is_authenticated = True
+
+            def __init__(self, pk, roles):
+                self.pk = pk
+                self.roles = roles
+
+        # The exact shape that broke: a pk, and NO `.id` attribute at all.
+        self.assertFalse(hasattr(_UUIDUser(_uuid.uuid4(), []), "id"))
+
+        u1 = _UUIDUser(_uuid.uuid4(), ["underwriter"])
+        u2 = _UUIDUser(_uuid.uuid4(), ["admin"])
+        k1, k2 = get_cache_key(u1, Deal), get_cache_key(u2, Deal)
+        self.assertIsNotNone(k1)
+        self.assertNotEqual(k1, k2, "uuid-pk users collided on one cache key")
+        self.assertNotIn("mock", k1)
+        self.assertIn(str(u1.pk), k1, "cache key must be derived from .pk")
+        self.assertEqual(k1, get_cache_key(u1, Deal), "same identity → stable key")
+
+        # Same roles but different pk → still distinct (identity isolation, not
+        # just role isolation).
+        u3 = _UUIDUser(_uuid.uuid4(), ["underwriter"])
+        self.assertNotEqual(get_cache_key(u1, Deal), get_cache_key(u3, Deal))
+
+        # Authenticated with no pk → uncacheable (None), never a shared key.
+        self.assertIsNone(get_cache_key(_UUIDUser(None, ["underwriter"]), Deal))
 
     def test_get_user_roles_property_raising_propagates_or_returns_list(self):
         from turbodrf.backends import get_user_roles
