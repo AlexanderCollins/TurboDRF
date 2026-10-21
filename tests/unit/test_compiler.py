@@ -263,9 +263,10 @@ class ComplexPropertyTests(TestCase):
         self.assertIn("price_label", rows[0])
         self.assertEqual(rows[0]["price_label"], "$29.99 (active)")
 
-    def test_property_accessing_related_object_fails(self):
-        """Property that accesses related.name will fail because
-        DictProxy only has flat dict values, not related objects."""
+    def test_property_accessing_related_object_uses_instance(self):
+        """A property that reads a related object can't be computed from the
+        .values() row (it holds the FK id, not the object), so it is computed
+        on the instance — one extra query for the affected rows."""
         plan = compile_model(CompiledSampleModel)
         plan.property_fields["related_author_name"] = (
             CompiledSampleModel.related_author_name.fget
@@ -275,10 +276,40 @@ class ComplexPropertyTests(TestCase):
         compiled_qs, active_plan = plan.apply_to_queryset(qs)
         rows = list(compiled_qs)
 
-        # The proxy has 'related' as an integer (FK ID), not an object.
-        # Calling .name on an int will raise AttributeError.
+        with self.assertNumQueries(1):
+            rows = plan.post_process(rows, active_plan)
+        self.assertEqual(rows[0]["related_author_name"], "Author")
+        # Row-computable properties don't need the instance.
+        self.assertEqual(rows[0]["display_title"], "TEST BOOK")
+
+    def test_property_failing_on_instance_is_omitted(self):
+        """Matches the serializer path: a property that raises on the real
+        instance too is left out of the row and logged, not a 500."""
+
+        def broken(self):
+            raise ValueError("boom")
+
+        plan = compile_model(CompiledSampleModel)
+        plan.property_fields["broken"] = broken
+
+        qs = CompiledSampleModel.objects.all()
+        compiled_qs, active_plan = plan.apply_to_queryset(qs)
+        with self.assertLogs("turbodrf.compiler", level="WARNING"):
+            rows = plan.post_process(list(compiled_qs), active_plan)
+        self.assertNotIn("broken", rows[0])
+        self.assertEqual(rows[0]["display_title"], "TEST BOOK")
+
+    def test_dictproxy_refuses_fk_object_and_serves_attname(self):
+        """On an instance, `related` is the object and `related_id` the id; the
+        plan's proxy serves `related_id` / `pk` from the row and refuses
+        `related` rather than handing back the raw id."""
+        plan = compile_model(CompiledSampleModel)
+        row = list(plan.apply_to_queryset(CompiledSampleModel.objects.all())[0])[0]
+        proxy = DictProxy(row, plan._proxy_aliases, plan._fk_names)
+        self.assertEqual(proxy.related_id, self.related.pk)
+        self.assertEqual(proxy.pk, self.sample.pk)
         with self.assertRaises(AttributeError):
-            plan.post_process(rows, active_plan)
+            proxy.related
 
     def test_dictproxy_has_fk_annotation_values(self):
         """DictProxy should have FK annotation values available."""

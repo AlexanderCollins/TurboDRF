@@ -50,7 +50,8 @@ class Command(BaseCommand):
     def _check_model(self, model):
         config = model.turbodrf()
         fields_config = config.get("fields", "__all__")
-        compiled = config.get("compiled", False)
+        # Same default as the router: compiled unless opted out.
+        compiled = config.get("compiled", True)
         public_access = config.get("public_access", False)
 
         # Resolve list fields

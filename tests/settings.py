@@ -217,6 +217,24 @@ TURBODRF_ROLES = {
         "test_app.transaction.update",
         "test_app.transaction.delete",
     ],
+    # Roles for the HoldingEvent / Holding / Portfolio regression tests
+    # (nullable FKs + nested fields + properties on the compiled path).
+    "analyst": [
+        "test_app.holdingevent.read",
+        "test_app.holdingevent.create",
+        "test_app.holdingevent.update",
+        # Field rule: only analysts can read HoldingEvent.holding (auditors
+        # can't), so the compiled ?fields= tests can check a restricted column.
+        "test_app.holdingevent.holding.read",
+        "test_app.holdingevent.holding.write",
+        "test_app.holding.read",
+        "test_app.portfolio.read",
+    ],
+    "auditor": [
+        "test_app.holdingevent.read",
+        "test_app.holding.read",
+        "test_app.portfolio.read",
+    ],
 }
 
 # Predicate / row-level access control settings

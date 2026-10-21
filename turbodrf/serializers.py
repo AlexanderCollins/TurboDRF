@@ -15,6 +15,15 @@ def _model_has_concrete_field(model, name):
         return False
 
 
+def _related_pk(value):
+    """A model instance becomes its pk; any other value is returned as-is."""
+    from django.db import models
+
+    if isinstance(value, models.Model):
+        return value.pk
+    return value
+
+
 def _report_write_security_event(event, message, **kwargs):
     """Best-effort Sentry breadcrumb (no-op when Sentry is not enabled)."""
     try:
@@ -325,6 +334,10 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                                 if value is None:
                                     break
                                 value = getattr(value, part, None)
+                            # A path ending on an FK / one-to-one renders the
+                            # related pk (as the compiled path's F() does),
+                            # not the model instance.
+                            value = _related_pk(value)
 
                             # Add the nested field value with underscores
                             field_name = full_field_path.replace("__", "_")
@@ -343,8 +356,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
 
         # Inject model @property / method fields (read-only), computed on the
         # real instance. NOTE: gated only by model-level read and run UNSCOPED
-        # (see the mixin docs); the compiled read path drops properties for
-        # role-scoped users, so list (compiled) and detail (DRF) can differ.
+        # (see the mixin docs). The compiled list path applies the same gate.
         for prop_name in getattr(self.Meta, "_property_fields", []):
             try:
                 value = getattr(instance, prop_name, None)
@@ -434,7 +446,9 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                 obj_data = {}
                 for field_name in fields_to_extract:
                     try:
-                        obj_data[field_name] = getattr(related_obj, field_name, None)
+                        obj_data[field_name] = _related_pk(
+                            getattr(related_obj, field_name, None)
+                        )
                     except Exception:
                         obj_data[field_name] = None
                 result.append(obj_data)
@@ -459,10 +473,14 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         if not (isinstance(config, dict) and config.get("full_clean")):
             return attrs
 
+        import copy
+
         from django.core.exceptions import ValidationError as DjangoValidationError
 
         m2m_names = {f.name for f in model._meta.many_to_many}
-        instance = self.instance or model()
+        # Validate a COPY so a failed validation can't leave self.instance
+        # half-updated.
+        instance = copy.copy(self.instance) if self.instance is not None else model()
         for key, value in attrs.items():
             if key not in m2m_names:
                 setattr(instance, key, value)
@@ -484,6 +502,12 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                 else {"non_field_errors": list(exc.messages)}
             )
             raise serializers.ValidationError(detail)
+
+        # Keep what clean() normalised for the provided keys — the save uses
+        # attrs, not the validated instance.
+        for key in list(attrs):
+            if key not in m2m_names:
+                attrs[key] = getattr(instance, key)
         return attrs
 
     def update(self, instance, validated_data):

@@ -107,8 +107,9 @@ class TurboDRFMixin:
                   permissions and validated at startup. May also be declared as
                   a ``searchable_fields`` class attribute (legacy location).
                 - 'read_only' (bool): When True, only list/retrieve are served;
-                  writes (POST/PUT/PATCH/DELETE) return 405. Good for audit logs
-                  and reference data.
+                  CRUD writes (POST/PUT/PATCH/DELETE) return 405. Declared
+                  'actions' keep their own methods. Good for audit logs and
+                  reference data.
                 - 'http_methods' (list[str]): Explicit allow-list of HTTP
                   methods for the endpoint (e.g. ['get', 'post']); disallowed
                   methods return 405. ('read_only' is the common shorthand.)

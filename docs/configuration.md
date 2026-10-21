@@ -17,7 +17,7 @@ def turbodrf(cls):
         'searchable_fields': [        # Fields enabled for ?search= (default: none)
             'title', 'author__name',
         ],
-        'read_only': False,           # Serve list/retrieve only; writes return 405 (default: False)
+        'read_only': False,           # Serve list/retrieve (+ declared actions) only; CRUD writes return 405 (default: False)
         'http_methods': ['get', 'post'],  # Explicit HTTP method allow-list (default: all)
         'full_clean': False,          # Run model.clean()/constraints on write (default: False)
         'actions': [],                # Custom endpoints (see below)
@@ -103,7 +103,9 @@ class Book(models.Model, TurboDRFMixin):
 
 `display_title` appears in every response alongside the real fields.
 
-On the **compiled path** a property can only reference columns fetched into the row (e.g. `self.title`), not traverse relationships. For related data, use `__` field notation (`author__name`) instead of a property that does `self.author.name`.
+Both paths render the same property keys: a property is readable by any role that can read the model (it can't carry its own field-level rule), and sensitive-named properties are dropped.
+
+On the **compiled path** a property is first computed from the fetched row, with no extra query. A property that needs anything else (a related object such as `self.author.name`, a reverse relation, a column not in `fields`) is computed on model instances instead, loaded in one extra query for the affected rows. For related data, `__` field notation (`author__name`) is still cheaper than a property that does `self.author.name`.
 
 ## Searchable fields
 
@@ -127,7 +129,7 @@ Entries may be plain field names or `__`-paths. Search is gated by field-level r
 
 ## Read-only endpoints
 
-Set `read_only: True` to serve only `list` / `retrieve`. Writes (POST/PUT/PATCH/DELETE) return `405 Method Not Allowed`. Good for audit logs and reference data:
+Set `read_only: True` to serve only `list` / `retrieve`. CRUD writes (POST/PUT/PATCH/DELETE) return `405 Method Not Allowed`. Custom [`actions`](#custom-endpoints-actions) keep their own methods, so a read-only resource can still expose e.g. a `POST .../reprocess/` action. Good for audit logs and reference data:
 
 ```python
 class AuditLog(models.Model, TurboDRFMixin):
@@ -185,6 +187,8 @@ A `POST` with `end` before `start` returns:
 
 `full_clean` is opt-in and off by default. On partial updates (`PATCH`), only the fields actually provided are validated. Uniqueness is not re-checked here (DRF already handles it), so it won't double-report unique errors.
 
+Values that `clean()` normalises (e.g. lower-casing an email) are saved for the fields the request provided. Fields that `clean()` sets but the request didn't send are not saved -- derive those in `save()`.
+
 ## Custom endpoints (`actions`)
 
 Add custom verbs to a model's generated viewset with `actions` -- a list of handler functions each decorated with `@turbodrf_action(...)`. Because the router attaches them to the same viewset as the CRUD routes, they inherit `get_object()` / `get_queryset()`, so they get the **same tenant + predicate scoping** as everything else. You don't re-implement access control by hand.
@@ -234,3 +238,16 @@ def pending(self, request):
 ```
 
 > **Note:** the scoping is inherited only because the handler goes through `self.get_object()` / `self.get_queryset()`. If you query the model directly (`self.model.objects.get(...)`), you bypass tenant and predicate filtering and must apply it yourself.
+
+By default an action uses TurboDRF's role check, mapped from the HTTP method (`GET` → `read`, `POST` → `create`, ...). Pass `permission_classes` to replace it for that action, as with DRF's `@action`:
+
+```python
+from rest_framework.permissions import IsAuthenticated
+
+@turbodrf_action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
+def reprocess(self, request, pk=None):
+    obj = self.get_object()          # still tenant + predicate scoped
+    ...
+```
+
+The declared classes are the action's whole permission check: they apply even with `TURBODRF_DISABLE_PERMISSIONS`, and the role check doesn't run. Row scoping is unaffected -- `get_object()` / `get_queryset()` still apply the tenant boundary and predicates.

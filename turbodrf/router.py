@@ -23,6 +23,10 @@ def _walk_predicates(predicates):
             yield from _walk_predicates(p.predicates)
 
 
+# CRUD actions that write. A `read_only: True` resource leaves them unrouted.
+_CRUD_WRITE_ACTIONS = frozenset({"create", "update", "partial_update", "destroy"})
+
+
 # Process-level flag: once the bypass-role validation passes for the real
 # settings on first init, subsequent router inits (typically under
 # override_settings during tests) skip the re-check. Production startup
@@ -224,15 +228,19 @@ class TurboDRFRouter(DefaultRouter):
 
                     # Restrict HTTP methods: `read_only: True` (list/retrieve
                     # only) or an explicit `http_methods` allow-list. Disallowed
-                    # verbs return 405.
+                    # verbs return 405. A read-only resource still serves its
+                    # declared actions on their own verbs (e.g. a POST action);
+                    # its CRUD write routes stay unrouted (see get_method_map).
                     read_only = config.get("read_only", False)
                     http_methods = config.get("http_methods")
                     if read_only:
-                        viewset_attrs["http_method_names"] = [
-                            "get",
-                            "head",
-                            "options",
-                        ]
+                        methods = ["get", "head", "options"]
+                        for action_func in config.get("actions") or []:
+                            for method in getattr(action_func, "mapping", None) or {}:
+                                if method not in methods:
+                                    methods.append(method)
+                        viewset_attrs["http_method_names"] = methods
+                        viewset_attrs["_read_only"] = True
                     elif http_methods:
                         methods = [m.lower() for m in http_methods]
                         for always in ("head", "options"):
@@ -337,6 +345,19 @@ class TurboDRFRouter(DefaultRouter):
         from .predicates import validate_permission_strings
 
         validate_permission_strings()
+
+    def get_method_map(self, viewset, method_map):
+        """Bind HTTP methods to viewset actions, leaving the CRUD write
+        actions unbound on a `read_only: True` resource (405), while its
+        declared custom actions keep their verbs."""
+        bound = super().get_method_map(viewset, method_map)
+        if getattr(viewset, "_read_only", False):
+            bound = {
+                method: action
+                for method, action in bound.items()
+                if action not in _CRUD_WRITE_ACTIONS
+            }
+        return bound
 
     def get_urls(self):
         """
