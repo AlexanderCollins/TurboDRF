@@ -17,6 +17,9 @@ from .tracking import get_viewset_base_classes
 
 _UNSET = object()
 
+# CRUD actions that write. Refused on a `read_only: True` resource.
+_CRUD_WRITE_ACTIONS = frozenset({"create", "update", "partial_update", "destroy"})
+
 
 class Authorization:
     """The single authorization decision for one request — the chokepoint every
@@ -253,11 +256,22 @@ class TurboDRFViewSet(*_viewset_bases):
     model = None  # Will be set by the router
     _predicates = []  # Populated by router: within-tenant predicates only
     _tenant_field = None  # Populated by router: mandatory tenant boundary
+    _read_only = False  # Set by router for `read_only: True` resources
 
     # NOTE on @action routes: custom @action methods that call
     # self.get_object() or self.get_queryset() inherit scoping automatically.
     # If you bypass those (e.g. self.model.objects.get(...) directly), scoping
     # is bypassed too — you must apply it manually.
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        # The router leaves CRUD write routes unbound on a `read_only: True`
+        # resource; refuse them here too in case the viewset is routed some
+        # other way.
+        if self._read_only and self.action in _CRUD_WRITE_ACTIONS:
+            from rest_framework.exceptions import MethodNotAllowed
+
+            raise MethodNotAllowed(request.method)
 
     def get_permissions(self):
         """Resolve permission instances per request from current settings.
@@ -265,7 +279,17 @@ class TurboDRFViewSet(*_viewset_bases):
         Evaluated at request time (not frozen on the class at import) so
         ``TURBODRF_DISABLE_PERMISSIONS`` / ``TURBODRF_USE_DEFAULT_PERMISSIONS``
         and ``override_settings`` take effect without a process restart.
+
+        A custom action declared with ``permission_classes`` (via
+        ``@turbodrf_action(..., permission_classes=[...])``) uses exactly
+        those, replacing the role check — as DRF's ``@action`` does. Row
+        scoping still applies through ``get_object()`` / ``get_queryset()``.
         """
+        # DRF passes an action's extra @action kwargs to as_view() as
+        # initkwargs, which set them on the instance.
+        declared = self.__dict__.get("permission_classes")
+        if declared is not None:
+            return [permission() for permission in declared]
         if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
             return []
         if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
@@ -399,8 +423,10 @@ class TurboDRFViewSet(*_viewset_bases):
         queryset = self.filter_queryset(queryset)
 
         # F4: scope compiled FK-annotation JOINs to rows visible via the
-        # target's own endpoint. No-op unless an unsafe-compiled bypass flag
-        # exposed a predicate-bearing FK target (those are refused at startup).
+        # target's own endpoint. Applies whenever an FK target along an
+        # annotation path has a tenant_field or predicates — i.e. on most
+        # tenant-scoped models. Rows whose FK is NULL are kept (a NULL joins
+        # nothing); rows whose FK points at an out-of-scope target are not.
         from django.db.models import Q as _Q
 
         from .validation import build_traversal_scope_q as _btsq
@@ -411,8 +437,14 @@ class TurboDRFViewSet(*_viewset_bases):
         if _fk_scope:
             queryset = queryset.filter(_fk_scope)
 
-        # Get readable fields from permission snapshot
+        # Get readable fields from permission snapshot. The snapshot only knows
+        # model fields, so add the @property fields the caller may read — gated
+        # exactly as on the serializer (detail) path, so list and detail agree.
         readable_fields = self._get_compiled_readable_fields(request)
+        if readable_fields is not None and plan.property_fields:
+            readable_fields = set(readable_fields) | self._readable_property_fields(
+                plan, request
+            )
 
         # Client-driven field selection via ?fields= parameter
         # Only fields already in the model's turbodrf() config are allowed
@@ -516,6 +548,23 @@ class TurboDRFViewSet(*_viewset_bases):
         chokepoint agree.
         """
         return self._authorized_readable_fields(request)
+
+    def _readable_property_fields(self, plan, request):
+        """@property fields in the compiled plan that the caller may read.
+
+        Same check the serializer path applies (``is_field_visible_to_user``:
+        sensitive deny-list, then an explicit read rule if one exists, else
+        model-level read), so compiled list and DRF detail render the same
+        property keys.
+        """
+        from .validation import is_field_visible_to_user
+
+        user = getattr(request, "user", None)
+        return {
+            name
+            for name in plan.property_fields
+            if is_field_visible_to_user(self.model, name, user)
+        }
 
     def _filter_compiled_fk_annotations(self, plan, request):
         """Per-nested-FK-path permission check for the compiled path.

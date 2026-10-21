@@ -83,7 +83,7 @@ completeness.
 | `'endpoint'` | model name | Custom URL endpoint name | [configuration.md](configuration.md) |
 | `'lookup_field'` | `'pk'` | URL lookup field (e.g. `'slug'`) | [configuration.md](configuration.md) |
 | `'searchable_fields'` | — | Field names / `__`-paths enabled for `?search=` (gated by field-level read perms, validated at startup). Also settable as a class attribute. | [configuration.md](configuration.md#searchable-fields) |
-| `'read_only'` | **`False`** | Serve `list` / `retrieve` only; writes (POST/PUT/PATCH/DELETE) return `405`. | [configuration.md](configuration.md#read-only-endpoints) |
+| `'read_only'` | **`False`** | Serve `list` / `retrieve` only; CRUD writes (POST/PUT/PATCH/DELETE) return `405`. Declared `actions` keep their own methods. | [configuration.md](configuration.md#read-only-endpoints) |
 | `'http_methods'` | all | Explicit HTTP method allow-list (e.g. `['get', 'post']`); disallowed verbs return `405`. `read_only` is the common shorthand. | [configuration.md](configuration.md#restricting-http-methods) |
 | `'full_clean'` | **`False`** | Run Django model validation (`clean()` / constraints) on write, so business-rule violations return `400` instead of `500`. | [configuration.md](configuration.md#model-validation-full_clean) |
 | `'actions'` | `[]` | Custom endpoints — a list of `@turbodrf_action`-decorated handlers attached to the generated viewset (inherit tenant + predicate scoping). | [configuration.md](configuration.md#custom-endpoints-actions) |

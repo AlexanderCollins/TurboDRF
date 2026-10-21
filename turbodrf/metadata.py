@@ -82,12 +82,11 @@ class TurboDRFMetadata(SimpleMetadata):
                 continue
 
             if "__" in field_name:
+                # The base may also be listed on its own (an FK and its nested
+                # fields): one entry then describes both, in either order.
                 base_field = field_name.split("__")[0]
-                if base_field not in field_metadata:
-                    field_metadata[base_field] = {"type": "nested", "fields": []}
-                field_metadata[base_field]["fields"].append(
-                    field_name.split("__", 1)[1]
-                )
+                entry = field_metadata.setdefault(base_field, {"type": "nested"})
+                entry.setdefault("fields", []).append(field_name.split("__", 1)[1])
             else:
                 try:
                     field = model._meta.get_field(field_name)
@@ -117,10 +116,13 @@ class TurboDRFMetadata(SimpleMetadata):
                         field_info["choices"] = [
                             {"value": k, "display": str(v)} for k, v in field.choices
                         ]
-
-                    field_metadata[field_name] = field_info
                 except Exception:
-                    field_metadata[field_name] = {"type": "unknown"}
+                    field_info = {"type": "unknown"}
+                # Keep nested sub-fields recorded before the base field itself.
+                nested = field_metadata.get(field_name, {}).get("fields")
+                if nested is not None:
+                    field_info["fields"] = nested
+                field_metadata[field_name] = field_info
 
         return field_metadata
 

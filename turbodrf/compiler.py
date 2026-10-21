@@ -32,20 +32,31 @@ def is_compiled(model):
 
 
 class DictProxy:
-    """Wraps a dict for attribute access so model @property functions work."""
+    """Wraps a dict for attribute access so model @property functions work.
 
-    __slots__ = ("_d",)
+    ``aliases`` maps an attribute name to the row key holding its value (e.g.
+    ``author_id`` -> ``author``, ``pk`` -> ``id``). ``opaque`` names raise
+    AttributeError even when the row has the key: a ``.values()`` row holds an
+    FK's raw id under the field name, but on a model instance that attribute is
+    the related object — a property must not silently get the id instead.
+    """
 
-    def __init__(self, d):
+    __slots__ = ("_d", "_aliases", "_opaque")
+
+    def __init__(self, d, aliases=None, opaque=()):
         object.__setattr__(self, "_d", d)
+        object.__setattr__(self, "_aliases", aliases or {})
+        object.__setattr__(self, "_opaque", opaque)
 
     def __getattr__(self, name):
         # Pickle / copy probe `_d` and dunder names before __init__ runs.
         # Returning self._d[name] would recurse into __getattr__ forever.
-        if name.startswith("_") or name == "_d":
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if name in self._opaque:
             raise AttributeError(name)
         try:
-            return self._d[name]
+            return self._d[self._aliases.get(name, name)]
         except KeyError:
             raise AttributeError(name)
 
@@ -169,6 +180,19 @@ class CompiledQueryPlan:
         self.pk_field = pk_field
         self._original_fields = set(original_fields)
 
+        # Concrete FK / one-to-one fields fetched as raw ids: the DictProxy
+        # serves `<fk>_id` from them and refuses `<fk>` (see DictProxy).
+        self._fk_names = []
+        self._proxy_aliases = {"pk": pk_field}
+        for name in simple_fields:
+            try:
+                field = model._meta.get_field(name)
+            except FieldDoesNotExist:
+                continue
+            if field.concrete and (field.many_to_one or field.one_to_one):
+                self._fk_names.append(name)
+                self._proxy_aliases[field.attname] = name
+
     def _fk_base_field(self, output_key):
         """Get the base FK field name from an annotation output key.
         e.g. 'related_name' -> 'related' (by looking up the F() expression)."""
@@ -257,7 +281,16 @@ class CompiledQueryPlan:
         if active_m2m and self.pk_field not in active_simple:
             active_simple = [self.pk_field] + active_simple
 
-        compiled_qs = queryset.values(*active_simple, **active_fk)
+        # Always FETCH the pk, even when it isn't rendered (post_process strips
+        # it unless it's in active_simple): property fields may need it to load
+        # instances, and `.values()` with no arguments would return EVERY
+        # column — including ones the caller can't read — whenever permission
+        # filtering or `?fields=` leaves nothing else selected.
+        values_fields = list(active_simple)
+        if self.pk_field not in values_fields:
+            values_fields.insert(0, self.pk_field)
+
+        compiled_qs = queryset.values(*values_fields, **active_fk)
         return compiled_qs, (active_simple, active_fk, active_m2m, active_props)
 
     def post_process(self, rows, active_plan, m2m_target_filters=None):
@@ -271,19 +304,17 @@ class CompiledQueryPlan:
         """
         active_simple, active_fk, active_m2m, active_props = active_plan
 
-        # 1. Type coercion (Decimal -> str, etc.)
+        # 1. Property fields — before type coercion, so they see the same value
+        #    types as on a model instance (Decimal, not str).
+        if active_props:
+            self._compute_properties(rows, active_props)
+
+        # 2. Type coercion (Decimal -> str, etc.)
         if self.type_coercers:
             for row in rows:
                 for field_name, coercer in self.type_coercers.items():
                     if field_name in row and row[field_name] is not None:
                         row[field_name] = coercer(row[field_name])
-
-        # 2. Property fields via DictProxy
-        if active_props:
-            for row in rows:
-                proxy = DictProxy(row)
-                for prop_name, fget in active_props.items():
-                    row[prop_name] = fget(proxy)
 
         # 3. M2M merge (two-query approach)
         if active_m2m:
@@ -326,7 +357,55 @@ class CompiledQueryPlan:
                 for row in rows:
                     row.pop(self.pk_field, None)
 
+        # The pk is always fetched (see apply_to_queryset); render it only if
+        # it was selected.
+        if self.pk_field not in active_simple:
+            for row in rows:
+                row.pop(self.pk_field, None)
+
         return rows
+
+    def _compute_properties(self, rows, active_props):
+        """Compute @property fields for ``rows``, matching the serializer path.
+
+        Each property first runs against the row (a DictProxy — no extra
+        query). A property that needs anything the row doesn't hold (a related
+        object, a reverse relation, an unselected column, a method) raises
+        there; those are recomputed on real instances, loaded in ONE query for
+        the affected rows. A property that also fails on the instance is
+        omitted and logged — the same as the serializer path.
+        """
+        pending = []
+        for row in rows:
+            proxy = DictProxy(row, self._proxy_aliases, self._fk_names)
+            for prop_name, fget in active_props.items():
+                try:
+                    row[prop_name] = fget(proxy)
+                except Exception:
+                    pending.append((row, prop_name))
+        if not pending:
+            return
+
+        pks = {row.get(self.pk_field) for row, _ in pending}
+        pks.discard(None)
+        qs = self.model._base_manager.filter(pk__in=pks)
+        if self._fk_names:
+            qs = qs.select_related(*self._fk_names)
+        instances = {obj.pk: obj for obj in qs}
+
+        for row, prop_name in pending:
+            instance = instances.get(row.get(self.pk_field))
+            if instance is None:
+                continue
+            try:
+                row[prop_name] = active_props[prop_name](instance)
+            except Exception as exc:
+                logger.warning(
+                    "Property field %s on %s failed: %r",
+                    prop_name,
+                    self.model.__name__,
+                    exc,
+                )
 
 
 def compile_model(model):

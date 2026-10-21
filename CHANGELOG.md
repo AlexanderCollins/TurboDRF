@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.5.2 — Compiled-path fixes: NULL FKs, properties, `?fields=`
+
+### Security
+
+- **Compiled `?fields=` could render every column (field-level RBAC
+  bypass).** When permission filtering or a `?fields=` selection left the
+  compiled list with no plain or FK fields selected (e.g.
+  `?fields=<property>`, or `?fields=<field the role can't read>`), the plan
+  called `.values()` with no arguments, which returns *every* concrete
+  column, including ones the caller's role can't read and sensitive-named
+  ones. The compiled plan now always selects the pk explicitly and strips it
+  when it wasn't requested. Row scoping was unaffected.
+
+### Fixed
+
+- **Rows with a NULL FK disappeared from compiled lists, counts and
+  filters.** Traversal scoping (`build_traversal_scope_q`) emitted
+  `<fk> IN (<scoped targets>)` for each tenant- or predicate-scoped JOIN
+  target, which is never true for a NULL FK. Any compiled model with a
+  nested field across a nullable FK (`asset__name`) dropped those rows, and
+  so did search over a nested `searchable_fields` entry, on both paths. A
+  row whose relation is empty at a scoped step (at that hop or an earlier
+  one) is now kept; a relation pointing at an out-of-scope target is still
+  excluded.
+- **Compiled list left out `@property` fields for role-scoped users.**
+  Properties were filtered by the permission snapshot, which only knows
+  model fields. They're now gated as on the serializer (detail) path, so
+  list and detail render the same keys.
+- **Compiled properties that read anything outside the row raised (500).**
+  A property that reads a related object, a reverse relation or an unselected
+  column is now computed on model instances, loaded in one extra query for
+  the affected rows. A property that also fails on the instance is omitted
+  and logged, as on the serializer path. The row proxy no longer hands a
+  property the raw FK id where the instance would return the related object.
+  It serves `<fk>_id` and `pk` from the row instead. Properties now run
+  before Decimal→str coercion, so they see model value types.
+- **A nested field ending on an FK rendered the model instance** (e.g.
+  `asset__fund`), so create/update/retrieve responses failed with
+  `Object of type Fund is not JSON serializable`. It now renders the
+  related pk (or `None`), as the compiled list already did. The same
+  applies to M2M sub-fields that are FKs.
+- **OPTIONS raised `KeyError: 'fields'`** when `fields` listed an FK and a
+  nested field of it (`message`, `message__subject`). The FK's entry now
+  describes both, in either order.
+- **`read_only: True` also blocked POST custom actions (405).** CRUD write
+  routes stay unrouted (405), but declared `actions` keep their own HTTP
+  methods.
+- **`permission_classes` on `@turbodrf_action` were ignored.** They now
+  replace the role check for that action, as with DRF's `@action`, and
+  apply even with `TURBODRF_DISABLE_PERMISSIONS`. Row scoping through
+  `get_object()` / `get_queryset()` is unchanged.
+- **`full_clean: True` discarded values normalised by `clean()`.** The
+  normalised values of the provided fields are now saved. Validation runs on
+  a copy, so a failed `PATCH` no longer leaves `serializer.instance` partly
+  updated.
+- **`turbodrf_check` treated models without a `compiled` key as not
+  compiled.** It now uses the router's default (compiled).
+
 ## 0.5.1 — Permission-snapshot cache isolation fix
 
 ### Security

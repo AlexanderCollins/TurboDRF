@@ -3,6 +3,7 @@ Test models for TurboDRF tests.
 """
 
 from django.db import models
+from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.response import Response
 
 from turbodrf.decorators import turbodrf_action
@@ -349,6 +350,31 @@ def widget_ping(self, request, pk=None):
     return Response({"pong": obj.name})
 
 
+class DenyAll(BasePermission):
+    """Permission class that refuses every request."""
+
+    def has_permission(self, request, view):
+        return False
+
+
+@turbodrf_action(
+    detail=True, methods=["post"], url_path="bump", permission_classes=[AllowAny]
+)
+def widget_bump(self, request, pk=None):
+    """POST action on a read_only resource with its own permission_classes."""
+    obj = self.get_object()
+    return Response({"bumped": obj.name})
+
+
+@turbodrf_action(
+    detail=True, methods=["get"], url_path="locked", permission_classes=[DenyAll]
+)
+def widget_locked(self, request, pk=None):
+    """GET action whose declared permission_classes deny everyone."""
+    obj = self.get_object()
+    return Response({"name": obj.name})
+
+
 class Widget(TurboDRFMixin, models.Model):
     """Read-only model with a custom action.
 
@@ -367,7 +393,7 @@ class Widget(TurboDRFMixin, models.Model):
             "public_access": True,
             "read_only": True,
             "fields": ["id", "name"],
-            "actions": [widget_ping],
+            "actions": [widget_ping, widget_bump, widget_locked],
         }
 
 
@@ -388,6 +414,9 @@ class Gadget(TurboDRFMixin, models.Model):
     def clean(self):
         from django.core.exceptions import ValidationError
 
+        # Normalise: full_clean must persist values clean() changes.
+        if self.name:
+            self.name = self.name.strip().lower()
         if self.name == "forbidden":
             raise ValidationError({"name": "name cannot be 'forbidden'"})
 
@@ -401,4 +430,124 @@ class Gadget(TurboDRFMixin, models.Model):
             "compiled": False,
             "full_clean": True,
             "fields": ["id", "name", "qty", "label"],
+        }
+
+
+class Portfolio(TurboDRFMixin, models.Model):
+    """Tenant-scoped FK target with no predicates (reached via Holding)."""
+
+    name = models.CharField(max_length=100)
+    brokerage = models.ForeignKey(
+        Brokerage, on_delete=models.CASCADE, related_name="portfolios"
+    )
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "tenant_field": "brokerage",
+            "fields": ["id", "name", "brokerage"],
+            "compiled": False,
+        }
+
+
+class Holding(TurboDRFMixin, models.Model):
+    """Tenant-scoped FK target whose own FK (portfolio) is nullable."""
+
+    name = models.CharField(max_length=100)
+    brokerage = models.ForeignKey(
+        Brokerage, on_delete=models.CASCADE, related_name="holdings"
+    )
+    portfolio = models.ForeignKey(
+        Portfolio,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="holdings",
+    )
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "tenant_field": "brokerage",
+            "fields": ["id", "name", "brokerage", "portfolio"],
+            "compiled": False,
+        }
+
+
+@turbodrf_action(
+    detail=True,
+    methods=["post"],
+    url_path="reprocess",
+    permission_classes=[IsAuthenticated],
+)
+def holding_event_reprocess(self, request, pk=None):
+    """Declared permission_classes replace the role check; get_object() still
+    applies the tenant boundary."""
+    obj = self.get_object()
+    return Response({"reprocessed": obj.pk})
+
+
+class HoldingEvent(TurboDRFMixin, models.Model):
+    """Compiled, tenant-scoped model with a NULLABLE FK to a tenant-scoped
+    target, nested fields across it (including one ending on an FK), and
+    @property fields — one computable from the row, one that reads the
+    related object."""
+
+    status = models.CharField(max_length=32, default="new")
+    brokerage = models.ForeignKey(
+        Brokerage, on_delete=models.CASCADE, related_name="holding_events"
+    )
+    holding = models.ForeignKey(
+        Holding,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="events",
+    )
+
+    searchable_fields = ["status", "holding__name"]
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self):
+        return self.status
+
+    @property
+    def status_label(self):
+        return self.status.replace("_", " ").title()
+
+    @property
+    def holding_label(self):
+        # Reads the related object — not computable from a .values() row.
+        return self.holding.name.upper() if self.holding else None
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "tenant_field": "brokerage",
+            "compiled": True,
+            "fields": [
+                "id",
+                "status",
+                "brokerage",
+                "holding",
+                "holding__name",
+                "holding__portfolio",
+                "status_label",
+                "holding_label",
+            ],
+            "actions": [holding_event_reprocess],
         }

@@ -101,9 +101,16 @@ class TurboDRFCheckCommandTest(TestCase):
 
     def test_eligible_hint_for_non_compiled(self):
         """Non-compiled eligible models should get the hint to add compiled: True."""
-        out, _ = self._call("--model", "SampleModel")
-        # SampleModel doesn't set compiled=True
+        out, _ = self._call("--model", "Gadget")
+        # Gadget opts out with compiled=False
         self.assertIn("Eligible for compiled path", out)
+
+    def test_compiled_by_default(self):
+        """No 'compiled' key means compiled, as in the router — not a hint to
+        opt in."""
+        out, _ = self._call("--model", "SampleModel")
+        self.assertIn("[compiled]", out)
+        self.assertNotIn("Eligible for compiled path", out)
 
     def test_compiled_model_no_eligible_hint(self):
         """Already-compiled model should NOT get the eligibility hint."""

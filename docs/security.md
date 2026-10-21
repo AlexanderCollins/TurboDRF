@@ -329,6 +329,15 @@ return rows the caller cannot see via the target's own endpoint.
 For paths through targets with no predicates and no `tenant_field`,
 the scope is a no-op `Q()` — no extra subquery cost.
 
+A parent row with an **empty** relation at a scoped step (a NULL FK, or
+no rows across a reverse / M2M relation, at that hop or an earlier one)
+is kept: each step is `<prefix>__isnull=True OR <prefix>__pk__in=...`
+when the relation can be empty. An empty relation joins nothing, so it
+can't reveal a target row; a relation pointing at an out-of-scope
+target is still excluded. The same scope is applied to the compiled
+list path's FK annotations and to search over `__`-path
+`searchable_fields`.
+
 `?ordering=fk__field` is handled separately: when role-based
 permissions are enabled (the default), `ordering_fields` returns a
 flat list of the user's readable fields, and DRF's `OrderingFilter`

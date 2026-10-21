@@ -288,6 +288,13 @@ def build_traversal_scope_q(parent_model, field_path, request):
     compiled M2M / search-field bypasses, but URL-driven so it can't be
     gated at startup.
 
+    A parent row whose relation is EMPTY at a scoped step (a NULL FK, or no
+    rows across a reverse / M2M relation — at that hop or any earlier one) is
+    kept: an empty relation joins nothing, so it cannot reveal a row the caller
+    can't see. Without this, ``NULL IN (subquery)`` is never true and every
+    row with a NULL FK silently disappears from lists, counts and filters.
+    Rows whose relation points at an out-of-scope target are still excluded.
+
     Returns ``Q()`` (no-op) for paths whose chain is fully unscoped, or
     when no ``__`` is present in the path.
     """
@@ -313,10 +320,13 @@ def build_traversal_scope_q(parent_model, field_path, request):
     parts = field_path.split("__")
 
     q_combined = Q()
+    # True once any hop up to the current step can be empty for a parent row.
+    may_be_empty = False
 
     for step_idx, (step_model, _f, _name) in enumerate(chain):
         if step_idx == 0:
             continue
+        may_be_empty = may_be_empty or _relation_may_be_empty(chain[step_idx - 1][1])
         target_predicates = get_predicates(step_model)
         target_tenant_field = get_tenant_field(step_model)
 
@@ -325,36 +335,56 @@ def build_traversal_scope_q(parent_model, field_path, request):
 
         prefix = "__".join(parts[:step_idx])
         scoped_qs = step_model.objects.all()
+        fail_closed = False
 
         # Tenant boundary on the target.
         if target_tenant_field is not None:
+            tenant = None
             if (
-                request is None
-                or user is None
-                or not getattr(user, "is_authenticated", False)
+                request is not None
+                and user is not None
+                and getattr(user, "is_authenticated", False)
             ):
-                # Fail closed: no resolvable tenant means the JOIN target
-                # is out of bounds.
-                return q_combined & Q(**{f"{prefix}__in": step_model.objects.none()})
-            tenant = get_user_tenant(user)
+                tenant = get_user_tenant(user)
             if tenant is None:
-                return q_combined & Q(**{f"{prefix}__in": step_model.objects.none()})
-            scoped_qs = scoped_qs.filter(**{target_tenant_field: tenant})
+                # Fail closed: no resolvable tenant means every JOIN target
+                # is out of bounds.
+                fail_closed = True
+            else:
+                scoped_qs = scoped_qs.filter(**{target_tenant_field: tenant})
 
         # Within-tenant predicates on the target.
-        if target_predicates:
+        if target_predicates and not fail_closed:
             if request is None:
-                return q_combined & Q(**{f"{prefix}__in": step_model.objects.none()})
-            target_q = Q()
-            for pred in target_predicates:
-                target_q &= pred.q(request, user_roles)
-            # An empty Q() from a predicate chain means "fully bypassed"
-            # — no extra scoping needed beyond tenant.
-            scoped_qs = scoped_qs.filter(target_q)
+                fail_closed = True
+            else:
+                target_q = Q()
+                for pred in target_predicates:
+                    target_q &= pred.q(request, user_roles)
+                # An empty Q() from a predicate chain means "fully bypassed"
+                # — no extra scoping needed beyond tenant.
+                scoped_qs = scoped_qs.filter(target_q)
 
-        q_combined &= Q(**{f"{prefix}__in": scoped_qs.values("pk")})
+        if fail_closed:
+            scoped_qs = step_model.objects.none()
+
+        step_q = Q(**{f"{prefix}__in": scoped_qs.values("pk")})
+        if may_be_empty:
+            step_q = Q(**{f"{prefix}__isnull": True}) | step_q
+        q_combined &= step_q
+
+        if fail_closed:
+            return q_combined
 
     return q_combined
+
+
+def _relation_may_be_empty(field):
+    """True if a parent row can have NO target across relation ``field``: a
+    nullable FK / one-to-one, or a reverse / M2M relation (zero rows)."""
+    if getattr(field, "many_to_many", False) or getattr(field, "one_to_many", False):
+        return True
+    return bool(getattr(field, "null", False))
 
 
 def scoped_target_queryset(target_model, request):
