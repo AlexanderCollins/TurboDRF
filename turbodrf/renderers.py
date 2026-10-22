@@ -110,9 +110,9 @@ elif _lib_name == "orjson":
                 return _stdlib_fallback(data, accepted_media_type, renderer_context)
 
 else:
-    from rest_framework.renderers import (  # type: ignore[no-redef] # noqa: F811, F401
-        JSONRenderer as TurboDRFRenderer,
-    )
+    from rest_framework.renderers import JSONRenderer
+
+    TurboDRFRenderer = JSONRenderer  # type: ignore[misc,assignment]
 
 
 FAST_JSON_AVAILABLE = _lib_name in ("msgspec", "orjson")
