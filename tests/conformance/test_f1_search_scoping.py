@@ -41,9 +41,9 @@ class TestSearchTargetScopingF1(TestCase):
             set_test_brokerage(u, self.brok)
             return u
 
-        self.under = mk("ua", "underwriter")       # non-bypass owner
+        self.under = mk("ua", "underwriter")  # non-bypass owner
         self.other = mk("ua2", "underwriter")
-        self.manager = mk("mgr", "manager")        # owner-bypass
+        self.manager = mk("mgr", "manager")  # owner-bypass
 
         # Same tenant, different owners; unique searchable titles.
         self.deal_mine = Deal.objects.create(

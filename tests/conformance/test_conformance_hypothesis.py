@@ -22,15 +22,15 @@ from hypothesis import strategies as st  # noqa: E402
 from hypothesis.extra.django import TestCase as HypothesisTestCase  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
-from tests.test_app.apps import _test_user_brokerages, set_test_brokerage
-from tests.test_app.models import (
+from tests.test_app.apps import _test_user_brokerages, set_test_brokerage  # noqa: E402
+from tests.test_app.models import (  # noqa: E402
     BankAccount,
     Brokerage,
     Deal,
     Transaction,
 )
 
-from .monitor import ConformanceMonitor
+from .monitor import ConformanceMonitor  # noqa: E402
 
 User = get_user_model()
 
@@ -61,12 +61,21 @@ class TestTenantContainmentFuzz(HypothesisTestCase):
             "manager_a": (mkuser("manager_a", "manager", self.brok_a), self.brok_a),
             "under_b": (mkuser("under_b", "underwriter", self.brok_b), self.brok_b),
         }
-        d_a = Deal.objects.create(title="A1", brokerage=self.brok_a,
-                                  assigned_broker=self.callers["under_a"][0])
-        Deal.objects.create(title="A2", brokerage=self.brok_a,
-                            assigned_broker=self.callers["under_a2"][0])
-        d_b = Deal.objects.create(title="B1", brokerage=self.brok_b,
-                                  assigned_broker=self.callers["under_b"][0])
+        d_a = Deal.objects.create(
+            title="A1",
+            brokerage=self.brok_a,
+            assigned_broker=self.callers["under_a"][0],
+        )
+        Deal.objects.create(
+            title="A2",
+            brokerage=self.brok_a,
+            assigned_broker=self.callers["under_a2"][0],
+        )
+        d_b = Deal.objects.create(
+            title="B1",
+            brokerage=self.brok_b,
+            assigned_broker=self.callers["under_b"][0],
+        )
         ba_a = BankAccount.objects.create(name="ba_a", deal=d_a)
         ba_b = BankAccount.objects.create(name="ba_b", deal=d_b)
         Transaction.objects.create(amount=Decimal("1"), bank_account=ba_a)
@@ -78,12 +87,15 @@ class TestTenantContainmentFuzz(HypothesisTestCase):
             (Transaction, "/api/transactions/", "bank_account__deal__brokerage"),
         ]
 
-    @settings(max_examples=300, deadline=None,
-              suppress_health_check=[HealthCheck.function_scoped_fixture])
+    @settings(
+        max_examples=300,
+        deadline=None,
+        suppress_health_check=[HealthCheck.function_scoped_fixture],
+    )
     @given(
         caller=st.sampled_from(["under_a", "under_a2", "manager_a", "under_b"]),
         midx=st.integers(min_value=0, max_value=2),
-        brk=st.integers(min_value=0, max_value=12),   # random/foreign/garbage tenant id
+        brk=st.integers(min_value=0, max_value=12),  # random/foreign/garbage tenant id
         extra=st.sampled_from(EXTRAS),
     )
     def test_no_query_param_induces_cross_tenant_leak(self, caller, midx, brk, extra):
@@ -91,8 +103,11 @@ class TestTenantContainmentFuzz(HypothesisTestCase):
         Model, url, tfield = self.models[midx]
         self.client.force_authenticate(user=user)
         # Inject a (possibly hostile) brokerage filter on Deal; ordering/paging on all
-        q = f"?brokerage={brk}{extra}" if Model is Deal else (
-            f"?{extra[1:]}" if extra else "")
+        q = (
+            f"?brokerage={brk}{extra}"
+            if Model is Deal
+            else (f"?{extra[1:]}" if extra else "")
+        )
         resp = self.client.get(url + q)
         if resp.status_code != 200:
             return  # 4xx on garbage params is fine; we only constrain 200s

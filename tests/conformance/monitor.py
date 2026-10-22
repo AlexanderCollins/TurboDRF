@@ -46,8 +46,9 @@ class ConformanceMonitor:
 
     # ---- tenant containment ------------------------------------------------
 
-    def check_tenant_containment(self, model, returned_pks, caller_tenant_pk,
-                                 tenant_field, context=""):
+    def check_tenant_containment(
+        self, model, returned_pks, caller_tenant_pk, tenant_field, context=""
+    ):
         """Every returned row must belong to the caller's tenant.
 
         Looks each pk up via the *unscoped* default manager and resolves its
@@ -74,7 +75,7 @@ class ConformanceMonitor:
         for role in user_roles:
             for perm in self.roles.get(role, []):
                 if perm.startswith(prefix) and perm.endswith(".read"):
-                    middle = perm[len(prefix):-len(".read")]
+                    middle = perm[len(prefix) : -len(".read")]
                     if middle and "." not in middle:  # field-level, not action
                         bases.add(middle)
                         any_rule = True
@@ -91,18 +92,18 @@ class ConformanceMonitor:
         """
         if key in ("id", "pk"):
             return True
-        if key.split("__")[0] in bases:          # a__b form
+        if key.split("__")[0] in bases:  # a__b form
             return True
-        for b in bases:                           # a_b / bare-base form
+        for b in bases:  # a_b / bare-base form
             if key == b or key.startswith(b + "_"):
                 return True
         return False
 
-    def check_field_exposure(self, app_label, model_name, row_keys, user_roles,
-                             context=""):
+    def check_field_exposure(
+        self, app_label, model_name, row_keys, user_roles, context=""
+    ):
         """Every emitted field must be (or descend from) a readable base."""
-        bases, any_rule = self.readable_field_bases(app_label, model_name,
-                                                    user_roles)
+        bases, any_rule = self.readable_field_bases(app_label, model_name, user_roles)
         if not any_rule:
             return  # no field-level rules declared → field gating off by design
         for key in row_keys:

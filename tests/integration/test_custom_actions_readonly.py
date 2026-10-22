@@ -33,9 +33,7 @@ class TestCustomActionAndReadOnly(TestCase):
         # the read_only config, so a disallowed method returns 405 (not a 403
         # from the permission layer).
         self.assertEqual(
-            self.client.post(
-                "/api/widgets/", {"name": "x"}, format="json"
-            ).status_code,
+            self.client.post("/api/widgets/", {"name": "x"}, format="json").status_code,
             405,
         )
         self.assertEqual(

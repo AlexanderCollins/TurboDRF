@@ -73,14 +73,23 @@ class ConformanceBase(TestCase):
         self.ba_b = BankAccount.objects.create(name="ba_b", deal=self.deal_b)
 
         # Transactions (tenant via bank_account__deal__brokerage)
-        self.tx_a = Transaction.objects.create(amount=Decimal("1"), bank_account=self.ba_a)
-        self.tx_b = Transaction.objects.create(amount=Decimal("2"), bank_account=self.ba_b)
+        self.tx_a = Transaction.objects.create(
+            amount=Decimal("1"), bank_account=self.ba_a
+        )
+        self.tx_b = Transaction.objects.create(
+            amount=Decimal("2"), bank_account=self.ba_b
+        )
 
         # A field-permissioned, non-tenant model for field-exposure checks
         self.rel = RelatedModel.objects.create(name="rel", description="d")
         self.sample = SampleModel.objects.create(
-            title="S", description="desc", price=Decimal("9.99"), quantity=3,
-            related=self.rel, secret_field="TOPSECRET", is_active=True,
+            title="S",
+            description="desc",
+            price=Decimal("9.99"),
+            quantity=3,
+            related=self.rel,
+            secret_field="TOPSECRET",
+            is_active=True,
         )
 
     # tenant-scoped models: (Model, list-url, tenant_field)
@@ -113,14 +122,19 @@ class TestTenantContainment(ConformanceBase):
                     pks, _ = self._list_pks(url)
                     rows_seen += len(pks)
                     self.monitor.check_tenant_containment(
-                        Model, pks, brok.pk, tfield,
+                        Model,
+                        pks,
+                        brok.pk,
+                        tfield,
                         context=f"{user.username} GET {url}",
                     )
                     checks += 1
         # non-vacuous: callers actually saw rows (not passing on empty lists)
         self.assertGreater(rows_seen, 0)
-        print(f"\n[conformance] tenant-containment: {checks} (caller×model) "
-              f"list checks, {rows_seen} rows verified, 0 violations")
+        print(
+            f"\n[conformance] tenant-containment: {checks} (caller×model) "
+            f"list checks, {rows_seen} rows verified, 0 violations"
+        )
 
     def test_filter_injection_cannot_cross_tenant(self):
         # ?brokerage=<other tenant> must not surface the other tenant's deal
@@ -151,7 +165,10 @@ class TestTenantContainment(ConformanceBase):
         # the conformance checks above are meaningful (not passing trivially).
         with self.assertRaises(ConformanceViolation):
             self.monitor.check_tenant_containment(
-                Deal, [self.deal_b.pk], self.brok_a.pk, "brokerage",
+                Deal,
+                [self.deal_b.pk],
+                self.brok_a.pk,
+                "brokerage",
                 context="deliberate-leak",
             )
 

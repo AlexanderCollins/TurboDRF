@@ -3,9 +3,7 @@
 from rest_framework.decorators import action
 
 
-def turbodrf_action(
-    detail=False, methods=None, url_path=None, url_name=None, **kwargs
-):
+def turbodrf_action(detail=False, methods=None, url_path=None, url_name=None, **kwargs):
     """Declare a custom endpoint on a model's auto-generated viewset.
 
     Decorate a handler with this and list it in the model's ``turbodrf()``
