@@ -38,6 +38,10 @@ EXTRAS = ["", "&ordering=id", "&ordering=-id", "&page_size=1", "&page_size=50"]
 
 
 class TestTenantContainmentFuzz(HypothesisTestCase):
+    # Hypothesis re-runs Django's per-test setup for each example, which
+    # rebuilds self.client from client_class on Django < 5.
+    client_class = APIClient
+
     def setUp(self):
         from django.core.cache import cache
 

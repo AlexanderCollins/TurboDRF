@@ -332,6 +332,22 @@ class TurboDRFViewSet(*_viewset_bases):
     # If you bypass those (e.g. self.model.objects.get(...) directly), scoping
     # is bypassed too — you must apply it manually.
 
+    def handle_exception(self, exc):
+        from django.core.exceptions import RequestDataTooBig, TooManyFieldsSent
+        from rest_framework import exceptions
+
+        if isinstance(exc, OverflowError):
+            # Django < 5.0 on SQLite: an integer lookup past the column's range
+            # raises instead of matching nothing.
+            if (self.lookup_url_kwarg or self.lookup_field) in self.kwargs:
+                exc = exceptions.NotFound()
+            else:
+                exc = exceptions.ValidationError({"detail": "Value out of range."})
+        elif isinstance(exc, (TooManyFieldsSent, RequestDataTooBig)):
+            # Raised while DRF reads the request; a 400, not a 500.
+            exc = exceptions.ParseError("Request has too many fields or is too big.")
+        return super().handle_exception(exc)
+
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
         # The router leaves CRUD write routes unbound on a `read_only: True`
