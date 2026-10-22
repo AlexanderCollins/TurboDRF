@@ -8,15 +8,17 @@ search, filtering, ordering, and pagination.
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from tests.fixtures import roles_with_guest
 from tests.test_app.models import RelatedModel, SampleModel
 
 User = get_user_model()
 
 
+@override_settings(TURBODRF_ROLES=roles_with_guest())
 class TestAPIEndpoints(TestCase):
     """Integration tests for API endpoints."""
 

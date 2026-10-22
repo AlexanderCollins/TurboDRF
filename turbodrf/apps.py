@@ -1,5 +1,32 @@
-from django.apps import AppConfig
+from django.apps import AppConfig, apps
 from django.conf import settings
+from django.core import checks
+
+
+def check_docs_dependencies(app_configs=None, **kwargs):
+    """Warn when the API docs are enabled but drf_yasg isn't an installed app.
+
+    The Swagger / ReDoc pages render drf_yasg's templates, which Django only
+    finds when 'drf_yasg' is in INSTALLED_APPS. TurboDRF can't add it for you:
+    by the time an app's ready() runs, the app registry is already populated,
+    so editing settings.INSTALLED_APPS there has no effect.
+    """
+    if not getattr(settings, "TURBODRF_ENABLE_DOCS", True):
+        return []
+    if apps.is_installed("drf_yasg"):
+        return []
+    return [
+        checks.Warning(
+            "TURBODRF_ENABLE_DOCS is True but 'drf_yasg' is not in "
+            "INSTALLED_APPS, so the Swagger and ReDoc pages will fail with "
+            "TemplateDoesNotExist.",
+            hint=(
+                "Add 'drf_yasg' to INSTALLED_APPS, or set "
+                "TURBODRF_ENABLE_DOCS = False if you don't serve the docs."
+            ),
+            id="turbodrf.W001",
+        )
+    ]
 
 
 class TurboDRFConfig(AppConfig):
@@ -11,23 +38,14 @@ class TurboDRFConfig(AppConfig):
         """
         Perform initialization when Django starts.
         """
-        # Auto-configure drf_yasg if documentation is enabled
-        if getattr(settings, "TURBODRF_ENABLE_DOCS", True):
-            self._ensure_drf_yasg_installed()
+        checks.register(check_docs_dependencies)
 
-    def _ensure_drf_yasg_installed(self):
-        """
-        Ensure drf_yasg is in INSTALLED_APPS for template loading.
+        # Resolve Keycloak / allauth roles from the user object so they also
+        # reach token/JWT-authenticated users (the integrations' middleware
+        # runs before DRF authentication).
+        if getattr(settings, "TURBODRF_KEYCLOAK_INTEGRATION", False) or getattr(
+            settings, "TURBODRF_ALLAUTH_INTEGRATION", False
+        ):
+            from .integrations.roles import install_integration_role_resolver
 
-        This method checks if drf_yasg is already in INSTALLED_APPS and adds it
-        if necessary. This prevents the TemplateDoesNotExist error when accessing
-        API documentation endpoints.
-        """
-        if "drf_yasg" not in settings.INSTALLED_APPS:
-            # Convert to list if it's a tuple
-            if isinstance(settings.INSTALLED_APPS, tuple):
-                settings.INSTALLED_APPS = list(settings.INSTALLED_APPS)
-
-            # Add drf_yasg before turbodrf to ensure proper loading order
-            turbodrf_index = settings.INSTALLED_APPS.index("turbodrf")
-            settings.INSTALLED_APPS.insert(turbodrf_index, "drf_yasg")
+            install_integration_role_resolver()

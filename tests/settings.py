@@ -229,11 +229,40 @@ TURBODRF_ROLES = {
         "test_app.holdingevent.holding.write",
         "test_app.holding.read",
         "test_app.portfolio.read",
+        "test_app.fund.read",
+        "test_app.valuation.read",
     ],
     "auditor": [
         "test_app.holdingevent.read",
         "test_app.holding.read",
         "test_app.portfolio.read",
+    ],
+    # Compiled-vs-serializer parity harness (test_parity_compiled_vs_serializer.py). Both roles
+    # read every parity model; only parity_reader holds the explicit field rules,
+    # so parity_limited loses amount, twin, target__amount and tags__weight.
+    "parity_reader": [
+        "test_app.parityalltypes.read",
+        "test_app.paritytarget.read",
+        "test_app.parityleaf.read",
+        "test_app.paritytag.read",
+        "test_app.paritycurrency.read",
+        "test_app.paritycodepk.read",
+        "test_app.parityuuidpk.read",
+        "test_app.paritychild.read",
+        "test_app.parityalltypes.amount.read",
+        "test_app.parityalltypes.twin.read",
+        "test_app.paritytarget.amount.read",
+        "test_app.paritytag.weight.read",
+    ],
+    "parity_limited": [
+        "test_app.parityalltypes.read",
+        "test_app.paritytarget.read",
+        "test_app.parityleaf.read",
+        "test_app.paritytag.read",
+        "test_app.paritycurrency.read",
+        "test_app.paritycodepk.read",
+        "test_app.parityuuidpk.read",
+        "test_app.paritychild.read",
     ],
 }
 

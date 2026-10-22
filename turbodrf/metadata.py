@@ -67,17 +67,18 @@ class TurboDRFMetadata(SimpleMetadata):
           direct permission lookup and incorrectly showed read_only=True
           for users with model-level write permission but no explicit
           field-level write rule.
-        - Anon-without-guest-role legacy: if no role system applies (the
-          user has no resolved roles), don't gate metadata — public_access
-          models without a guest role show all configured fields to anon.
+        - Anonymous callers are gated like everyone else (on a public_access
+          model their snapshot has model-level read). Only bypassed
+          permissions (snapshot ``None``) skip the gate.
         """
-        from .backends import get_user_roles
-        from .validation import is_field_visible_to_user
+        from .validation import is_field_path_sensitive, is_field_visible_to_user
 
         field_metadata = {}
-        gate_by_perms = bool(get_user_roles(user))
+        gate_by_perms = snapshot is not None
 
         for field_name in fields:
+            if is_field_path_sensitive(field_name):
+                continue
             if gate_by_perms and not is_field_visible_to_user(model, field_name, user):
                 continue
 
@@ -179,13 +180,8 @@ class TurboDRFMetadata(SimpleMetadata):
         except Exception:
             cap["filterset_fields"] = {}
 
-        # ?fields= client-driven field selection (compiled path only)
-        try:
-            from .compiler import is_compiled
-
-            cap["client_fields_param"] = "fields" if is_compiled(view.model) else None
-        except Exception:
-            cap["client_fields_param"] = None
+        # ?fields= client-driven field selection (list and detail, every path)
+        cap["client_fields_param"] = "fields"
 
         return cap
 

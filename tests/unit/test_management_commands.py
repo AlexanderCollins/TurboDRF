@@ -260,7 +260,7 @@ class TurboDRFExplainCommandTest(TestCase):
         out = self._call("CompiledSampleModel")
         self.assertIn("Property fields:", out)
         self.assertIn("display_title", out)
-        self.assertIn("DictProxy", out)
+        self.assertIn("display_title (sandboxed, relations: none)", out)
 
     def test_complexity_section(self):
         """Complexity section should show total fields, JOINs, and query counts."""

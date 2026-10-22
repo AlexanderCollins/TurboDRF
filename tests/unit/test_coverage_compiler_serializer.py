@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import django.db.models
 from django.contrib.auth import get_user_model
-from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase, override_settings
 from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory
@@ -27,8 +27,6 @@ from turbodrf.compiler import (
     CompiledQueryPlan,
     _build_fk_type_coercers,
     _build_type_coercers,
-    _coerce_decimal,
-    _compile_m2m_spec,
     compile_model,
 )
 from turbodrf.filter_backends import ORFilterBackend
@@ -101,42 +99,6 @@ class TestBuildFkTypeCoercers(TestCase):
 class TestCompileM2MSpec(TestCase):
     """Cover M2M spec compilation edge cases."""
 
-    def test_m2m_through_table_fk_resolution_error(self):
-        """Line 114: source_fk or target_fk is None -> ImproperlyConfigured."""
-
-        class FakeThrough(django.db.models.Model):
-            class Meta:
-                app_label = "test_app"
-
-            @staticmethod
-            def _meta_get_fields():
-                return []
-
-        class FakeM2MField:
-            many_to_many = True
-
-            class remote_field:
-                through = FakeThrough
-
-            related_model = Category
-
-        class FakeModel:
-            __name__ = "FakeModel"
-
-            class _meta:
-                @staticmethod
-                def get_field(name):
-                    if name == "tags":
-                        return FakeM2MField()
-                    raise FieldDoesNotExist
-
-        # FakeThrough has no FK fields pointing to FakeModel or Category,
-        # so source_fk and target_fk will be None
-        with self.assertRaises(ImproperlyConfigured) as ctx:
-            _compile_m2m_spec(FakeModel, "tags", ["name"])
-
-        self.assertIn("Could not resolve M2M through table FKs", str(ctx.exception))
-
     def test_m2m_decimal_sub_field_coercion(self):
         """Lines 130-132: M2M sub-field that is a DecimalField gets a coercer."""
 
@@ -149,15 +111,7 @@ class TestCompileM2MSpec(TestCase):
 
         # We can't easily wire up a real M2M for this, so test via
         # the sub-field coercer building logic directly
-        coercers = {}
-        sub_fields = ["name", "description"]
-        for sub_field in sub_fields:
-            try:
-                target_field = Category._meta.get_field(sub_field)
-                if isinstance(target_field, django.db.models.DecimalField):
-                    coercers[sub_field] = _coerce_decimal
-            except FieldDoesNotExist:
-                pass
+        coercers = _build_type_coercers(Category, ["name", "description"])
 
         # Category has no DecimalField, so no coercers
         self.assertEqual(coercers, {})
@@ -193,7 +147,7 @@ class TestApplyToQuerysetM2MPkInsertion(TestCase):
         )
         self.article.categories.add(self.cat)
 
-    def test_pk_inserted_when_m2m_active_and_pk_excluded(self):
+    def test_pk_fetched_for_m2m_merge_but_not_rendered(self):
         plan = compile_model(CompiledArticle)
         qs = CompiledArticle.objects.all()
         # Pass readable_fields that include M2M but NOT the PK
@@ -201,10 +155,14 @@ class TestApplyToQuerysetM2MPkInsertion(TestCase):
         compiled_qs, active_plan = plan.apply_to_queryset(qs, readable)
         active_simple, active_fk, active_m2m, active_props = active_plan
 
-        # PK should have been prepended to active_simple
-        self.assertIn(plan.pk_field, active_simple)
-        # M2M should be active
+        # The pk is fetched (the M2M merge keys on it) ...
+        self.assertIn(plan.pk_field, compiled_qs.query.values_select)
         self.assertIn("categories", active_m2m)
+        # ... but not rendered: it wasn't selected.
+        self.assertNotIn(plan.pk_field, active_simple)
+        rows = plan.post_process(list(compiled_qs), active_plan)
+        self.assertNotIn(plan.pk_field, rows[0])
+        self.assertEqual(rows[0]["categories"], [{"name": "Python"}])
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +186,7 @@ class TestM2MTypeCoercionPostProcess(TestCase):
                     "related_model": Category,
                     "sub_fields": ["name"],
                     "annotations": {},
-                    "type_coercers": {"price": _coerce_decimal},
+                    "type_coercers": {"price": str},
                 }
             },
             property_fields={},
@@ -945,36 +903,10 @@ class TestGetValidFilterFieldsCallable(TestCase):
 class TestTurboDRFAppConfig(TestCase):
     """Cover apps.py ready() and _ensure_drf_yasg_installed."""
 
-    def test_ensure_drf_yasg_installed_when_missing_tuple(self):
-        """Lines 28-33: drf_yasg is inserted when not in INSTALLED_APPS (tuple form)."""
-        from turbodrf.apps import TurboDRFConfig
-
-        config = TurboDRFConfig("turbodrf", __import__("turbodrf"))
-
-        from django.conf import settings
-
-        # Save original and replace with a tuple that lacks drf_yasg
-        original_apps = settings.INSTALLED_APPS
-        try:
-            settings.INSTALLED_APPS = (
-                "django.contrib.auth",
-                "django.contrib.contenttypes",
-                "turbodrf",
-                "tests.test_app",
-            )
-            config._ensure_drf_yasg_installed()
-
-            self.assertIn("drf_yasg", settings.INSTALLED_APPS)
-            self.assertIsInstance(settings.INSTALLED_APPS, list)
-            # drf_yasg should be before turbodrf
-            yasg_idx = settings.INSTALLED_APPS.index("drf_yasg")
-            turbo_idx = settings.INSTALLED_APPS.index("turbodrf")
-            self.assertLess(yasg_idx, turbo_idx)
-        finally:
-            settings.INSTALLED_APPS = original_apps
-
-    def test_ensure_drf_yasg_noop_when_present(self):
-        """drf_yasg already in INSTALLED_APPS — should be a no-op."""
+    def test_ready_with_appconfig_path_and_no_drf_yasg(self):
+        """Listing the app as 'turbodrf.apps.TurboDRFConfig' without drf_yasg
+        used to raise ValueError from INSTALLED_APPS.index('turbodrf') and stop
+        Django booting. ready() no longer edits INSTALLED_APPS at all."""
         from turbodrf.apps import TurboDRFConfig
 
         config = TurboDRFConfig("turbodrf", __import__("turbodrf"))
@@ -982,20 +914,38 @@ class TestTurboDRFAppConfig(TestCase):
         from django.conf import settings
 
         original_apps = settings.INSTALLED_APPS
+        apps_list = (
+            "django.contrib.auth",
+            "django.contrib.contenttypes",
+            "turbodrf.apps.TurboDRFConfig",
+            "tests.test_app",
+        )
         try:
-            settings.INSTALLED_APPS = [
-                "django.contrib.auth",
-                "django.contrib.contenttypes",
-                "drf_yasg",
-                "turbodrf",
-                "tests.test_app",
-            ]
-            config._ensure_drf_yasg_installed()
-
-            # Should still only have one drf_yasg
-            self.assertEqual(settings.INSTALLED_APPS.count("drf_yasg"), 1)
+            settings.INSTALLED_APPS = apps_list
+            config.ready()
+            self.assertEqual(settings.INSTALLED_APPS, apps_list)
         finally:
             settings.INSTALLED_APPS = original_apps
+
+    def test_docs_check_warns_when_drf_yasg_not_installed(self):
+        """Adding drf_yasg to settings.INSTALLED_APPS in ready() can't work
+        (the app registry is already populated), so a system check tells the
+        user to add it instead."""
+        from unittest.mock import patch
+
+        from django.core.checks.registry import registry
+
+        from turbodrf.apps import check_docs_dependencies
+
+        self.assertIn(check_docs_dependencies, registry.get_checks())
+        self.assertEqual(check_docs_dependencies(), [])
+
+        with patch("turbodrf.apps.apps.is_installed", return_value=False):
+            messages = check_docs_dependencies()
+            self.assertEqual([m.id for m in messages], ["turbodrf.W001"])
+            self.assertIn("drf_yasg", messages[0].hint)
+            with override_settings(TURBODRF_ENABLE_DOCS=False):
+                self.assertEqual(check_docs_dependencies(), [])
 
     @override_settings(TURBODRF_ENABLE_DOCS=False)
     def test_ready_skips_yasg_when_docs_disabled(self):

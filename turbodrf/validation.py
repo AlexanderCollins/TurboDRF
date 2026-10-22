@@ -149,9 +149,8 @@ def validate_searchable_fields_safety(model):
     """
     from django.conf import settings as _s
 
-    from .predicates import get_predicates, get_tenant_field
-
     from .mixins import get_searchable_fields
+    from .predicates import get_predicates, get_tenant_field
 
     searchable = get_searchable_fields(model)
     if not searchable:
@@ -276,11 +275,17 @@ def build_traversal_scope_q(parent_model, field_path, request):
 
     For each model in the JOIN chain that has registered predicates or
     a ``tenant_field``, this AND's
-    ``<prefix>__pk__in=<TargetModel.objects.filter(<target_q>)>`` onto
-    the parent queryset, where ``target_q`` mirrors the target view's
+    ``<prefix>__pk__in=<TargetModel._base_manager.filter(<target_q>)>``
+    onto the parent queryset, where ``target_q`` mirrors the target view's
     tenant_q + predicate_q construction (see
     :meth:`turbodrf.views.TurboDRFViewSet._get_tenant_q` and
     :meth:`._get_predicate_q`).
+
+    The base manager is deliberate: a JOIN, like Django's FK descriptor,
+    ignores the target's default manager, and the serializer path renders the
+    same related row. A default-manager filter (soft delete, say) is not a
+    scoping layer — tenant_field and predicates are. Scoping on the default
+    manager dropped every row whose FK pointed at a soft-deleted target.
 
     Used at request time to wrap URL-driven JOINs (``?fk__field=...``,
     ``?ordering=fk__field``) so the JOIN can't render rows the caller
@@ -334,7 +339,7 @@ def build_traversal_scope_q(parent_model, field_path, request):
             continue
 
         prefix = "__".join(parts[:step_idx])
-        scoped_qs = step_model.objects.all()
+        scoped_qs = step_model._base_manager.all()
         fail_closed = False
 
         # Tenant boundary on the target.
@@ -366,7 +371,7 @@ def build_traversal_scope_q(parent_model, field_path, request):
                 scoped_qs = scoped_qs.filter(target_q)
 
         if fail_closed:
-            scoped_qs = step_model.objects.none()
+            scoped_qs = step_model._base_manager.none()
 
         step_q = Q(**{f"{prefix}__in": scoped_qs.values("pk")})
         if may_be_empty:
@@ -387,7 +392,7 @@ def _relation_may_be_empty(field):
     return bool(getattr(field, "null", False))
 
 
-def scoped_target_queryset(target_model, request):
+def scoped_target_queryset(target_model, request, base_manager=False):
     """Queryset of ``target_model`` rows visible to ``request``'s user via the
     target's OWN tenant + predicates, or ``None`` when the target is unscoped
     (public — no predicates, no ``tenant_field``) and needs no scoping.
@@ -395,6 +400,11 @@ def scoped_target_queryset(target_model, request):
     Mirrors a single step of :func:`build_traversal_scope_q`; used to scope the
     compiled M2M merge's second query (finding F4), where the leak is a separate
     query rather than a JOIN on the parent queryset.
+
+    Built on the target's default manager (what an M2M manager and a write's
+    related field read through), or on its base manager with
+    ``base_manager=True`` — for a hop of a nested path, which Django follows
+    without the default manager.
     """
     from django.db.models import Q
 
@@ -407,7 +417,10 @@ def scoped_target_queryset(target_model, request):
         return None
 
     user = getattr(request, "user", None) if request is not None else None
-    qs = target_model.objects.all()
+    manager = (
+        target_model._base_manager if base_manager else target_model._default_manager
+    )
+    qs = manager.all()
 
     if tenant_field is not None:
         if (
@@ -415,15 +428,15 @@ def scoped_target_queryset(target_model, request):
             or user is None
             or not getattr(user, "is_authenticated", False)
         ):
-            return target_model.objects.none()
+            return manager.none()
         tenant = get_user_tenant(user)
         if tenant is None:
-            return target_model.objects.none()
+            return manager.none()
         qs = qs.filter(**{tenant_field: tenant})
 
     if predicates:
         if request is None:
-            return target_model.objects.none()
+            return manager.none()
         roles = set(get_user_roles(user)) if user is not None else set()
         target_q = Q()
         for pred in predicates:
@@ -522,7 +535,11 @@ def _get_sensitive_fields():
 
     from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
 
-    return set(getattr(settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive))
+    # The setting ADDS to the defaults: replacing them let `['ssn']` silently
+    # un-deny `password`, `token`, ...
+    return set(default_sensitive) | set(
+        getattr(settings, "TURBODRF_SENSITIVE_FIELDS", ())
+    )
 
 
 def is_field_path_sensitive(field_path):
@@ -587,50 +604,98 @@ def validate_filter_field(model, filter_param):
     if filter_param.endswith("_or"):
         filter_param = filter_param[:-3]
 
-    # Split into field path and lookup
+    # Split into field path and lookup. The field path is resolved against
+    # the model FIRST: a related field named like a lookup (`folder__date`,
+    # where `date` is a field of the folder) is a field, not a lookup —
+    # treating it as one let the JOIN run unscoped and unchecked.
     parts = filter_param.split("__")
+    field_parts = _resolve_field_parts(model, parts)
+    rest = parts[len(field_parts) :]
 
-    # Common Django lookups
-    lookups = {
-        "exact",
-        "iexact",
-        "contains",
-        "icontains",
-        "in",
-        "gt",
-        "gte",
-        "lt",
-        "lte",
-        "startswith",
-        "istartswith",
-        "endswith",
-        "iendswith",
-        "range",
-        "date",
-        "year",
-        "month",
-        "day",
-        "week",
-        "week_day",
-        "quarter",
-        "time",
-        "hour",
-        "minute",
-        "second",
-        "isnull",
-        "regex",
-        "iregex",
-    }
-
-    # Check if last part is a lookup
-    if parts[-1] in lookups:
-        field_path = "__".join(parts[:-1])
-        lookup = parts[-1]
+    if not field_parts:
+        # Not a field of this model at all (the caller rejects it); split off
+        # a trailing lookup for the error paths that report it.
+        if len(parts) > 1 and parts[-1] in _FILTER_LOOKUPS:
+            field_path, lookup = "__".join(parts[:-1]), parts[-1]
+        else:
+            field_path, lookup = filter_param, "exact"
+    elif not rest:
+        field_path, lookup = "__".join(field_parts), "exact"
+    elif all(part in _FILTER_LOOKUPS for part in rest):
+        field_path, lookup = "__".join(field_parts), "__".join(rest)
+    elif _is_json_field(model, field_parts):
+        # JSON key transforms: the keys are part of the path (and fail the
+        # nested permission walk unless permissions are bypassed).
+        if rest[-1] in _FILTER_LOOKUPS:
+            field_path, lookup = "__".join(parts[:-1]), parts[-1]
+        else:
+            field_path, lookup = filter_param, "exact"
     else:
-        field_path = filter_param
-        lookup = "exact"
+        raise ValidationError(
+            f"'{filter_param}' is not a field path with a supported lookup."
+        )
 
     # Validate nesting depth
     validate_nesting_depth(field_path)
 
     return field_path, lookup
+
+
+# Lookups (and date/time transforms) a client filter may use. Regex lookups
+# are not offered: a client-supplied pattern can backtrack catastrophically.
+_FILTER_LOOKUPS = {
+    "exact",
+    "iexact",
+    "contains",
+    "icontains",
+    "in",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "startswith",
+    "istartswith",
+    "endswith",
+    "iendswith",
+    "range",
+    "date",
+    "year",
+    "month",
+    "day",
+    "week",
+    "week_day",
+    "quarter",
+    "time",
+    "hour",
+    "minute",
+    "second",
+    "isnull",
+}
+
+
+def _resolve_field_parts(model, parts):
+    """The longest prefix of ``parts`` that resolves as a field path on
+    ``model`` (following relations)."""
+    resolved = []
+    current = model
+    for part in parts:
+        if current is None:
+            break
+        try:
+            field = current._meta.get_field(part)
+        except FieldDoesNotExist:
+            break
+        resolved.append(part)
+        current = field.related_model if field.is_relation else None
+    return resolved
+
+
+def _is_json_field(model, field_parts):
+    from django.db.models import JSONField
+
+    field = model
+    for part in field_parts:
+        field = field._meta.get_field(part)
+        if field.is_relation:
+            field = field.related_model
+    return isinstance(field, JSONField)

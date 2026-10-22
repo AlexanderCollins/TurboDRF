@@ -173,6 +173,107 @@ class TestTrackingMixinOrdering(TestCase):
             self.assertEqual(bases[-1], viewsets.ModelViewSet)
 
 
+class _FakeLoggingMixin:
+    """Stand-in for rest_framework_tracking.mixins.LoggingMixin (not
+    installed in the test env). ``_clean_data`` mirrors drf-api-tracking's
+    masking: built-in key names plus the view's ``sensitive_fields``."""
+
+    sensitive_fields = {}
+    CLEANED_SUBSTITUTE = "********************"
+    parent_should_log = True
+
+    def should_log(self, request, response):
+        return self.parent_should_log
+
+    def _clean_data(self, data):
+        sensitive = {"api", "token", "key", "secret", "password", "signature"}
+        if self.sensitive_fields:
+            sensitive |= {field.lower() for field in self.sensitive_fields}
+        return {
+            k: (self.CLEANED_SUBSTITUTE if k.lower() in sensitive else v)
+            for k, v in data.items()
+        }
+
+
+class TestTurboDRFTrackingMixin(TestCase):
+    """TURBODRF_TRACKING_ANONYMOUS and sensitive-field masking."""
+
+    def _mixin(self):
+        from turbodrf.tracking import build_tracking_mixin
+
+        return build_tracking_mixin(_FakeLoggingMixin)()
+
+    def test_get_tracking_mixin_wraps_logging_mixin(self):
+        import sys
+        from unittest.mock import MagicMock, patch
+
+        mixins_module = MagicMock(LoggingMixin=_FakeLoggingMixin)
+        fake_modules = {
+            "rest_framework_tracking": MagicMock(),
+            "rest_framework_tracking.mixins": mixins_module,
+        }
+        with override_settings(TURBODRF_ENABLE_TRACKING=True):
+            with patch.dict(sys.modules, fake_modules):
+                mixin = get_tracking_mixin()
+        self.assertTrue(issubclass(mixin, _FakeLoggingMixin))
+        self.assertIs(mixin, self._mixin().__class__)
+
+    def test_turbodrf_sensitive_fields_are_masked(self):
+        cleaned = self._mixin()._clean_data(
+            {
+                "api_key": "k-123",
+                "access_token": "t-123",
+                "refresh_token": "r-123",
+                "password_hash": "h",
+                "session_key": "s",
+                "title": "visible",
+            }
+        )
+        self.assertEqual(cleaned["title"], "visible")
+        for key in (
+            "api_key",
+            "access_token",
+            "refresh_token",
+            "password_hash",
+            "session_key",
+        ):
+            self.assertEqual(cleaned[key], _FakeLoggingMixin.CLEANED_SUBSTITUTE, key)
+
+    @override_settings(TURBODRF_SENSITIVE_FIELDS=["ssn"])
+    def test_sensitive_fields_follow_settings(self):
+        self.assertIn("ssn", self._mixin().sensitive_fields)
+        self.assertEqual(
+            self._mixin()._clean_data({"ssn": "1"})["ssn"],
+            _FakeLoggingMixin.CLEANED_SUBSTITUTE,
+        )
+
+    def test_anonymous_requests_not_logged_by_default(self):
+        from unittest.mock import Mock
+
+        from django.contrib.auth.models import AnonymousUser
+
+        request = Mock(user=AnonymousUser())
+        self.assertFalse(self._mixin().should_log(request, Mock()))
+
+    @override_settings(TURBODRF_TRACKING_ANONYMOUS=True)
+    def test_anonymous_requests_logged_when_enabled(self):
+        from unittest.mock import Mock
+
+        from django.contrib.auth.models import AnonymousUser
+
+        request = Mock(user=AnonymousUser())
+        self.assertTrue(self._mixin().should_log(request, Mock()))
+
+    def test_authenticated_requests_logged_and_parent_rule_kept(self):
+        from unittest.mock import Mock
+
+        request = Mock(user=Mock(is_authenticated=True))
+        mixin = self._mixin()
+        self.assertTrue(mixin.should_log(request, Mock()))
+        mixin.parent_should_log = False
+        self.assertFalse(mixin.should_log(request, Mock()))
+
+
 # Note: removed 5 docstring-presence tests + 4 "doesn't raise" placeholders
 # from earlier versions of this file. They asserted nothing functional
 # (e.g. `self.assertIsNotNone(fn.__doc__)`). The remaining tests in this

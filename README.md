@@ -101,7 +101,9 @@ that all apply to every request (AND'd together):
 | Can this user reach this endpoint? | **RBAC** (Role-Based Access Control) | Roles in `TURBODRF_ROLES` map to permissions. `permissions.py` checks `<app>.<model>.<action>` for the request method. |
 | Which rows can this user see? | **Row-level access** | Predicates declared in `turbodrf()` config. Mandatory **tenant boundary** + discretionary **within-tenant predicates** (Owner, Members, Either, Custom). |
 | Which fields can this user read or write? | **Field-level permissions** | Per-field rules `<app>.<model>.<field>.read` / `.write` in `TURBODRF_ROLES`. Hidden fields are stripped from responses, search, ordering, filters, and OPTIONS metadata. |
-| Are FK targets the user provides actually theirs? | **Write validation** | On every create/update, FKs in the request body are validated against the related model's predicate stack. Cross-tenant or invisible targets return 400. |
+| Are FK targets the user provides actually theirs? | **Write validation** | On every create/update, FK and M2M values in the request body are validated against the related model's tenant boundary and predicate stack, on every model (shared ones included). Cross-tenant or invisible targets return 400. |
+
+Field rules bind anonymous callers too: `public_access: True` gives them model-level read, and a field that any role has a read rule for needs a grant from a `guest` role. See [docs/permissions.md](docs/permissions.md#anonymous-callers-and-the-guest-role).
 
 ### How it actually works (concrete walk-through)
 
@@ -158,7 +160,7 @@ Manager sees all ABC projects, but still can't see XYZ — the tenant boundary i
 
 ### Performance
 
-Tenant + owner predicates add **~0 measurable latency** vs. the unscoped baseline (predicates compile to a single Q AND'd onto the queryset; the WHERE clause runs at the DB layer with index hits). FK injection check on writes adds ~one `.exists()` query per FK in the request body. Both are negligible for typical workloads. See [docs/performance.md](docs/performance.md) for benchmarking the compiled vs DRF read paths.
+Tenant + owner predicates add **~0 measurable latency** vs. the unscoped baseline (predicates compile to a single Q AND'd onto the queryset; the WHERE clause runs at the DB layer with index hits). FK injection check on writes adds ~one query per scoped FK / M2M field in the request body. Both are negligible for typical workloads. See [docs/performance.md](docs/performance.md) for benchmarking the compiled vs DRF read paths.
 
 ### Quick recipes
 
@@ -166,17 +168,17 @@ Tenant + owner predicates add **~0 measurable latency** vs. the unscoped baselin
 # Multi-tenant SaaS — most common case
 {'tenant_field': 'store', 'owner_field': 'customer', 'bypass_owner_roles': ['staff']}
 
-# Personal data app (no tenant)
+# Personal data app (no TURBODRF_TENANT_MODEL; with one, owner_field alone fails the startup check)
 {'owner_field': 'author', 'bypass_owner_roles': ['admin']}
 
 # Reference data (currencies, country codes — not tenant-scoped)
 {'tenancy': 'shared'}
 
 # M2M membership (Slack channels, Linear projects)
-{'visibility': [Tenant('workspace'), Members('participants')]}
+{'tenant_field': 'workspace', 'visibility': [Members('participants')]}
 
 # Power-form composition (when sugar doesn't fit)
-{'visibility': [Tenant('workspace'), Either(Owner('owner'), Members('shared_with'))]}
+{'tenant_field': 'workspace', 'visibility': [Either(Owner('owner'), Members('shared_with'))]}
 ```
 
 See [docs/tenancy.md](docs/tenancy.md) for the full predicate vocabulary, hard-fail-at-startup behavior, and 404-vs-403 semantics.

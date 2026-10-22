@@ -109,14 +109,33 @@ class Command(BaseCommand):
             f"{field_summary['m2m']} M2M, {field_summary['property']} property"
         )
         self.stdout.write(f"  Public access: {public_access}")
+        unscoped = sorted(config.get("unscoped_properties") or ())
+        if unscoped:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"  Unscoped properties (no sandbox): {', '.join(unscoped)}"
+                )
+            )
 
         # Tenancy / predicate report
         self._report_tenancy(model, config)
+
+        blocker = None
+        if compiled and not issues:
+            from turbodrf.compiler import compile_blocker
+
+            blocker = compile_blocker(model)
 
         if issues:
             self.stdout.write(self.style.ERROR("  Issues:"))
             for issue in issues:
                 self.stdout.write(self.style.ERROR(issue))
+        elif blocker:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"  Served by the serializer path, not compiled: {blocker}"
+                )
+            )
         elif not compiled:
             self.stdout.write(
                 self.style.WARNING(
@@ -136,7 +155,8 @@ class Command(BaseCommand):
         )
 
         tenant_model_setting = getattr(settings, "TURBODRF_TENANT_MODEL", None)
-        autodetect = getattr(settings, "TURBODRF_AUTODETECT_TENANT", True)
+        # Same default as the router (turbodrf/settings.py).
+        autodetect = getattr(settings, "TURBODRF_AUTODETECT_TENANT", False)
         require = getattr(settings, "TURBODRF_REQUIRE_TENANCY", True)
 
         if tenant_model_setting is None:

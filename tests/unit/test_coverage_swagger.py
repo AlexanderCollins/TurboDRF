@@ -40,107 +40,45 @@ def _resolver():
 
 
 class TestRoleBasedSchemaGeneratorHelpers(TestCase):
-    """Test _extract_model_info, _has_permission, _filter_schema_fields."""
+    """Role-request parsing and field-config helpers."""
 
-    def _gen(self):
-        return RoleBasedSchemaGenerator(
-            info=openapi.Info(title="Test", default_version="v1"),
+    def test_requested_role_from_query(self):
+        req = MagicMock()
+        req.GET = {"role": "viewer"}
+        req.session = {"api_role": "admin"}
+        self.assertEqual(RoleBasedSchemaGenerator._requested_role(req), "viewer")
+
+    def test_requested_role_from_session(self):
+        req = MagicMock()
+        req.GET = {}
+        req.session = {"api_role": "editor"}
+        self.assertEqual(RoleBasedSchemaGenerator._requested_role(req), "editor")
+
+    def test_requested_role_without_session(self):
+        """No SessionMiddleware → no request.session → no crash, no role."""
+
+        class NoSessionRequest:
+            GET = {}
+
+        self.assertIsNone(RoleBasedSchemaGenerator._requested_role(NoSessionRequest()))
+
+    def test_requested_role_ignores_non_strings(self):
+        req = MagicMock()
+        req.GET = {"role": ""}
+        req.session = {"api_role": ["admin"]}
+        self.assertIsNone(RoleBasedSchemaGenerator._requested_role(req))
+
+    def test_configured_fields_list_and_detail(self):
+        from turbodrf.swagger import _configured_fields
+
+        self.assertEqual(
+            _configured_fields(SampleModel, "list"),
+            ["title", "price", "related__name", "is_active"],
         )
-
-    # -- _extract_model_info (lines 149-169)
-
-    def test_extract_model_info_valid_api_path(self):
-        result = self._gen()._extract_model_info("/api/samplemodels/")
-        self.assertIsNotNone(result)
-        self.assertEqual(result["model_name"], "samplemodel")
-        self.assertEqual(result["app_label"], "test_app")
-
-    def test_extract_model_info_unknown_model_returns_none(self):
-        """Unknown URL fragments now resolve to None (the previous hardcoded
-        'books' fallback was dead-code-only and broke for any other app)."""
-        self.assertIsNone(self._gen()._extract_model_info("/api/unknownitems/"))
-
-    def test_extract_model_info_too_short_path(self):
-        self.assertIsNone(self._gen()._extract_model_info("/single/"))
-
-    def test_extract_model_info_non_api_path(self):
-        self.assertIsNone(self._gen()._extract_model_info("/admin/samplemodels/"))
-
-    def test_extract_model_info_root_path(self):
-        self.assertIsNone(self._gen()._extract_model_info("/"))
-
-    # -- _has_permission (lines 204-219)
-
-    def test_has_permission_get(self):
-        info = {"app_label": "test_app", "model_name": "samplemodel"}
-        self.assertTrue(
-            self._gen()._has_permission(info, "GET", {"test_app.samplemodel.read"})
+        self.assertIn("secret_field", _configured_fields(SampleModel, "detail"))
+        self.assertEqual(
+            _configured_fields(RelatedModel, "list"), ["name", "description"]
         )
-
-    def test_has_permission_post(self):
-        info = {"app_label": "test_app", "model_name": "samplemodel"}
-        self.assertTrue(
-            self._gen()._has_permission(info, "POST", {"test_app.samplemodel.create"})
-        )
-
-    def test_has_permission_put(self):
-        info = {"app_label": "test_app", "model_name": "samplemodel"}
-        self.assertTrue(
-            self._gen()._has_permission(info, "PUT", {"test_app.samplemodel.update"})
-        )
-
-    def test_has_permission_patch(self):
-        info = {"app_label": "test_app", "model_name": "samplemodel"}
-        self.assertTrue(
-            self._gen()._has_permission(info, "PATCH", {"test_app.samplemodel.update"})
-        )
-
-    def test_has_permission_delete(self):
-        info = {"app_label": "test_app", "model_name": "samplemodel"}
-        self.assertTrue(
-            self._gen()._has_permission(info, "DELETE", {"test_app.samplemodel.delete"})
-        )
-
-    def test_has_permission_denied(self):
-        info = {"app_label": "test_app", "model_name": "samplemodel"}
-        self.assertFalse(
-            self._gen()._has_permission(info, "POST", {"test_app.samplemodel.read"})
-        )
-
-    def test_has_permission_unknown_method(self):
-        info = {"app_label": "test_app", "model_name": "samplemodel"}
-        self.assertFalse(
-            self._gen()._has_permission(info, "OPTIONS", {"test_app.samplemodel.read"})
-        )
-
-    # -- _filter_schema_fields (lines 258-271)
-
-    def test_filter_schema_fields_removes_unpermitted(self):
-        schema = {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                "secret_field": {"type": "string"},
-            },
-        }
-        info = {"app_label": "test_app", "model_name": "samplemodel"}
-        result = self._gen()._filter_schema_fields(
-            schema, info, {"test_app.samplemodel.title.read"}
-        )
-        self.assertIn("title", result["properties"])
-        self.assertNotIn("secret_field", result["properties"])
-
-    def test_filter_schema_fields_no_properties_key(self):
-        schema = {"type": "string"}
-        info = {"app_label": "test_app", "model_name": "samplemodel"}
-        result = self._gen()._filter_schema_fields(schema, info, set())
-        self.assertEqual(result, {"type": "string"})
-
-    def test_filter_schema_fields_empty_permissions(self):
-        schema = {"type": "object", "properties": {"title": {"type": "string"}}}
-        info = {"app_label": "test_app", "model_name": "samplemodel"}
-        result = self._gen()._filter_schema_fields(schema, info, set())
-        self.assertEqual(result["properties"], {})
 
 
 # ---------------------------------------------------------------------------
@@ -169,43 +107,28 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
         self.assertIsNone(gen.current_role)
         self.assertEqual(result["paths"], {})
 
-    @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
+    def _real_schema(self, roles, query=""):
+        from django.core.cache import cache
+        from rest_framework.test import APIClient
+
+        cache.clear()
+        client = APIClient()
+        if roles is not None:
+            user = User.objects.create_user(
+                username=f"sw_{'_'.join(roles) or 'none'}", password="x"
+            )
+            user._test_roles = roles
+            client.force_authenticate(user=user)
+        response = client.get("/swagger/?format=openapi" + query)
+        self.assertEqual(response.status_code, 200)
+        return response.json()
+
     def test_get_schema_with_role_filters_paths(self):
-        gen = self._gen()
-        fake_schema = {
-            "paths": {
-                "/api/samplemodels/": {
-                    "get": {
-                        "responses": {
-                            "200": {
-                                "schema": {
-                                    "type": "object",
-                                    "properties": {"title": {"type": "string"}},
-                                }
-                            }
-                        }
-                    },
-                    "post": {"responses": {}},
-                },
-                "/api/relatedmodels/": {"get": {"responses": {}}},
-            }
-        }
-        req = MagicMock()
-        req.GET = {"role": "viewer"}
-        req.session = {}
-        req.user = MagicMock(is_authenticated=True)  # caller actually holds 'viewer'
-        with patch(
-            "turbodrf.backends.get_user_roles", return_value=["viewer"]
-        ), patch.object(
-            RoleBasedSchemaGenerator.__bases__[0],
-            "get_schema",
-            return_value=fake_schema,
-        ):
-            result = gen.get_schema(request=req, public=True)
-        self.assertIn("/api/samplemodels/", result["paths"])
-        self.assertIn("get", result["paths"]["/api/samplemodels/"])
-        self.assertNotIn("post", result["paths"]["/api/samplemodels/"])
-        self.assertIn("/api/relatedmodels/", result["paths"])
+        schema = self._real_schema(["viewer"], "&role=viewer")
+        self.assertIn("/samplemodels/", schema["paths"])
+        self.assertIn("get", schema["paths"]["/samplemodels/"])
+        self.assertNotIn("post", schema["paths"]["/samplemodels/"])
+        self.assertIn("/relatedmodels/", schema["paths"])
 
     def test_get_schema_role_from_session(self):
         gen = self._gen()
@@ -213,94 +136,47 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
         req.GET = {}
         req.session = {"api_role": "admin"}
         req.user = MagicMock(is_authenticated=True)  # caller holds 'admin'
-        with patch(
-            "turbodrf.backends.get_user_roles", return_value=["admin"]
-        ), patch.object(
-            RoleBasedSchemaGenerator.__bases__[0],
-            "get_schema",
-            return_value={"paths": {}},
+        with (
+            patch("turbodrf.backends.get_user_roles", return_value=["admin"]),
+            patch.object(
+                RoleBasedSchemaGenerator.__bases__[0],
+                "get_schema",
+                return_value={"paths": {}},
+            ),
         ):
             gen.get_schema(request=req, public=True)
         self.assertEqual(gen.current_role, "admin")
 
-    def test_get_schema_no_role_returns_empty(self):
-        # No role requested or held → the schema filters down to EMPTY, never
-        # the full unfiltered schema (the original anonymous-disclosure bug).
-        from django.contrib.auth.models import AnonymousUser
+    def test_get_schema_anonymous_is_read_only_and_field_gated(self):
+        # Anonymous with no guest role: only reads of public models, with no
+        # field a role has a read rule for — never the full unfiltered schema.
+        schema = self._real_schema(None)
+        for operations in schema["paths"].values():
+            self.assertFalse({"post", "put", "patch", "delete"} & set(operations))
+        props = set()
+        for name, definition in (schema.get("definitions") or {}).items():
+            if name.startswith("test_app_samplemodel_"):
+                props.update(definition.get("properties", {}))
+        self.assertNotIn("secret_field", props)
+        self.assertNotIn("price", props)
 
-        gen = self._gen()
-        fake_schema = {"paths": {"/api/samplemodels/": {"get": {}, "post": {}}}}
-        req = MagicMock()
-        req.GET = {}
-        req.session = {}
-        req.user = AnonymousUser()
-        with patch.object(
-            RoleBasedSchemaGenerator.__bases__[0],
-            "get_schema",
-            return_value=fake_schema,
-        ):
-            result = gen.get_schema(request=req, public=True)
-        self.assertEqual(result["paths"], {})
-
-    @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
     def test_get_schema_filters_response_schema_fields(self):
-        gen = self._gen()
-        fake_schema = {
-            "paths": {
-                "/api/samplemodels/": {
-                    "get": {
-                        "responses": {
-                            "200": {
-                                "schema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "title": {"type": "string"},
-                                        "price": {"type": "number"},
-                                        "secret_field": {"type": "string"},
-                                    },
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        req = MagicMock()
-        req.GET = {"role": "viewer"}
-        req.session = {}
-        req.user = MagicMock(is_authenticated=True)  # caller actually holds 'viewer'
-        with patch(
-            "turbodrf.backends.get_user_roles", return_value=["viewer"]
-        ), patch.object(
-            RoleBasedSchemaGenerator.__bases__[0],
-            "get_schema",
-            return_value=fake_schema,
-        ):
-            result = gen.get_schema(request=req, public=True)
-        props = result["paths"]["/api/samplemodels/"]["get"]["responses"]["200"][
-            "schema"
-        ]["properties"]
+        schema = self._real_schema(["viewer"])
+        response = schema["paths"]["/samplemodels/{id}/"]["get"]["responses"]["200"]
+        ref = response["schema"]["$ref"].rsplit("/", 1)[1]
+        props = schema["definitions"][ref]["properties"]
         self.assertIn("title", props)
         self.assertNotIn("price", props)
         self.assertNotIn("secret_field", props)
 
-    @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
     def test_get_schema_path_with_no_model_info_excluded(self):
-        from django.contrib.auth.models import AnonymousUser
+        from rest_framework.views import APIView
 
-        gen = self._gen()
-        fake_schema = {"paths": {"/admin/dashboard/": {"get": {"responses": {}}}}}
-        req = MagicMock()
-        req.GET = {"role": "admin"}
-        req.session = {}
-        req.user = AnonymousUser()
-        with patch.object(
-            RoleBasedSchemaGenerator.__bases__[0],
-            "get_schema",
-            return_value=fake_schema,
-        ):
-            result = gen.get_schema(request=req, public=True)
-        self.assertEqual(result["paths"], {})
+        view = APIView()
+        view.request = None
+        self.assertFalse(
+            self._gen().should_include_endpoint("/admin/dashboard/", "GET", view, True)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -549,11 +425,20 @@ class TestSwaggerAutoSchemaRequestSerializer(TestCase):
             def turbodrf(cls):
                 return {"fields": ["name"]}
 
+        from django.contrib.auth.models import AnonymousUser
+
+        roles = {
+            "writer": [
+                "test_app.simplefieldmodel.read",
+                "test_app.simplefieldmodel.create",
+            ]
+        }
         viewset = TurboDRFViewSet()
         viewset.model = SimpleFieldModel
         viewset.queryset = SimpleFieldModel.objects.none()
         viewset.action = "create"
         request = self.factory.post("/api/simplefieldmodels/")
+        request.user = MagicMock(is_authenticated=True, pk=None, roles=["writer"])
         viewset.request = request
         viewset.format_kwarg = None
         schema = TurboDRFSwaggerAutoSchema(
@@ -564,9 +449,17 @@ class TestSwaggerAutoSchemaRequestSerializer(TestCase):
             request=request,
             overrides={},
         )
-        result = schema._get_write_operation_serializer()
+        with override_settings(TURBODRF_ROLES=roles):
+            result = schema._get_write_operation_serializer()
         self.assertIsNotNone(result)
         self.assertEqual(result.Meta.fields, ["name"])
+        self.assertEqual(list(result.fields), ["name"])
+
+        # A caller without the role gets an empty request body.
+        request.user = AnonymousUser()
+        with override_settings(TURBODRF_ROLES=roles):
+            result = schema._get_write_operation_serializer()
+        self.assertEqual(list(result.fields), [])
 
 
 # ---------------------------------------------------------------------------
@@ -678,8 +571,11 @@ class TestTurboDRFMetadata(TestCase):
                 "test_app.choicemodel.status.read",
             ]
         }
-        with patch("turbodrf.settings.TURBODRF_ROLES", roles_with_choice), patch(
-            "django.conf.settings.TURBODRF_ROLES", roles_with_choice, create=True
+        with (
+            patch("turbodrf.settings.TURBODRF_ROLES", roles_with_choice),
+            patch(
+                "django.conf.settings.TURBODRF_ROLES", roles_with_choice, create=True
+            ),
         ):
             request = self.factory.options("/api/choicemodels/")
             request.user = MagicMock()
@@ -694,6 +590,7 @@ class TestTurboDRFMetadata(TestCase):
             self.assertEqual(len(status_info["choices"]), 2)
             self.assertEqual(status_info["choices"][0]["value"], "draft")
 
+    @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
     def test_metadata_field_exception_returns_unknown(self):
         class BadFieldModel(TurboDRFMixin, dj_models.Model):
             name = dj_models.CharField(max_length=50)

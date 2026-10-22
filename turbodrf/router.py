@@ -110,6 +110,7 @@ class TurboDRFRouter(DefaultRouter):
             register_predicates,
             register_tenant_field,
         )
+        from .properties import validate_property_config
         from .tenancy import resolve_tenancy_for_model
         from .validation import validate_nesting_depth
 
@@ -146,6 +147,10 @@ class TurboDRFRouter(DefaultRouter):
                                 f"validation failed: {str(e)}"
                             )
 
+                    # property_relations / unscoped_properties must name
+                    # real properties and loadable relation paths.
+                    validate_property_config(model)
+
                     # ---------------------------------------------------
                     # Resolve tenancy: returns (tenant_field, predicates,
                     # autodetected). Tenant is a SETTING separate from the
@@ -158,11 +163,12 @@ class TurboDRFRouter(DefaultRouter):
                         autodetect=autodetect,
                     )
 
+                    # Within-tenant predicates (owner_field) don't count: a
+                    # bypass role would see every tenant's rows.
                     if (
                         require_tenancy
                         and tenant_model_setting is not None
                         and tenant_field is None
-                        and not predicates
                         and not has_tenancy_declaration(config)
                         and not autodetected
                     ):
@@ -172,7 +178,9 @@ class TurboDRFRouter(DefaultRouter):
                             f"{tenant_model_setting}. Add one of: "
                             f"'tenant_field': '<path>', "
                             f"'visibility': [...], or "
-                            f"'tenancy': 'shared' (for reference data). "
+                            f"'tenancy': 'shared' (for reference data). An "
+                            f"'owner_field' alone scopes rows within a tenant, "
+                            f"not across tenants. "
                             f"Set TURBODRF_REQUIRE_TENANCY=False to disable "
                             f"this check."
                         )
@@ -213,7 +221,7 @@ class TurboDRFRouter(DefaultRouter):
                     # Build viewset attributes
                     viewset_attrs = {
                         "model": model,
-                        "queryset": model.objects.all(),
+                        "queryset": model._default_manager.all(),
                         "_predicates": predicates,
                         "_tenant_field": tenant_field,
                         "__module__": model.__module__,

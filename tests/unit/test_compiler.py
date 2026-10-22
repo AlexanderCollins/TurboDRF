@@ -1,6 +1,7 @@
 """Tests for the compiled read path."""
 
 from decimal import Decimal
+from unittest import mock
 
 import django
 from django.core.exceptions import ImproperlyConfigured
@@ -14,7 +15,6 @@ from tests.test_app.models import (
     RelatedModel,
 )
 from turbodrf.compiler import (
-    DictProxy,
     compile_model,
     get_compiled_plan,
     is_compiled,
@@ -25,36 +25,6 @@ from turbodrf.predicates import (
     Custom,
     register_predicates,
 )
-
-
-class DictProxyTests(TestCase):
-    def test_attribute_access(self):
-        proxy = DictProxy({"name": "hello", "price": 42})
-        self.assertEqual(proxy.name, "hello")
-        self.assertEqual(proxy.price, 42)
-
-    def test_missing_attribute_raises(self):
-        proxy = DictProxy({"name": "hello"})
-        with self.assertRaises(AttributeError):
-            _ = proxy.missing
-
-    def test_with_property_fget(self):
-        """Property fget should work with DictProxy as self."""
-
-        # Simulate a model property
-        def display_title(self):
-            return self.title.upper()
-
-        proxy = DictProxy({"title": "hello world"})
-        result = display_title(proxy)
-        self.assertEqual(result, "HELLO WORLD")
-
-    def test_with_real_model_property(self):
-        """Test using an actual model's property fget."""
-        fget = CompiledSampleModel.display_title.fget
-        proxy = DictProxy({"title": "test book"})
-        result = fget(proxy)
-        self.assertEqual(result, "TEST BOOK")
 
 
 class CompileModelTests(TestCase):
@@ -109,7 +79,9 @@ class CompileModelTests(TestCase):
         self.assertIn("price", plan.type_coercers)
         # Verify the coercer works
         self.assertEqual(plan.type_coercers["price"](Decimal("99.99")), "99.99")
-        self.assertIsNone(plan.type_coercers["price"](None))
+        # Quantized to decimal_places, as DRF's DecimalField renders it.
+        self.assertEqual(plan.type_coercers["price"](Decimal("0E-8")), "0.00")
+        self.assertEqual(plan.type_coercers["price"](Decimal("5")), "5.00")
 
     def test_compile_model_invalid_field_raises(self):
         """A non-existent, non-property field should raise."""
@@ -263,10 +235,20 @@ class ComplexPropertyTests(TestCase):
         self.assertIn("price_label", rows[0])
         self.assertEqual(rows[0]["price_label"], "$29.99 (active)")
 
+    def _with_relations(self, relations):
+        base = CompiledSampleModel.turbodrf()
+        return mock.patch.object(
+            CompiledSampleModel,
+            "turbodrf",
+            classmethod(lambda cls: {**base, "property_relations": relations}),
+        )
+
+    @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
     def test_property_accessing_related_object_uses_instance(self):
         """A property that reads a related object can't be computed from the
         .values() row (it holds the FK id, not the object), so it is computed
-        on the instance — one extra query for the affected rows."""
+        on a sandbox instance: the row in one query, each declared relation in
+        one more."""
         plan = compile_model(CompiledSampleModel)
         plan.property_fields["related_author_name"] = (
             CompiledSampleModel.related_author_name.fget
@@ -276,10 +258,26 @@ class ComplexPropertyTests(TestCase):
         compiled_qs, active_plan = plan.apply_to_queryset(qs)
         rows = list(compiled_qs)
 
-        with self.assertNumQueries(1):
-            rows = plan.post_process(rows, active_plan)
+        with self._with_relations({"related_author_name": ["related"]}):
+            with self.assertNumQueries(2):
+                rows = plan.post_process(rows, active_plan)
         self.assertEqual(rows[0]["related_author_name"], "Author")
-        # Row-computable properties don't need the instance.
+        self.assertEqual(rows[0]["display_title"], "TEST BOOK")
+
+    def test_property_reading_undeclared_relation_is_omitted(self):
+        """The sandbox runs no queries: a relation the model doesn't declare
+        in property_relations can't be loaded, so the property is left out."""
+        plan = compile_model(CompiledSampleModel)
+        plan.property_fields["related_author_name"] = (
+            CompiledSampleModel.related_author_name.fget
+        )
+
+        compiled_qs, active_plan = plan.apply_to_queryset(
+            CompiledSampleModel.objects.all()
+        )
+        with self.assertLogs("turbodrf.properties", level="DEBUG"):
+            rows = plan.post_process(list(compiled_qs), active_plan)
+        self.assertNotIn("related_author_name", rows[0])
         self.assertEqual(rows[0]["display_title"], "TEST BOOK")
 
     def test_property_failing_on_instance_is_omitted(self):
@@ -294,35 +292,34 @@ class ComplexPropertyTests(TestCase):
 
         qs = CompiledSampleModel.objects.all()
         compiled_qs, active_plan = plan.apply_to_queryset(qs)
-        with self.assertLogs("turbodrf.compiler", level="WARNING"):
+        with self.assertLogs("turbodrf.properties", level="DEBUG"):
             rows = plan.post_process(list(compiled_qs), active_plan)
         self.assertNotIn("broken", rows[0])
         self.assertEqual(rows[0]["display_title"], "TEST BOOK")
 
-    def test_dictproxy_refuses_fk_object_and_serves_attname(self):
-        """On an instance, `related` is the object and `related_id` the id; the
-        plan's proxy serves `related_id` / `pk` from the row and refuses
-        `related` rather than handing back the raw id."""
-        plan = compile_model(CompiledSampleModel)
-        row = list(plan.apply_to_queryset(CompiledSampleModel.objects.all())[0])[0]
-        proxy = DictProxy(row, plan._proxy_aliases, plan._fk_names)
-        self.assertEqual(proxy.related_id, self.related.pk)
-        self.assertEqual(proxy.pk, self.sample.pk)
-        with self.assertRaises(AttributeError):
-            proxy.related
+    @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
+    def test_properties_see_the_model_instance(self):
+        """Properties run on model instances, so ``getattr`` defaults,
+        ``type(self)`` and declared related objects behave as on the
+        serializer path."""
 
-    def test_dictproxy_has_fk_annotation_values(self):
-        """DictProxy should have FK annotation values available."""
+        def safe_related(self):
+            related = getattr(self, "related", None)
+            return related.name if related is not None else "none"
+
         plan = compile_model(CompiledSampleModel)
-        qs = CompiledSampleModel.objects.all()
-        compiled_qs, active_plan = plan.apply_to_queryset(qs)
+        plan.property_fields["safe_related"] = safe_related
+        plan.property_fields["kind"] = lambda self: type(self).__name__
+
+        compiled_qs, active_plan = plan.apply_to_queryset(
+            CompiledSampleModel.objects.all()
+        )
         rows = list(compiled_qs)
-
-        proxy = DictProxy(rows[0])
-        # FK annotation value is available
-        self.assertEqual(proxy.related_name, "Author")
-        # Raw FK ID is available
-        self.assertEqual(proxy.related, self.related.pk)
+        with self._with_relations({"safe_related": ["related"]}):
+            with self.assertNumQueries(2):
+                rows = plan.post_process(rows, active_plan)
+        self.assertEqual(rows[0]["safe_related"], "Author")
+        self.assertEqual(rows[0]["kind"], "CompiledSampleModel")
 
 
 class CompiledM2MExecutionTests(TestCase):

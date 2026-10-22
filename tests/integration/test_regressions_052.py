@@ -103,9 +103,10 @@ class TestNullableFkRowsKept(_TenantFixture):
     def test_compiled_list_keeps_null_fk_rows(self):
         resp = self.client.get(EVENTS_URL)
         self.assertEqual(
-            self._ids(resp), {self.matched.pk, self.review_1.pk, self.review_2.pk}
+            self._ids(resp),
+            {self.matched.pk, self.review_1.pk, self.review_2.pk, self.cross.pk},
         )
-        self.assertEqual(resp.data["pagination"]["total_items"], 3)
+        self.assertEqual(resp.data["pagination"]["total_items"], 4)
         row = next(r for r in resp.data["data"] if r["id"] == self.review_1.pk)
         self.assertIsNone(row["holding"])
         self.assertIsNone(row["holding_name"])
@@ -113,7 +114,9 @@ class TestNullableFkRowsKept(_TenantFixture):
 
     def test_filter_counts_null_fk_rows(self):
         resp = self.client.get(EVENTS_URL, {"status": "needs_review"})
-        self.assertEqual(self._ids(resp), {self.review_1.pk, self.review_2.pk})
+        self.assertEqual(
+            self._ids(resp), {self.review_1.pk, self.review_2.pk, self.cross.pk}
+        )
 
     def test_isnull_filter_matches_null_fk_rows(self):
         resp = self.client.get(EVENTS_URL, {"holding__isnull": "true"})
@@ -121,7 +124,9 @@ class TestNullableFkRowsKept(_TenantFixture):
 
     def test_search_over_nested_field_keeps_null_fk_rows(self):
         resp = self.client.get(EVENTS_URL, {"search": "needs"})
-        self.assertEqual(self._ids(resp), {self.review_1.pk, self.review_2.pk})
+        self.assertEqual(
+            self._ids(resp), {self.review_1.pk, self.review_2.pk, self.cross.pk}
+        )
 
     def test_search_matching_nested_field(self):
         resp = self.client.get(EVENTS_URL, {"search": "acme"})
@@ -130,7 +135,8 @@ class TestNullableFkRowsKept(_TenantFixture):
     def test_ordering_keeps_null_fk_rows(self):
         resp = self.client.get(EVENTS_URL, {"ordering": "holding"})
         self.assertEqual(
-            self._ids(resp), {self.matched.pk, self.review_1.pk, self.review_2.pk}
+            self._ids(resp),
+            {self.matched.pk, self.review_1.pk, self.review_2.pk, self.cross.pk},
         )
 
     def test_non_compiled_path_keeps_null_fk_rows(self):
@@ -142,19 +148,26 @@ class TestNullableFkRowsKept(_TenantFixture):
             TurboDRFViewSet, "_should_use_compiled_path", return_value=False
         ):
             resp = self.client.get(EVENTS_URL, {"search": "needs"})
-        self.assertEqual(self._ids(resp), {self.review_1.pk, self.review_2.pk})
+        self.assertEqual(
+            self._ids(resp), {self.review_1.pk, self.review_2.pk, self.cross.pk}
+        )
 
-    # -- guards: an FK to another tenant's target stays hidden -------------
+    # -- guards: another tenant's target stays hidden ----------------------
 
-    def test_guard_fk_to_other_tenant_target_hidden_in_list(self):
-        ids = self._ids(self.client.get(EVENTS_URL))
-        self.assertNotIn(self.cross.pk, ids)
-        self.assertNotIn(self.other_tenant.pk, ids)
+    def test_guard_other_tenants_target_renders_null(self):
+        # The row is in the caller's tenant, so it's listed; its FK points at
+        # brokerage B's holding, so the nested values render as null.
+        resp = self.client.get(EVENTS_URL)
+        rows = {row["id"]: row for row in resp.data["data"]}
+        self.assertNotIn(self.other_tenant.pk, rows)
+        self.assertIsNone(rows[self.cross.pk]["holding_name"])
+        self.assertIsNone(rows[self.cross.pk]["holding_portfolio"])
+        detail = self.client.get(f"{EVENTS_URL}{self.cross.pk}/").data
+        self.assertIsNone(detail["holding_name"])
 
     def test_guard_fk_to_other_tenant_target_hidden_in_filters(self):
+        # Filtering or searching on the nested path can't match it.
         for params in (
-            {"status": "needs_review"},
-            {"search": "needs"},
             {"search": "bolt"},
             {"holding__name": "Bolt"},
         ):
@@ -293,10 +306,13 @@ class TestCompiledClientFieldsSelection(_TenantFixture):
         self.client.force_authenticate(self.analyst)
         resp = self.client.get(EVENTS_URL, {"fields": "holding_label"})
         self.assertEqual(resp.status_code, 200)
+        # The cross-tenant row's holding is out of scope: the property, run in
+        # the caller's sandbox, sees None.
         labels = {tuple(row.items()) for row in resp.data["data"]}
         self.assertEqual(
             labels, {(("holding_label", "ACME"),), (("holding_label", None),)}
         )
+        self.assertNotIn("BOLT", str(resp.data))
 
     def test_property_only_selection_anonymous(self):
         related = RelatedModel.objects.create(name="r")

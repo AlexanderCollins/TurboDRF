@@ -51,14 +51,11 @@ the subject so it surfaces ahead of routine triage.
 
 | Version | Supported |
 |---------|-----------|
-| 0.4.x   | ✅ |
-| 0.3.x   | ✅ (security fixes only) |
-| < 0.3   | ❌ |
+| 0.6.x   | ✅ |
+| < 0.6   | ❌ — upgrade; see the 0.6.0 notes in [`CHANGELOG.md`](CHANGELOG.md) |
 
 ## Threat model
 
 See [`docs/security.md`](docs/security.md) for the documented threat
 model: what TurboDRF protects against, where consumer code retains
-responsibility, and the framework's defense-in-depth options. See
-[`docs/security_audit.md`](docs/security_audit.md) for the public audit
-summary covering closed and open findings at the latest release.
+responsibility, and the framework's defense-in-depth options, and its known limitations.

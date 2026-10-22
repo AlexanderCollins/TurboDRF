@@ -1,35 +1,34 @@
 # TurboDRF Test Suite
 
-This directory contains the comprehensive test suite for TurboDRF.
+This directory contains the test suite for TurboDRF.
 
 ## Test Structure
 
 ```
 tests/
-├── __init__.py              # Test suite initialization
-├── settings.py              # Django settings for tests
+├── settings.py              # Django settings for tests (TURBODRF_ROLES, ...)
 ├── urls.py                  # URL configuration for tests
 ├── fixtures.py              # Common test fixtures and utilities
 ├── test_runner.py           # Custom test runner
 ├── test_package.py          # Package structure tests
+├── test_nesting_validation.py
 │
 ├── test_app/                # Django app for testing
-│   ├── __init__.py
 │   ├── models.py            # Test models with various configurations
-│   └── apps.py              # App configuration
+│   ├── apps.py              # Adds user.roles / user.brokerage; set_test_brokerage()
+│   └── migrations/
 │
-├── unit/                    # Unit tests
-│   ├── __init__.py
-│   ├── test_mixins.py       # Tests for TurboDRFMixin
-│   ├── test_permissions.py  # Tests for permission classes
-│   ├── test_serializers.py  # Tests for serializers
-│   ├── test_views.py        # Tests for viewsets
-│   └── test_router.py       # Tests for router
+├── unit/                    # Unit tests: permissions, serializers, views,
+│                            # router, compiler, filters, predicates,
+│                            # integrations, swagger, management commands
 │
-└── integration/             # Integration tests
-    ├── __init__.py
-    ├── test_api_endpoints.py    # API endpoint tests
-    └── test_role_permissions.py # Role-based permission tests
+├── integration/             # API-level tests: CRUD endpoints, role
+│                            # permissions, tenancy / predicates, FK
+│                            # injection, security regressions,
+│                            # compiled-vs-serializer parity, swagger scoping
+│
+└── conformance/             # An independent policy monitor run against the
+                             # real API (deterministic + Hypothesis)
 ```
 
 ## Running Tests
@@ -37,8 +36,11 @@ tests/
 ### Run All Tests
 
 ```bash
-# From the project root
-python -m pytest tests/
+# From the project root. Runs in parallel (pytest-xdist, `-n auto` in pyproject.toml)
+python -m pytest
+
+# Single process, e.g. for pdb
+python -m pytest -p no:xdist
 
 # Or using Django's test runner
 python manage.py test
@@ -76,42 +78,37 @@ python -m pytest tests/ --cov=turbodrf --cov-report=html
 open htmlcov/index.html
 ```
 
-## Test Categories
-
-### Unit Tests
-
-Unit tests focus on individual components in isolation:
-
-- **test_mixins.py**: Tests the TurboDRFMixin functionality
-- **test_permissions.py**: Tests role-based permission logic
-- **test_serializers.py**: Tests dynamic serializer generation
-- **test_views.py**: Tests ViewSet behavior
-- **test_router.py**: Tests automatic model discovery and URL registration
-
-### Integration Tests
-
-Integration tests verify the complete API functionality:
-
-- **test_api_endpoints.py**: Tests CRUD operations, search, filtering, ordering, and pagination
-- **test_role_permissions.py**: Tests role-based access control across the API
-
 ## Test Models
 
-The test suite uses several models defined in `test_app/models.py`:
+The test suite uses models defined in `test_app/models.py`, among them:
 
-- **TestModel**: Main model with various field types and relationships
+- **SampleModel**: Main model with various field types and relationships
 - **RelatedModel**: For testing foreign key relationships
 - **NoTurboDRFModel**: Model without TurboDRF mixin (for negative testing)
 - **CustomEndpointModel**: Model with custom endpoint configuration
 - **DisabledModel**: Model with TurboDRF disabled
+- **Brokerage → Deal → BankAccount → Transaction**: tenant chain for
+  tenancy, predicate and IDOR tests
+- **Parity\*** and **Scope\*** / **Rbac\*** models: compiled-vs-serializer
+  parity, nested-value scoping and RBAC regression tests
 
 ## Test Users and Roles
 
-The test suite uses three default user roles:
+Roles are defined in `tests/settings.py` (`TURBODRF_ROLES`). `test_app/apps.py`
+gives the User model a `roles` property: `user._test_roles` if set, otherwise
+`admin` for superusers, `editor` for staff and `viewer` for everyone else.
+`UserFixtures` creates one user of each:
 
 1. **Admin**: Full access to all operations and fields
 2. **Editor**: Read and update access, no delete, limited field access
 3. **Viewer**: Read-only access, minimal field visibility
+
+For tenancy tests, `set_test_brokerage(user, brokerage)` sets the user's
+tenant (`TURBODRF_TENANT_USER_FIELD = "brokerage"`).
+
+Anonymous callers on `public_access` models get field reads only from a
+`guest` role. Tests that expect anonymous field access use
+`override_settings(TURBODRF_ROLES=roles_with_guest())` from `fixtures.py`.
 
 ## Writing New Tests
 
@@ -165,10 +162,11 @@ class MyTest(TestCase, APITestMixin):
 
 ## Continuous Integration
 
-Tests are automatically run on:
-- Every push to the repository
-- Every pull request
-- Multiple Python versions (3.8, 3.9, 3.10, 3.11)
-- Multiple Django versions (3.2, 4.0, 4.1, 4.2)
+`.github/workflows/ci.yml` runs the suite with coverage on every push and
+pull request to `main`, across:
 
-See `.github/workflows/tests.yml` for CI configuration.
+- Python 3.10, 3.11, 3.12, 3.13, 3.14
+- Django 4.2 (Python 3.10–3.12), 5.2 (all), 6.0 (Python 3.12–3.14)
+
+`.github/workflows/lint.yml` runs `black --check`, `isort --check-only` and
+`flake8` on the same triggers.

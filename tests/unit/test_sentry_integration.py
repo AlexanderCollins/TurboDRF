@@ -88,13 +88,92 @@ class TestSentryWhenEnabled(TestCase):
             capture_security_message("Suspicious activity", user_id=42)
             mock_sdk.capture_message.assert_called_once()
 
-    def test_anon_user_skips_set_request_context(self):
+    def test_only_user_id_is_sent_never_username(self):
+        ctx, mock_sdk = self._patch_sdk()
+        with ctx:
+            user = User.objects.create_user(username="pii_name", password="x")
+            user._test_roles = ["viewer"]
+            request = MagicMock()
+            request.user = user
+            set_request_context(request)
+
+            mock_sdk.set_user.assert_called_once_with({"id": user.pk})
+            self.assertNotIn("pii_name", str(mock_sdk.mock_calls))
+
+    def test_anon_user_clears_user_and_tags(self):
+        """An anonymous request must not keep the previous request's user and
+        tags on a shared scope."""
         ctx, mock_sdk = self._patch_sdk()
         with ctx:
             request = MagicMock()
             request.user = AnonymousUser()
             set_request_context(request)
+            mock_sdk.set_user.assert_called_once_with(None)
+            scope = mock_sdk.get_current_scope.return_value
+            scope.remove_tag.assert_any_call("tenant_id")
+            scope.remove_tag.assert_any_call("user_roles")
+            scope.set_tag.assert_not_called()
+
+    def test_user_without_roles_clears_stale_roles_tag(self):
+        ctx, mock_sdk = self._patch_sdk()
+        with ctx:
+            user = User.objects.create_user(username="no_roles", password="x")
+            user._test_roles = []
+            request = MagicMock()
+            request.user = user
+            set_request_context(request)
+            scope = mock_sdk.get_current_scope.return_value
+            scope.remove_tag.assert_any_call("user_roles")
+
+    def test_middleware_tags_a_request_local_scope(self):
+        ctx, mock_sdk = self._patch_sdk()
+        request_scope = MagicMock()
+        mock_sdk.new_scope.return_value.__enter__ = MagicMock(
+            return_value=request_scope
+        )
+        mock_sdk.new_scope.return_value.__exit__ = MagicMock(return_value=False)
+        with ctx:
+            user = User.objects.create_user(username="mw_user", password="x")
+            user._test_roles = ["admin"]
+            request = MagicMock()
+            request.user = user
+            get_response = MagicMock(return_value="resp")
+
+            self.assertEqual(SentryContextMiddleware(get_response)(request), "resp")
+
+            request_scope.set_user.assert_called_once_with({"id": user.pk})
+            request_scope.set_tag.assert_any_call("user_roles", "admin")
+            request_scope.add_event_processor.assert_called_once()
+            # Nothing written to the process-wide API.
             mock_sdk.set_user.assert_not_called()
+            mock_sdk.new_scope.return_value.__exit__.assert_called_once()
+
+    def test_event_processor_sees_user_authenticated_after_middleware(self):
+        """Token/JWT users are authenticated by DRF after the middleware ran;
+        events captured later still carry their id and tags."""
+        ctx, mock_sdk = self._patch_sdk()
+        request_scope = MagicMock()
+        mock_sdk.new_scope.return_value.__enter__ = MagicMock(
+            return_value=request_scope
+        )
+        mock_sdk.new_scope.return_value.__exit__ = MagicMock(return_value=False)
+        with ctx:
+            user = User.objects.create_user(username="late_user", password="x")
+            user._test_roles = ["editor"]
+            request = MagicMock()
+            request.user = AnonymousUser()
+
+            def view(req):
+                req.user = user  # what DRF does after authenticating
+                return "resp"
+
+            SentryContextMiddleware(view)(request)
+            request_scope.set_user.assert_called_once_with(None)
+
+            processor = request_scope.add_event_processor.call_args[0][0]
+            event = processor({"tags": {}}, {})
+            self.assertEqual(event["user"], {"id": user.pk})
+            self.assertEqual(event["tags"]["user_roles"], "editor")
 
     def test_sentry_failure_does_not_break_request(self):
         ctx, mock_sdk = self._patch_sdk()

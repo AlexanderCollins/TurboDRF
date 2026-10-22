@@ -192,7 +192,9 @@ class Owner(Predicate):
 class Either(Predicate):
     """OR of child predicates.
 
-    Read filter: OR of children's Q.
+    Read filter: OR of children's Q. A child that places no restriction (an
+    empty ``Q()``, e.g. an Owner bypass role) makes the whole Either
+    unrestricted — ``Q() | Q(x)`` would otherwise collapse to ``Q(x)``.
     Write validation: passes if ANY child passes.
     Auto-fill: not applied (ambiguous).
     """
@@ -211,6 +213,8 @@ class Either(Predicate):
         combined = None
         for pred in self.predicates:
             child_q = pred.q(request, user_roles)
+            if not child_q:
+                return Q()
             combined = child_q if combined is None else combined | child_q
         return combined if combined is not None else Q()
 
@@ -233,9 +237,9 @@ class Custom(Predicate):
     `unrestricted_ok` flag was removed because it solved a problem (Tenant
     inside the predicate algebra) that no longer exists in this design.
 
-    For visibility into accidental Q() returns, set
-    TURBODRF_LOG_UNRESTRICTED_CUSTOM=True — a warning is logged whenever a
-    Custom predicate returns an empty Q.
+    A warning is logged whenever a Custom predicate returns an empty Q, to
+    surface accidental Q() returns; set TURBODRF_LOG_UNRESTRICTED_CUSTOM=False
+    to silence it.
     """
 
     def __init__(self, q_func, write_validator=None, auto_filler=None):
@@ -285,12 +289,10 @@ class Custom(Predicate):
 class Members(Predicate):
     """Advanced: user must be in the row's M2M-to-User collection.
 
-    Read-only enforcement. ``Members`` does not implement
-    ``auto_fill`` or ``validate_write``, so wiring it onto a writable
-    endpoint will silently let any tenant member create or update a
-    row without the membership check. Use ``Owner`` (or ``Custom`` with
-    explicit write hooks) for writable paths and reserve ``Members``
-    for read-only models.
+    Scopes reads, and so updates and deletes (only visible rows can be
+    fetched). A create is not membership-checked: the new row has no members
+    until they're set. Use ``Owner`` (or ``Custom`` with explicit write hooks)
+    when creates must be restricted.
     """
 
     def __init__(self, m2m_field):
@@ -302,20 +304,6 @@ class Members(Predicate):
             return _no_match_q()
         return Q(**{self.m2m_field: user})
 
-    def auto_fill(self, validated_data, request):
-        raise NotImplementedError(
-            "Members predicate has no auto_fill — it only enforces "
-            "row reads. For writable endpoints use Owner or Custom "
-            "with explicit write hooks."
-        )
-
-    def validate_write(self, validated_data, instance, request):
-        raise NotImplementedError(
-            "Members predicate has no validate_write — it only "
-            "enforces row reads. For writable endpoints use Owner "
-            "or Custom with explicit write hooks."
-        )
-
 
 class Group(Predicate):
     """Advanced: user must belong to the group/team that owns the row.
@@ -323,11 +311,9 @@ class Group(Predicate):
     ``field`` is the FK on the row to the group/team.
     ``user_via`` is the reverse-M2M name from group/team to user.
 
-    Read-only enforcement. ``Group`` does not implement ``auto_fill``
-    or ``validate_write``, so wiring it onto a writable endpoint will
-    silently let any tenant member create or update a row without the
-    membership check. Use ``Owner`` (or ``Custom`` with explicit write
-    hooks) for writable paths.
+    Scopes reads, and so updates and deletes. A create (or an update that
+    moves the row to another group) is not membership-checked; use ``Custom``
+    with a ``write_validator`` when it must be.
     """
 
     def __init__(self, field, user_via="members"):
@@ -340,31 +326,17 @@ class Group(Predicate):
             return _no_match_q()
         return Q(**{f"{self.field}__{self.user_via}": user})
 
-    def auto_fill(self, validated_data, request):
-        raise NotImplementedError(
-            "Group predicate has no auto_fill — it only enforces "
-            "row reads. For writable endpoints use Owner or Custom "
-            "with explicit write hooks."
-        )
-
-    def validate_write(self, validated_data, instance, request):
-        raise NotImplementedError(
-            "Group predicate has no validate_write — it only "
-            "enforces row reads. For writable endpoints use Owner "
-            "or Custom with explicit write hooks."
-        )
-
 
 class Conditional(Predicate):
     """Advanced: rows matching ``when`` are visible only to users with a
     required role.
 
-    Read-only enforcement. ``Conditional`` does not implement
-    ``auto_fill`` or ``validate_write``; a writable endpoint with a
-    ``Conditional`` predicate would let users freely create or update
-    rows that match ``when`` regardless of role. Use ``Owner`` /
-    ``Custom`` with explicit write hooks for writable paths.
+    Writes are checked after the save, inside the same transaction: a caller
+    without a required role can't create or update a row so that it matches
+    ``when`` (the write is rolled back with a 400).
     """
+
+    verify_after_write = True
 
     def __init__(self, when, require_roles):
         if not isinstance(when, Q):
@@ -376,20 +348,6 @@ class Conditional(Predicate):
         if user_roles and (user_roles & self.require_roles):
             return Q()
         return ~self.when
-
-    def auto_fill(self, validated_data, request):
-        raise NotImplementedError(
-            "Conditional predicate has no auto_fill — it only "
-            "enforces row reads. For writable endpoints use Owner "
-            "or Custom with explicit write hooks."
-        )
-
-    def validate_write(self, validated_data, instance, request):
-        raise NotImplementedError(
-            "Conditional predicate has no validate_write — it only "
-            "enforces row reads. For writable endpoints use Owner "
-            "or Custom with explicit write hooks."
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +385,21 @@ def parse_config(config):
             f"turbodrf() must return a dict; got {type(config).__name__}"
         )
 
-    if config.get("tenancy") == "shared":
+    tenancy = config.get("tenancy")
+    if tenancy is not None:
+        if tenancy != "shared":
+            raise ImproperlyConfigured(
+                f"'tenancy' must be 'shared'; got {tenancy!r}. Scope tenant data "
+                f"with 'tenant_field' (or 'visibility')."
+            )
+        scoped = [
+            k for k in ("tenant_field", "owner_field", "visibility") if config.get(k)
+        ]
+        if scoped:
+            raise ImproperlyConfigured(
+                f"'tenancy': 'shared' can't be combined with {scoped}: a shared "
+                f"model has no row scoping. Drop 'tenancy' to scope the model."
+            )
         return None, []
 
     tenant_field = None
@@ -458,6 +430,11 @@ def parse_config(config):
         if not isinstance(visibility, (list, tuple)):
             raise ImproperlyConfigured(
                 "'visibility' must be a list of Predicate instances."
+            )
+        if not visibility and config.get("tenant_field") is None:
+            raise ImproperlyConfigured(
+                "'visibility' is empty, which scopes nothing. Declare at least "
+                "one predicate, a 'tenant_field', or 'tenancy': 'shared'."
             )
         for p in visibility:
             if not isinstance(p, Predicate):
@@ -514,13 +491,11 @@ def parse_config(config):
         if isinstance(owner_field, str):
             predicates.append(Owner(owner_field, bypass=bypass))
         elif isinstance(owner_field, (list, tuple)):
-            owner_fields = list(owner_field)
-            if len(owner_fields) == 1:
-                predicates.append(Owner(owner_fields[0], bypass=bypass))
-            elif len(owner_fields) > 1:
-                predicates.append(
-                    Either(*[Owner(f, bypass=bypass) for f in owner_fields])
-                )
+            # One Owner over every column: reads match ANY column, and a write
+            # must not set ANY of them to another user. Either(Owner, Owner)
+            # passed a write whenever one column was simply left out.
+            if owner_field:
+                predicates.append(Owner(list(owner_field), bypass=bypass))
         else:
             raise ImproperlyConfigured("'owner_field' must be str or list[str].")
 
@@ -549,12 +524,19 @@ def _reject_tenant_inside_either(predicate):
 
 
 def has_tenancy_declaration(config):
-    """True if config declares tenancy (predicates, sugar, or 'shared')."""
+    """True if config declares how its rows are scoped across tenants: a
+    ``tenant_field``, a non-empty ``visibility``, or ``tenancy: 'shared'``.
+
+    ``owner_field`` alone doesn't count: it scopes rows within a tenant, and
+    its bypass roles would see every tenant's rows. Any other ``tenancy``
+    value is a typo, not a declaration.
+    """
     if not isinstance(config, dict):
         return False
-    return any(
-        config.get(k) is not None or config.get(k) == "shared"
-        for k in ("tenancy", "visibility", "tenant_field", "owner_field")
+    return (
+        config.get("tenancy") == "shared"
+        or config.get("tenant_field") is not None
+        or bool(config.get("visibility"))
     )
 
 
@@ -745,6 +727,15 @@ def validate_permission_strings():
                 f"is not registered in INSTALLED_APPS"
             )
             return
+        # get_model() ignores case, but permission checks compare exactly: a
+        # string the gate accepts must be one the snapshot can match.
+        if (app_label, model_name) != (model._meta.app_label, model._meta.model_name):
+            errors.append(
+                f"role={role!r} perm={perm!r}: write the model as "
+                f"{model._meta.app_label}.{model._meta.model_name} (permission "
+                f"strings are matched exactly)"
+            )
+            return
 
         if len(parts) == 3:
             action = parts[2]
@@ -763,16 +754,19 @@ def validate_permission_strings():
                 f"a valid field-level action {sorted(_FIELD_ACTIONS)}"
             )
             return
-        try:
-            model._meta.get_field(field_name)
-        except Exception:
+        # Field rules apply to concrete and M2M fields, by name: get_field()
+        # also accepts an FK's attname ("related_id"), which no rule matches.
+        rule_fields = {f.name for f in model._meta.fields} | {
+            f.name for f in model._meta.many_to_many
+        }
+        if field_name not in rule_fields:
             # Field-level perms can target related-field paths via __,
             # but TURBODRF_ROLES uses dotted paths. We accept "field" as
             # a single name — anything else is a typo. List close
             # matches via difflib for the error message.
             import difflib
 
-            field_names = [f.name for f in model._meta.get_fields()]
+            field_names = sorted(rule_fields)
             close = difflib.get_close_matches(field_name, field_names, n=3, cutoff=0.6)
             hint = f" (close matches: {close})" if close else ""
             errors.append(

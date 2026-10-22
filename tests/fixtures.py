@@ -206,3 +206,31 @@ class APITestMixin:
             f"Expected 403 Forbidden, got {response.status_code}",
         )
         return response
+
+
+def roles_with_guest(**extra):
+    """TURBODRF_ROLES plus a ``guest`` role that grants anonymous callers the
+    field reads the public-access tests expect. Field rules bind every caller,
+    anonymous included: without a guest grant, an anonymous caller on a
+    public_access model sees only fields no role has a read rule for."""
+    from django.conf import settings
+
+    guest = [
+        f"test_app.samplemodel.{name}.read"
+        for name in (
+            "title",
+            "description",
+            "price",
+            "quantity",
+            "related",
+            "is_active",
+            "created_at",
+            "updated_at",
+            "published_date",
+        )
+    ] + [
+        "test_app.relatedmodel.name.read",
+        "test_app.relatedmodel.description.read",
+        "test_app.customendpointmodel.name.read",
+    ]
+    return {**settings.TURBODRF_ROLES, "guest": guest, **extra}

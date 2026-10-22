@@ -174,7 +174,10 @@ def resolve_tenancy_for_model(model, config, tenant_model_setting, autodetect=Tr
     autodetected = False
     config = config or {}
 
-    if config.get("tenancy") == "shared":
+    if config.get("tenancy") is not None:
+        # parse_config rejects any value but 'shared', and 'shared' combined
+        # with scoping keys.
+        parse_config(config)
         return None, [], False
 
     # Power form (visibility=...): parse_config extracts any Tenant() into

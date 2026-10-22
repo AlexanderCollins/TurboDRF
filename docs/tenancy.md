@@ -3,7 +3,8 @@
 TurboDRF enforces row-level access control through **predicates** declared on
 each model. Every list / detail / PATCH / DELETE is filtered by the user's
 predicate Q. Writes are validated against the predicate stack: tenant
-reassignment is rejected and FK targets must resolve to rows the user can see.
+reassignment is rejected and FK and M2M targets must resolve to rows the user
+can see.
 
 The system answers four questions per request:
 
@@ -299,9 +300,11 @@ bypass-role users if Tenant were a peer predicate.
 'tenant_field': 'project__workspace'   # chained — two-hop traversal
 ```
 
-The framework auto-fills `tenant_field` on create, rejects writes that try
-to set it to a different tenant, and AND's it onto every queryset. There's
-no way to compose this away.
+The framework auto-fills a direct `tenant_field` on create, rejects writes
+that try to set it to a different tenant (400), and AND's it onto every
+queryset. A chained `tenant_field` isn't auto-filled; instead a create, or an
+update that changes the first hop (`project` above), must point that hop at a
+row in the caller's tenant. There's no way to compose this away.
 
 **Layer 2 — discretionary within-tenant predicates:**
 
@@ -312,8 +315,9 @@ user, the tenant boundary still holds.
 ### `Owner(field, bypass=[...])` — within-tenant ownership
 
 Filters to rows where `<field> = request.user`, unless caller has a bypass
-role. Auto-fills owner FK on create. Rejects non-bypass users from assigning
-rows to other users.
+role. On create, a single owner column left out of the request is filled with
+the caller; updates never reassign it. Rejects non-bypass users from setting
+any owner column to another user.
 
 ```python
 Owner('assigned_to')
@@ -321,11 +325,20 @@ Owner('assigned_to', bypass=['admin'])
 Owner(['author', 'editor'])     # multi-owner: any-match OR
 ```
 
+A multi-column `Owner` (or a list `owner_field`) reads rows where ANY column
+matches, and a write can't set ANY of the columns to another user. It isn't
+auto-filled.
+
 ### `Either(*predicates)` — OR composition
 
 ```python
 Either(Owner('owner'), Owner('reviewer'))
 ```
+
+Reads match rows any child matches. A child that places no restriction on
+the caller (an `Owner` whose bypass role they hold, say) makes the whole
+`Either` unrestricted. A write passes if any child's write check passes.
+`Either` doesn't auto-fill.
 
 ⚠ `Tenant(...)` cannot appear inside `Either` — the framework rejects this
 configuration at startup. Use the `tenant_field` setting at the top level.
@@ -338,8 +351,9 @@ Custom(q_func=lambda req, roles: Q(client__assigned_manager=req.user))
 
 A `Custom` predicate that returns `Q()` unconditionally just means "no
 within-tenant restriction" — the tenant boundary still applies separately,
-so this is safe. Set `TURBODRF_LOG_UNRESTRICTED_CUSTOM=True` to log a
-warning if you want visibility into accidental Q() returns.
+so this is safe. TurboDRF logs a warning each time a `Custom` returns an
+empty `Q`, to surface accidental `Q()` returns; set
+`TURBODRF_LOG_UNRESTRICTED_CUSTOM = False` (default `True`) to silence it.
 
 ---
 
@@ -371,7 +385,8 @@ return {
 `tenant_field` is a setting, not a predicate, and is allowed alongside
 `visibility`. `owner_field` / `bypass_owner_roles` are sugar that compiles
 to predicates — those *do* conflict with `visibility` (pick one or the
-other). Tenant inside `visibility` is supported but deprecated; use the
+other). A list `owner_field` compiles to one `Owner` over all its columns.
+Tenant inside `visibility` is supported but deprecated; use the
 `tenant_field` setting instead.
 
 ---
@@ -382,11 +397,14 @@ When `TURBODRF_TENANT_MODEL` is set and `TURBODRF_REQUIRE_TENANCY=True`
 (default), every model must declare *one of*:
 
 - `tenant_field=...`
-- `visibility=[...]`
+- a non-empty `visibility=[...]`
 - `'tenancy': 'shared'`
 
-Models without a tenancy decision raise `ImproperlyConfigured` at boot. This
-closes the "developer forgot to scope this model" failure mode.
+(or have its tenant path auto-detected; see [Settings](#settings)).
+`owner_field` alone doesn't count: it scopes rows within a tenant, and its
+bypass roles would see every tenant's rows. Models without a tenancy
+decision raise `ImproperlyConfigured` at boot. This closes the "developer
+forgot to scope this model" failure mode.
 
 Run `python manage.py turbodrf_check` to see what each model resolves to.
 
@@ -394,6 +412,13 @@ Other hard-fails the router catches:
 
 - Invalid `tenant_field`/`owner_field` paths (with did-you-mean suggestions)
 - `bypass_owner_roles` listing roles not in `TURBODRF_ROLES` (typo guard)
+
+These raise whatever the tenancy settings:
+
+- A `tenancy` value other than `'shared'`
+- `'tenancy': 'shared'` combined with `tenant_field`, `owner_field` or
+  `visibility`
+- An empty `visibility` without a `tenant_field`
 
 To opt out globally during a migration:
 
@@ -409,8 +434,11 @@ TURBODRF_REQUIRE_TENANCY = False
 This avoids leaking whether the row exists.
 
 **FK injection on writes is rejected.** When the request body contains a
-foreign key, the FK target must be visible under the related model's
-predicate stack.
+foreign key or many-to-many values, each target must be visible under the
+related model's tenant boundary and predicate stack, as through its own
+endpoint. This runs on every model, shared ones included, and an anonymous
+writer can't reference a tenant-scoped target. The message is the same
+whether the target is hidden or doesn't exist.
 
 ```
 POST /api/comments/ {"document": <foreign>, "amount": 100}
@@ -426,7 +454,8 @@ gets the union — more roles never restrict access.
 **`@action` routes inherit scoping** if they call `self.get_object()` or
 `self.get_queryset()`. Custom actions that go around the standard flow (e.g.
 `Model.objects.get(...)` directly) bypass scoping — apply predicates
-manually if you do this.
+manually if you do this. `self.get_serializer()` in an action returns the
+same permission-filtered serializer the CRUD routes use.
 
 ---
 
@@ -455,10 +484,20 @@ For app shapes that don't fit `Tenant + Owner + Either + Custom`, the
 a Q clause are restricted to specified roles). These are usable in
 `'visibility': [...]` lists. Read the source for details.
 
+- A predicate that crosses an M2M or reverse relation (`Members`, or an
+  `Either` that includes one) is applied as a subquery, so it doesn't
+  duplicate list rows or break detail lookups.
+- `Members` and `Group` scope reads, and so updates and deletes (only
+  visible rows can be fetched). A create isn't membership-checked, nor is an
+  update that moves a row to another group. Use `Owner`, or `Custom` with a
+  `write_validator`, when writes must be restricted.
+- `Conditional` writes are checked after the save, in the same transaction:
+  a create or update that would leave the row invisible to the writer is
+  rolled back with a 400.
+
 ---
 
 ## See also
 
 - `docs/security.md` — threat model, sensitive fields, error responses
 - `docs/migration_to_predicates.md` — migrating an existing project
-- `docs/security_audit.md` — audit history

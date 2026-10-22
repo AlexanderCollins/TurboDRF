@@ -58,12 +58,16 @@ ones:
 .. code-block:: python
 
    # Permissions
-   TURBODRF_ROLES = {}                       # role -> permission strings
+   TURBODRF_ROLES = {                        # role -> permission strings
+       'viewer': ['books.book.read'],
+   }
    TURBODRF_USE_DEFAULT_PERMISSIONS = False  # use Django model perms instead
 
    # Documentation
    TURBODRF_ENABLE_DOCS = True               # Swagger/ReDoc at /swagger/, /redoc/
 
-Pagination is standard DRF pagination and is configured through
-``REST_FRAMEWORK`` (``DEFAULT_PAGINATION_CLASS`` / ``PAGE_SIZE``), not
-through TurboDRF-specific settings.
+Pagination isn't configurable through ``REST_FRAMEWORK``: every TurboDRF
+viewset uses ``TurboDRFPagination`` (page-number pagination, 20 items per
+page, at most 100, with the ``page`` and ``page_size`` query parameters),
+whatever ``DEFAULT_PAGINATION_CLASS`` / ``PAGE_SIZE`` say. See
+:doc:`filtering <filtering>` for the response format.

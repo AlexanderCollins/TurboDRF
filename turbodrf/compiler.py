@@ -4,14 +4,19 @@ Compiled read path for TurboDRF list views.
 At startup, reads each model's turbodrf() config and pre-computes a query plan
 that uses Django .values() + F() annotations instead of DRF serializers.
 This bypasses model instantiation and serializer field-by-field processing.
+
+A list row must read exactly as the serializer path renders the same row, so a
+config the plan can't render faithfully (a nested @property, a path through a
+reverse FK, ...) isn't compiled: the model is served by the serializer path.
 """
 
+import base64
 import logging
 from collections import defaultdict
 
 from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
 from django.db import models
-from django.db.models import F
+from django.db.models import Case, F, Value, When
 
 logger = logging.getLogger(__name__)
 
@@ -31,52 +36,148 @@ def is_compiled(model):
     return model in _compiled_plans
 
 
-class DictProxy:
-    """Wraps a dict for attribute access so model @property functions work.
+class NotCompilable(Exception):
+    """A field config the compiled path can't render the way the serializer
+    path does; the model falls back to the serializer path."""
 
-    ``aliases`` maps an attribute name to the row key holding its value (e.g.
-    ``author_id`` -> ``author``, ``pk`` -> ``id``). ``opaque`` names raise
-    AttributeError even when the row has the key: a ``.values()`` row holds an
-    FK's raw id under the field name, but on a model instance that attribute is
-    the related object — a property must not silently get the id instead.
+
+# Model fields whose DRF serializer field renders a value differently from DRF's
+# JSON encoder rendering the raw Python value: Decimal("0") with
+# decimal_places=8 is "0.00000000", not "0E-8"; datetimes are converted to the
+# current timezone and keep their microseconds; durations are "1 02:00:00", not
+# "93600.0"; DATE_FORMAT / DATETIME_FORMAT / TIME_FORMAT apply.
+_DRF_FORMATTED_FIELDS = (
+    models.DecimalField,
+    models.DateField,
+    models.TimeField,
+    models.DurationField,
+)
+
+_field_representations = {}
+
+
+def _drf_field(model_field):
+    """The DRF field ModelSerializer builds for ``model_field``."""
+    from rest_framework.serializers import ModelSerializer
+
+    field_class, field_kwargs = ModelSerializer().build_standard_field(
+        model_field.name, model_field
+    )
+    return field_class(**field_kwargs)
+
+
+def field_representation(model_field, request=None):
+    """How the serializer path renders a value of ``model_field``, when that
+    differs from the JSON encoder's rendering of the raw value; else ``None``.
+
+    Uses the DRF field ModelSerializer builds for the model field, so a value
+    rendered through it matches a top-level field on the serializer path,
+    settings included (COERCE_DECIMAL_TO_STRING, DATETIME_FORMAT, ...). Used for
+    compiled rows and for nested / M2M values on the serializer path. File
+    fields render their URL (absolute when ``request`` is given), binary fields
+    base64.
     """
-
-    __slots__ = ("_d", "_aliases", "_opaque")
-
-    def __init__(self, d, aliases=None, opaque=()):
-        object.__setattr__(self, "_d", d)
-        object.__setattr__(self, "_aliases", aliases or {})
-        object.__setattr__(self, "_opaque", opaque)
-
-    def __getattr__(self, name):
-        # Pickle / copy probe `_d` and dunder names before __init__ runs.
-        # Returning self._d[name] would recurse into __getattr__ forever.
-        if name.startswith("_"):
-            raise AttributeError(name)
-        if name in self._opaque:
-            raise AttributeError(name)
-        try:
-            return self._d[self._aliases.get(name, name)]
-        except KeyError:
-            raise AttributeError(name)
-
-
-def _coerce_decimal(value):
-    if value is None:
+    if model_field is None:
         return None
-    return str(value)
+    if isinstance(model_field, models.FileField):
+        return _file_representation(model_field, request)
+    if isinstance(model_field, models.BinaryField):
+        return _binary_representation
+    if not isinstance(model_field, _DRF_FORMATTED_FIELDS):
+        return None
+    try:
+        return _field_representations[model_field]
+    except KeyError:
+        pass
+    represent = _drf_field(model_field).to_representation
+    _field_representations[model_field] = represent
+    return represent
+
+
+def _file_representation(model_field, request):
+    drf_field = _drf_field(model_field)
+    # An unbound DRF field reads its context from itself.
+    drf_field._context = {"request": request} if request is not None else {}
+
+    def represent(value):
+        if isinstance(value, str):  # a .values() row holds the stored name
+            value = model_field.attr_class(None, model_field, value)
+        return drf_field.to_representation(value)
+
+    return represent
+
+
+def _binary_representation(value):
+    # As Django's BinaryField.value_to_string, which DRF's ModelField uses.
+    return base64.b64encode(bytes(value)).decode("ascii")
+
+
+def path_leaf_field(model, path):
+    """The model field a ``__`` path ends on, or ``None`` if it doesn't resolve."""
+    current = model
+    field = None
+    for part in path.split("__"):
+        if current is None:
+            return None
+        try:
+            field = current._meta.get_field(part)
+        except FieldDoesNotExist:
+            return None
+        current = field.related_model if field.is_relation else None
+    return field
+
+
+def _single_valued_path(model, path):
+    """Check ``path`` crosses only single-valued relations (FK, one-to-one,
+    reverse one-to-one) and ends on a concrete field. Raises NotCompilable."""
+    current = model
+    parts = path.split("__")
+    for i, part in enumerate(parts):
+        try:
+            field = current._meta.get_field(part)
+        except FieldDoesNotExist:
+            if isinstance(getattr(current, part, None), property):
+                raise NotCompilable(f"'{path}' ends on a @property")
+            raise ImproperlyConfigured(
+                f"TurboDRF compiled path: '{path}' on {model.__name__} does not "
+                f"resolve ('{part}' is not a field of {current.__name__})."
+            )
+        if field.many_to_many or field.one_to_many:
+            raise NotCompilable(f"'{path}' crosses a multi-valued relation")
+        if i == len(parts) - 1:
+            return field
+        if not field.is_relation:
+            raise ImproperlyConfigured(
+                f"TurboDRF compiled path: '{path}' on {model.__name__} "
+                f"traverses a non-relation field."
+            )
+        current = field.related_model
+
+
+def _key_collides(model, key):
+    """True if ``key`` names a field or attname of ``model``: a .values()
+    annotation can't take that name."""
+    for f in model._meta.get_fields():
+        if key == getattr(f, "name", None) or key == getattr(f, "attname", None):
+            return True
+    return key == "pk"
 
 
 def _build_type_coercers(model, field_names):
-    """Build type coercion map for fields that need conversion (e.g. Decimal -> str)."""
+    """Map each field DRF renders differently from its raw value to the
+    formatter that renders it the same way (see field_representation). File
+    fields are left out: their URL depends on the request (see post_process)."""
     coercers = {}
     for field_name in field_names:
         try:
             field = model._meta.get_field(field_name)
-            if isinstance(field, models.DecimalField):
-                coercers[field_name] = _coerce_decimal
         except FieldDoesNotExist:
-            pass
+            continue
+        if isinstance(field, models.FileField):
+            continue
+        represent = field_representation(field)
+        if represent is not None:
+            coercers[field_name] = represent
     return coercers
 
 
@@ -84,67 +185,56 @@ def _build_fk_type_coercers(model, fk_annotations):
     """Build type coercers for FK annotation target fields (e.g. related__price)."""
     coercers = {}
     for output_key, f_expr in fk_annotations.items():
-        # Resolve the target field type by traversing the relationship
-        field_path = f_expr.name  # e.g. 'related__name'
-        parts = field_path.split("__")
-        current_model = model
-        for part in parts[:-1]:
-            try:
-                field = current_model._meta.get_field(part)
-                if hasattr(field, "related_model") and field.related_model:
-                    current_model = field.related_model
-                else:
-                    break
-            except FieldDoesNotExist:
-                break
-        # Check the final field
-        try:
-            target_field = current_model._meta.get_field(parts[-1])
-            if isinstance(target_field, models.DecimalField):
-                coercers[output_key] = _coerce_decimal
-        except FieldDoesNotExist:
-            pass
+        leaf = path_leaf_field(model, f_expr.name)
+        if isinstance(leaf, models.FileField):
+            continue
+        represent = field_representation(leaf)
+        if represent is not None:
+            coercers[output_key] = represent
     return coercers
 
 
+def _file_fields(model, keys_to_paths):
+    """{output key: file model field} for the keys whose path ends on a file."""
+    found = {}
+    for key, path in keys_to_paths.items():
+        leaf = path_leaf_field(model, path)
+        if isinstance(leaf, models.FileField):
+            found[key] = leaf
+    return found
+
+
 def _compile_m2m_spec(model, m2m_field_name, sub_field_names):
-    """Compile M2M field info for the two-query merge."""
+    """Compile M2M field info for the two-query merge. An empty
+    ``sub_field_names`` (the M2M listed on its own) renders the list of target
+    pks, as the serializer's related field does."""
     m2m_field = model._meta.get_field(m2m_field_name)
     through_model = m2m_field.remote_field.through
     related_model = m2m_field.related_model
+    source_fk = m2m_field.m2m_field_name()
+    target_fk = m2m_field.m2m_reverse_field_name()
 
-    # Find FK field names on through model
-    source_fk = None
-    target_fk = None
-
-    for f in through_model._meta.get_fields():
-        if not hasattr(f, "related_model") or f.related_model is None:
-            continue
-        if f.related_model == model and source_fk is None:
-            source_fk = f.name
-        elif f.related_model == related_model and target_fk is None:
-            target_fk = f.name
-
-    if source_fk is None or target_fk is None:
-        raise ImproperlyConfigured(
-            f"Could not resolve M2M through table FKs for "
-            f"{model.__name__}.{m2m_field_name}"
-        )
-
-    # Build F() annotations for sub-fields
-    annotations = {}
     for sub_field in sub_field_names:
+        _single_valued_path(related_model, sub_field)
+
+    # F() annotations for sub-fields, under an internal alias where the key
+    # would collide with a through-model field (e.g. 'id').
+    annotations = {}
+    aliases = {}
+    for i, sub_field in enumerate(sub_field_names):
+        alias = f"_tdrf_m2m_{i}" if _key_collides(through_model, sub_field) else None
+        aliases[sub_field] = alias or sub_field
         annotations[sub_field] = F(f"{target_fk}__{sub_field}")
 
     # Build type coercers for M2M sub-fields
     m2m_coercers = {}
     for sub_field in sub_field_names:
-        try:
-            target_field = related_model._meta.get_field(sub_field)
-            if isinstance(target_field, models.DecimalField):
-                m2m_coercers[sub_field] = _coerce_decimal
-        except FieldDoesNotExist:
-            pass
+        leaf = path_leaf_field(related_model, sub_field)
+        if isinstance(leaf, models.FileField):
+            continue
+        represent = field_representation(leaf)
+        if represent is not None:
+            m2m_coercers[sub_field] = represent
 
     return {
         "through_model": through_model,
@@ -153,8 +243,25 @@ def _compile_m2m_spec(model, m2m_field_name, sub_field_names):
         "related_model": related_model,
         "sub_fields": sub_field_names,
         "annotations": annotations,
+        "aliases": aliases,
         "type_coercers": m2m_coercers,
+        "file_fields": _file_fields(related_model, {s: s for s in sub_field_names}),
     }
+
+
+def _target_ordering(related_model, target_fk):
+    """The target's Meta.ordering, as through-model order_by() terms (string
+    entries only; expressions are skipped)."""
+    terms = []
+    for entry in related_model._meta.ordering or ():
+        if not isinstance(entry, str) or entry == "?":
+            continue
+        desc = entry.startswith("-")
+        name = entry.lstrip("-")
+        if name == "pk":
+            name = related_model._meta.pk.name
+        terms.append(f"{'-' if desc else ''}{target_fk}__{name}")
+    return terms
 
 
 class CompiledQueryPlan:
@@ -180,10 +287,29 @@ class CompiledQueryPlan:
         self.pk_field = pk_field
         self._original_fields = set(original_fields)
 
-        # Concrete FK / one-to-one fields fetched as raw ids: the DictProxy
-        # serves `<fk>_id` from them and refuses `<fk>` (see DictProxy).
+        # FK annotation keys that would collide with a model field or attname
+        # (`target__id` -> `target_id`) are selected under an internal alias
+        # and renamed in post_process.
+        self._fk_aliases = {
+            key: f"_tdrf_fk_{i}"
+            for i, key in enumerate(fk_annotations)
+            if _key_collides(model, key)
+        }
+        # FK bases added only to carry nested fields (not configured alone).
+        self._implicit_fk_bases = {
+            e.name.split("__")[0] for e in fk_annotations.values()
+        } - self._original_fields
+        # Keys whose value is a file: rendered as a URL per request.
+        self._file_fields = _file_fields(
+            model,
+            {
+                **{f: f for f in simple_fields},
+                **{k: e.name for k, e in fk_annotations.items()},
+            },
+        )
+        # Concrete FK / one-to-one fields, select_related when properties load
+        # instances.
         self._fk_names = []
-        self._proxy_aliases = {"pk": pk_field}
         for name in simple_fields:
             try:
                 field = model._meta.get_field(name)
@@ -191,7 +317,6 @@ class CompiledQueryPlan:
                 continue
             if field.concrete and (field.many_to_one or field.one_to_one):
                 self._fk_names.append(name)
-                self._proxy_aliases[field.attname] = name
 
     def _fk_base_field(self, output_key):
         """Get the base FK field name from an annotation output key.
@@ -207,6 +332,7 @@ class CompiledQueryPlan:
         readable_fields=None,
         allowed_fk_keys=None,
         allowed_m2m_subfields=None,
+        fk_visibility=None,
     ):
         """Apply .values() + F() annotations to a queryset.
 
@@ -223,6 +349,9 @@ class CompiledQueryPlan:
                 has `categories.read` but not `category.description.read`,
                 pass {'categories': {'name'}} to drop the description
                 sub-field. None = no per-sub-field filter (legacy behavior).
+            fk_visibility: Optional dict {output_key: Q}. A nested value
+                renders only where its Q holds (the JOIN target is in the
+                caller's scope) and is NULL elsewhere — the row itself stays.
 
         Returns (compiled_queryset, active_plan_tuple).
         """
@@ -249,12 +378,29 @@ class CompiledQueryPlan:
         if allowed_fk_keys is not None:
             active_fk = {k: v for k, v in active_fk.items() if k in allowed_fk_keys}
 
+        # An FK the config lists only through nested fields (`author__name`)
+        # renders its raw id only alongside a nested value, as on the
+        # serializer path.
+        active_bases = {self._fk_base_field(k) for k in active_fk}
+        active_simple = [
+            f
+            for f in active_simple
+            if f in self._original_fields
+            or f == self.pk_field
+            or f in active_bases
+            or f not in self._implicit_fk_bases
+        ]
+
         # Per-nested-M2M-field perm gate. Trim each spec's annotations /
         # sub_fields / type_coercers to only the allowed sub-fields. If
-        # all sub-fields are stripped, drop the whole spec.
+        # all sub-fields are stripped, drop the whole spec. A bare M2M (no
+        # sub-fields: renders target pks) is gated by its base field only.
         if allowed_m2m_subfields is not None:
             trimmed_m2m = {}
             for base_name, spec in active_m2m.items():
+                if not spec["sub_fields"]:
+                    trimmed_m2m[base_name] = spec
+                    continue
                 allowed = allowed_m2m_subfields.get(base_name)
                 if allowed is None:
                     # No allow-list for this M2M → drop entirely (defaults
@@ -262,6 +408,10 @@ class CompiledQueryPlan:
                     continue
                 kept_subs = [s for s in spec["sub_fields"] if s in allowed]
                 if not kept_subs:
+                    if spec.get("bare"):
+                        # The M2M is also listed on its own: render its pks,
+                        # as the serializer does when the sub-fields are hidden.
+                        trimmed_m2m[base_name] = {**spec, "sub_fields": []}
                     continue
                 trimmed_m2m[base_name] = {
                     **spec,
@@ -277,23 +427,33 @@ class CompiledQueryPlan:
                 }
             active_m2m = trimmed_m2m
 
-        # Always keep PK if we have M2M to merge
-        if active_m2m and self.pk_field not in active_simple:
-            active_simple = [self.pk_field] + active_simple
-
         # Always FETCH the pk, even when it isn't rendered (post_process strips
-        # it unless it's in active_simple): property fields may need it to load
-        # instances, and `.values()` with no arguments would return EVERY
-        # column — including ones the caller can't read — whenever permission
-        # filtering or `?fields=` leaves nothing else selected.
+        # it unless it's configured and selected): the M2M merge and property
+        # fields key on it, and `.values()` with no arguments would return
+        # EVERY column — including ones the caller can't read — whenever
+        # permission filtering or `?fields=` leaves nothing else selected.
         values_fields = list(active_simple)
         if self.pk_field not in values_fields:
             values_fields.insert(0, self.pk_field)
 
-        compiled_qs = queryset.values(*values_fields, **active_fk)
+        annotations = {}
+        for key, expr in active_fk.items():
+            visible = (fk_visibility or {}).get(key)
+            if visible:
+                expr = Case(When(visible, then=expr), default=Value(None))
+            annotations[self._fk_aliases.get(key, key)] = expr
+
+        compiled_qs = queryset.values(*values_fields, **annotations)
         return compiled_qs, (active_simple, active_fk, active_m2m, active_props)
 
-    def post_process(self, rows, active_plan, m2m_target_filters=None):
+    def post_process(
+        self,
+        rows,
+        active_plan,
+        m2m_target_filters=None,
+        request=None,
+        m2m_visibility=None,
+    ):
         """Apply type coercion, property fields, and M2M merge to result rows.
 
         ``m2m_target_filters`` optionally maps an M2M output name to a queryset
@@ -301,120 +461,175 @@ class CompiledQueryPlan:
         merge's second query is scoped to those targets so a compiled M2M cannot
         render rows from a predicate/tenant-protected target. ``None`` = no
         scoping (public targets, or non-compiled callers).
+
+        ``m2m_visibility`` optionally maps an M2M output name to
+        ``{sub_field: Q on the through model}``: a sub-field that crosses
+        another hop renders NULL where that hop's target is out of scope.
+
+        ``request`` builds absolute file URLs, as the serializer does.
         """
         active_simple, active_fk, active_m2m, active_props = active_plan
 
-        # 1. Property fields — before type coercion, so they see the same value
-        #    types as on a model instance (Decimal, not str).
-        if active_props:
-            self._compute_properties(rows, active_props)
+        # 0. Internal aliases back to their output keys.
+        for key, alias in self._fk_aliases.items():
+            if key in active_fk:
+                for row in rows:
+                    row[key] = row.pop(alias, None)
 
-        # 2. Type coercion (Decimal -> str, etc.)
-        if self.type_coercers:
+        # 1. Property fields, computed on model instances (as the serializer
+        #    path does).
+        if active_props:
+            self._compute_properties(rows, active_props, request)
+
+        # 2. Type coercion: render as the serializer does (field_representation)
+        coercers = dict(self.type_coercers)
+        for key, field in self._file_fields.items():
+            coercers[key] = field_representation(field, request)
+        if coercers:
             for row in rows:
-                for field_name, coercer in self.type_coercers.items():
+                for field_name, coercer in coercers.items():
                     if field_name in row and row[field_name] is not None:
                         row[field_name] = coercer(row[field_name])
 
         # 3. M2M merge (two-query approach)
         if active_m2m:
             pk_values = [row[self.pk_field] for row in rows]
-
             for m2m_name, spec in active_m2m.items():
-                # Second query on through table
-                through_qs = spec["through_model"].objects.filter(
-                    **{f"{spec['source_fk']}__in": pk_values}
+                grouped = self._merge_m2m(
+                    m2m_name,
+                    spec,
+                    pk_values,
+                    (m2m_target_filters or {}).get(m2m_name),
+                    (m2m_visibility or {}).get(m2m_name) or {},
+                    request,
                 )
-                # F4: scope to target rows visible via the target's endpoint.
-                if m2m_target_filters and m2m_name in m2m_target_filters:
-                    through_qs = through_qs.filter(
-                        **{f"{spec['target_fk']}__in": m2m_target_filters[m2m_name]}
-                    )
-                m2m_rows = list(
-                    through_qs.values(spec["source_fk"], **spec["annotations"])
-                )
-
-                # Apply M2M type coercion
-                if spec.get("type_coercers"):
-                    for m2m_row in m2m_rows:
-                        for fname, coercer in spec["type_coercers"].items():
-                            if fname in m2m_row and m2m_row[fname] is not None:
-                                m2m_row[fname] = coercer(m2m_row[fname])
-
-                # Group by parent PK
-                source_fk_name = spec["source_fk"]
-                grouped = defaultdict(list)
-                for m2m_row in m2m_rows:
-                    pid = m2m_row.pop(source_fk_name)
-                    grouped[pid].append(m2m_row)
-
-                # Attach to parent rows
                 for row in rows:
                     row[m2m_name] = grouped.get(row[self.pk_field], [])
 
-            # Remove PK from output if it wasn't in original config
-            if self.pk_field not in self._original_fields:
-                for row in rows:
-                    row.pop(self.pk_field, None)
-
         # The pk is always fetched (see apply_to_queryset); render it only if
-        # it was selected.
-        if self.pk_field not in active_simple:
+        # it's configured and selected.
+        if (
+            self.pk_field not in active_simple
+            or self.pk_field not in self._original_fields
+        ):
             for row in rows:
                 row.pop(self.pk_field, None)
 
         return rows
 
-    def _compute_properties(self, rows, active_props):
-        """Compute @property fields for ``rows``, matching the serializer path.
+    def _merge_m2m(self, m2m_name, spec, pk_values, target_filter, visibility, request):
+        """{parent pk: [rendered targets]} for one M2M, in the target's
+        Meta.ordering, without targets the target's default manager hides."""
+        source_fk, target_fk = spec["source_fk"], spec["target_fk"]
+        related_model = spec["related_model"]
+        through_qs = spec["through_model"]._base_manager.filter(
+            **{f"{source_fk}__in": pk_values}
+        )
+        # F4: scope to target rows visible via the target's endpoint.
+        if target_filter is not None:
+            through_qs = through_qs.filter(**{f"{target_fk}__in": target_filter})
+        # The serializer reads the M2M through the target's default manager:
+        # a target it hides (soft delete) isn't rendered.
+        default_qs = related_model._default_manager.all()
+        if default_qs.query.has_filters():
+            through_qs = through_qs.filter(
+                **{f"{target_fk}__in": default_qs.values("pk")}
+            )
+        ordering = _target_ordering(related_model, target_fk)
+        if ordering:
+            through_qs = through_qs.order_by(*ordering)
 
-        Each property first runs against the row (a DictProxy — no extra
-        query). A property that needs anything the row doesn't hold (a related
-        object, a reverse relation, an unselected column, a method) raises
-        there; those are recomputed on real instances, loaded in ONE query for
-        the affected rows. A property that also fails on the instance is
-        omitted and logged — the same as the serializer path.
-        """
-        pending = []
+        grouped = defaultdict(list)
+        if not spec["sub_fields"]:
+            # Bare M2M: the target pks.
+            for source, target in through_qs.values_list(source_fk, target_fk):
+                grouped[source].append(target)
+            return grouped
+
+        annotations = {}
+        for sub_field, expr in spec["annotations"].items():
+            visible = visibility.get(sub_field)
+            if visible:
+                expr = Case(When(visible, then=expr), default=Value(None))
+            annotations[spec["aliases"][sub_field]] = expr
+        coercers = dict(spec.get("type_coercers") or {})
+        for sub_field, field in spec.get("file_fields", {}).items():
+            if sub_field in spec["annotations"]:
+                coercers[sub_field] = field_representation(field, request)
+
+        for m2m_row in through_qs.values(source_fk, **annotations):
+            pid = m2m_row.pop(source_fk)
+            item = {}
+            for sub_field in spec["annotations"]:
+                value = m2m_row.get(spec["aliases"][sub_field])
+                if value is not None and sub_field in coercers:
+                    value = coercers[sub_field](value)
+                item[sub_field] = value
+            grouped[pid].append(item)
+        return grouped
+
+    def _compute_properties(self, rows, active_props, request=None):
+        """Compute @property fields for ``rows`` exactly as the serializer path
+        does: in the caller's sandbox (see ``turbodrf.properties``), or, for
+        ``unscoped_properties``, on the full instances loaded in ONE query. A
+        property that raises is omitted and logged."""
+        from .properties import evaluate, sandboxed_values, unscoped_properties
+
+        pks = [row.get(self.pk_field) for row in rows]
+        unscoped = unscoped_properties(self.model)
+        sandboxed = {k: v for k, v in active_props.items() if k not in unscoped}
+        raw = {k: v for k, v in active_props.items() if k in unscoped}
+
+        values = (
+            sandboxed_values(self.model, pks, sandboxed, request) if sandboxed else {}
+        )
+        if raw:
+            qs = self.model._base_manager.filter(
+                pk__in={pk for pk in pks if pk is not None}
+            )
+            if self._fk_names:
+                qs = qs.select_related(*self._fk_names)
+            for instance in qs:
+                computed = values.setdefault(instance.pk, {})
+                for prop_name, fget in raw.items():
+                    ok, value = evaluate(instance, prop_name, fget)
+                    if ok:
+                        computed[prop_name] = value
+
         for row in rows:
-            proxy = DictProxy(row, self._proxy_aliases, self._fk_names)
-            for prop_name, fget in active_props.items():
-                try:
-                    row[prop_name] = fget(proxy)
-                except Exception:
-                    pending.append((row, prop_name))
-        if not pending:
-            return
-
-        pks = {row.get(self.pk_field) for row, _ in pending}
-        pks.discard(None)
-        qs = self.model._base_manager.filter(pk__in=pks)
-        if self._fk_names:
-            qs = qs.select_related(*self._fk_names)
-        instances = {obj.pk: obj for obj in qs}
-
-        for row, prop_name in pending:
-            instance = instances.get(row.get(self.pk_field))
-            if instance is None:
-                continue
-            try:
-                row[prop_name] = active_props[prop_name](instance)
-            except Exception as exc:
-                logger.warning(
-                    "Property field %s on %s failed: %r",
-                    prop_name,
-                    self.model.__name__,
-                    exc,
-                )
+            row.update(values.get(row.get(self.pk_field), {}))
 
 
 def compile_model(model):
     """Compile a query plan for a model's list view.
 
-    Returns a CompiledQueryPlan if the model opts in (compiled=True),
-    or None if the model doesn't opt in.
-    Raises ImproperlyConfigured if the model opts in but has unsupported fields.
+    Returns a CompiledQueryPlan if the model opts in (compiled=True), or None
+    if it doesn't — or if its fields can't be rendered on the compiled path the
+    way the serializer path renders them (see ``compile_blocker``); such a
+    model is served by the serializer path.
+    Raises ImproperlyConfigured for a field that doesn't exist.
     """
+    try:
+        return _compile_model(model)
+    except NotCompilable as exc:
+        logger.info(
+            "TurboDRF: %s is served by the serializer path, not compiled: %s",
+            model.__name__,
+            exc,
+        )
+        return None
+
+
+def compile_blocker(model):
+    """Why ``model`` isn't compiled despite opting in, or ``None``."""
+    try:
+        _compile_model(model)
+    except NotCompilable as exc:
+        return str(exc)
+    return None
+
+
+def _compile_model(model):
     config = model.turbodrf()
 
     if not config.get("compiled", True):
@@ -423,13 +638,15 @@ def compile_model(model):
     # Get list fields
     fields_config = config.get("fields", "__all__")
     if isinstance(fields_config, dict):
-        list_fields = fields_config.get("list", "__all__")
+        list_fields = fields_config.get("list", fields_config.get("detail", []))
     else:
         list_fields = fields_config
 
-    # Resolve __all__
+    # Resolve __all__ as the serializer path does: concrete + M2M fields.
     if list_fields == "__all__":
-        list_fields = [f.name for f in model._meta.get_fields() if hasattr(f, "column")]
+        list_fields = [f.name for f in model._meta.fields] + [
+            f.name for f in model._meta.many_to_many
+        ]
 
     # Strip sensitive fields
 
@@ -437,11 +654,28 @@ def compile_model(model):
 
     list_fields = [f for f in list_fields if not is_field_path_sensitive(f)]
 
+    # Drop paths deeper than TURBODRF_MAX_NESTING_DEPTH, as the serializer
+    # path does.
+    from django.core.exceptions import ValidationError
+
+    from .validation import validate_nesting_depth
+
+    within_depth = []
+    for f in list_fields:
+        try:
+            validate_nesting_depth(f)
+        except ValidationError as exc:
+            logger.warning("Skipping field '%s' on %s: %s", f, model.__name__, exc)
+            continue
+        within_depth.append(f)
+    list_fields = within_depth
+
     original_fields = list(list_fields)
 
     simple_fields = []
     fk_annotations = {}
-    m2m_groups = defaultdict(list)  # base_field -> [sub_field_names]
+    m2m_groups = {}  # base_field -> [sub_field_names] ([] = the M2M on its own)
+    bare_m2m = set()  # M2Ms listed on their own (render pks)
     property_fields = {}
 
     # Track which base FK fields we've added
@@ -451,19 +685,24 @@ def compile_model(model):
         if "__" not in field_name:
             # Simple field — check if it's a DB column or property
             try:
-                model._meta.get_field(field_name)
-                if field_name not in simple_fields:
-                    simple_fields.append(field_name)
+                field = model._meta.get_field(field_name)
             except FieldDoesNotExist:
                 # Check if it's a model property
                 model_attr = getattr(model, field_name, None)
                 if isinstance(model_attr, property):
                     property_fields[field_name] = model_attr.fget
-                else:
-                    raise ImproperlyConfigured(
-                        f"TurboDRF compiled path: '{field_name}' on "
-                        f"{model.__name__} is not a database field or property."
-                    )
+                    continue
+                raise ImproperlyConfigured(
+                    f"TurboDRF compiled path: '{field_name}' on "
+                    f"{model.__name__} is not a database field or property."
+                )
+            if field.many_to_many and field.concrete:
+                m2m_groups.setdefault(field_name, [])
+                bare_m2m.add(field_name)
+            elif field.many_to_many or field.one_to_many:
+                raise NotCompilable(f"'{field_name}' is a reverse relation")
+            elif field_name not in simple_fields:
+                simple_fields.append(field_name)
         else:
             # Nested field — FK or M2M
             parts = field_name.split("__")
@@ -477,12 +716,13 @@ def compile_model(model):
                     f"{model.__name__} does not exist."
                 )
 
-            if base_field.many_to_many:
+            if base_field.many_to_many and base_field.concrete:
                 # M2M — group sub-fields by base name
                 sub_field = "__".join(parts[1:])
-                m2m_groups[base].append(sub_field)
-            elif hasattr(base_field, "related_model") and base_field.related_model:
-                # FK/OneToOne — create F() annotation
+                m2m_groups.setdefault(base, []).append(sub_field)
+            elif base_field.is_relation:
+                # FK / one-to-one (either side) — create F() annotation
+                _single_valued_path(model, field_name)
                 output_key = field_name.replace("__", "_")
                 fk_annotations[output_key] = F(field_name)
 
@@ -497,10 +737,12 @@ def compile_model(model):
                     f"{model.__name__} traverses a non-relation field."
                 )
 
-    # Compile M2M specs
+    # Compile M2M specs (a bare M2M plus its sub-fields renders the sub-fields,
+    # as the serializer path does)
     m2m_specs = {}
     for base_name, sub_fields in m2m_groups.items():
         m2m_specs[base_name] = _compile_m2m_spec(model, base_name, sub_fields)
+        m2m_specs[base_name]["bare"] = base_name in bare_m2m
 
     # Ensure PK is in simple_fields (needed for M2M merge and ordering)
     pk_field = model._meta.pk.name
@@ -633,6 +875,10 @@ def validate_compiled_path_safety(model):
     for m2m_base, spec in plan.m2m_specs.items():
         target = spec["related_model"]
         reasons = _classify_step(target)
+        # ... and every further hop a sub-field crosses (`tags__folder__name`).
+        for sub_field in spec["sub_fields"]:
+            for step_model, _name in _walk_fk_annotation_chain(target, sub_field):
+                reasons.extend(_classify_step(step_model))
         if not reasons:
             continue
 
@@ -648,8 +894,8 @@ def validate_compiled_path_safety(model):
             f"  • Drop '{m2m_base}__*' from {model.__name__}'s "
             f"turbodrf() 'fields'.\n"
             f"  • Set 'compiled': False on {model.__name__}.turbodrf() "
-            f"to use the DRF serializer path (applies target predicates "
-            f"correctly at serializers.py:333-363).\n"
+            f"to use the serializer path, which scopes each target at "
+            f"request time instead.\n"
             f"  • Remove predicates / tenant_field from "
             f"{target.__name__} only if it is genuinely public "
             f"reference data with no row-level rules.\n"

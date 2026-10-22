@@ -507,15 +507,21 @@ class TestParseConfigAndRegistration(SecurityBase):
         self.assertEqual(tf, "brokerage")
         self.assertEqual(len(preds), 1)
 
-    def test_valid_inputs_yield_no_predicates(self):
-        """tenancy='shared' and visibility=[] both yield (None, [])."""
+    def test_shared_yields_no_predicates_and_contradictions_raise(self):
+        """tenancy='shared' yields (None, []). Combined with scoping keys, an
+        empty visibility, or any other tenancy value, the config raises."""
+        tf, preds = parse_config({"tenancy": "shared"})
+        self.assertIsNone(tf)
+        self.assertEqual(preds, [])
         for cfg in (
             {"tenancy": "shared", "tenant_field": "x"},
+            {"tenancy": "shared", "owner_field": "x"},
+            {"tenancy": "isolated"},
+            {"tenancy": "shared "},
             {"visibility": []},
         ):
-            tf, preds = parse_config(cfg)
-            self.assertIsNone(tf)
-            self.assertEqual(preds, [])
+            with self.subTest(cfg=cfg), self.assertRaises(ImproperlyConfigured):
+                parse_config(cfg)
 
     def test_bypass_with_non_string_does_not_crash_and_deeply_nested_either(self):
         """bypass_owner_roles with mixed-type entries works. Deeply-nested
@@ -676,7 +682,8 @@ class TestTwoLayerAndCorners(SecurityBase):
 
     def test_has_tenancy_declaration_strings(self):
         self.assertTrue(has_tenancy_declaration({"tenant_field": "x"}))
-        self.assertTrue(has_tenancy_declaration({"visibility": []}))
+        self.assertFalse(has_tenancy_declaration({"visibility": []}))
+        self.assertFalse(has_tenancy_declaration({"tenancy": "tenant"}))
         self.assertFalse(has_tenancy_declaration({}))
         self.assertFalse(has_tenancy_declaration("not a dict"))
 

@@ -108,15 +108,15 @@ class ClientFieldSelectionTests(TestCase):
         self.assertIn("display_title", row)
 
     @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
-    def test_detail_view_ignores_fields_param(self):
-        """Detail view should ignore ?fields= (only works on list)."""
+    def test_detail_view_honours_fields_param(self):
+        """Detail (the serializer path) selects with ?fields= as the compiled
+        list does, so a list row and its detail agree."""
         response = self.client.get(
             f"/api/compiledsamplemodels/{self.sample.pk}/?fields=title"
         )
         self.assertEqual(response.status_code, 200)
-        # Detail uses DRF serializer path, so it returns all detail fields
         self.assertIn("title", response.data)
-        self.assertIn("price", response.data)
+        self.assertNotIn("price", response.data)
 
 
 class ClientFieldSelectionM2MTests(TestCase):

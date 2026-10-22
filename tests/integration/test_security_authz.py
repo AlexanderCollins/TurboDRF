@@ -659,17 +659,18 @@ class TestPredicates(AuthzSecurityBase):
         self.assertEqual(ob.q(req, {"manager"}), Q())
 
     def test_predicate_construction_and_empty_config(self):
-        """Custom/Conditional construction validation; empty visibility/
-        owner_field configurations resolve to no predicates."""
+        """Custom/Conditional construction validation; an empty visibility
+        raises (it scopes nothing); an empty owner_field adds no predicate."""
         from turbodrf.predicates import Conditional, Custom, parse_config
 
         with self.assertRaises(ImproperlyConfigured):
             Custom(q_func="not callable")
         with self.assertRaises(ImproperlyConfigured):
             Conditional(when="not a Q", require_roles=["admin"])
-        tf, preds = parse_config({"visibility": []})
-        self.assertIsNone(tf)
-        self.assertEqual(preds, [])
+        with self.assertRaises(ImproperlyConfigured):
+            parse_config({"visibility": []})
+        tf, preds = parse_config({"tenant_field": "brokerage", "visibility": []})
+        self.assertEqual((tf, preds), ("brokerage", []))
         tf, preds = parse_config({"tenant_field": "brokerage", "owner_field": []})
         self.assertEqual(tf, "brokerage")
         self.assertEqual(preds, [])

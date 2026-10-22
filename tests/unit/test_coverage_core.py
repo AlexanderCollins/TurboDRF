@@ -40,10 +40,15 @@ class TestGetApiFields(TestCase):
         self.assertIn("secret_field", fields)
         self.assertIn("related__description", fields)
 
-    def test_dict_fields_missing_view_type_returns_empty(self):
-        """Requesting a view_type not in the dict returns []."""
-        fields = SampleModel.get_api_fields("nonexistent")
-        self.assertEqual(fields, [])
+    def test_dict_fields_missing_view_type_uses_the_other(self):
+        """A view type left out of the dict uses the other one (as the
+        viewset does) — never an empty or "__all__" field set."""
+        from unittest.mock import patch
+
+        config = {"fields": {"list": ["title"]}}
+        with patch.object(SampleModel, "turbodrf", classmethod(lambda cls: config)):
+            self.assertEqual(SampleModel.get_api_fields("detail"), ["title"])
+            self.assertEqual(SampleModel.get_api_fields("list"), ["title"])
 
     def test_list_fields_returns_same_for_both_views(self):
         """A plain list config is returned for any view type."""
@@ -278,11 +283,21 @@ class TestValidateFilterField(TestCase):
         self.assertEqual(field_path, "title")
         self.assertEqual(lookup, "icontains")
 
-    def test_unknown_lookup_treated_as_field(self):
-        """If last part isn't a known lookup, entire string is the field."""
-        field_path, lookup = validate_filter_field(SampleModel, "title__foobar")
-        self.assertEqual(field_path, "title__foobar")
-        self.assertEqual(lookup, "exact")
+    def test_unknown_lookup_rejected(self):
+        """A field followed by something that is neither a field nor a
+        supported lookup is rejected, not passed through as a path."""
+        with self.assertRaises(ValidationError):
+            validate_filter_field(SampleModel, "title__foobar")
+
+    def test_related_field_named_like_a_lookup_is_a_field(self):
+        """`related__name` resolves as a field path even when the last part
+        could be a lookup elsewhere; regex lookups aren't offered."""
+        self.assertEqual(
+            validate_filter_field(SampleModel, "related__name"),
+            ("related__name", "exact"),
+        )
+        with self.assertRaises(ValidationError):
+            validate_filter_field(SampleModel, "title__regex")
 
     def test_exceeds_nesting_depth_raises(self):
         """Deep nesting in filter param triggers validation error."""
@@ -301,7 +316,6 @@ class TestValidateFilterField(TestCase):
             "startswith",
             "endswith",
             "isnull",
-            "regex",
         ]:
             field_path, lookup = validate_filter_field(SampleModel, f"title__{lkup}")
             self.assertEqual(lookup, lkup, f"Lookup '{lkup}' not recognized")

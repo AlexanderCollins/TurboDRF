@@ -8,9 +8,51 @@ django-filter provides out of the box.
 import logging
 
 from django.db.models import Q
-from rest_framework.filters import BaseFilterBackend, SearchFilter
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.filters import BaseFilterBackend, OrderingFilter, SearchFilter
 
 logger = logging.getLogger(__name__)
+
+
+class TurboDRFFilterBackend(DjangoFilterBackend):
+    """DjangoFilterBackend whose FK / M2M filters validate their value against
+    the target rows the caller can see. django-filter checks ``?folder=<pk>``
+    against the target's whole table, so "exists in another tenant" (200) and
+    "doesn't exist" (400) were distinguishable — a cross-tenant pk oracle."""
+
+    def get_filterset(self, request, queryset, view):
+        filterset = super().get_filterset(request, queryset, view)
+        if filterset is None:
+            return None
+        from .validation import scoped_target_queryset
+
+        for flt in filterset.filters.values():
+            target_qs = getattr(flt, "queryset", None)
+            if target_qs is None or callable(target_qs):
+                continue
+            scoped = scoped_target_queryset(target_qs.model, request)
+            if scoped is not None:
+                flt.queryset = target_qs.filter(pk__in=scoped.values("pk"))
+        return filterset
+
+    def filter_queryset(self, request, queryset, view):
+        """An FK / M2M filter naming a row the caller can't see — or one that
+        doesn't exist — matches nothing (200, empty), the same in both cases."""
+        from django_filters import utils
+
+        filterset = self.get_filterset(request, queryset, view)
+        if filterset is None:
+            return queryset
+        if not filterset.is_valid():
+            relation_filters = {
+                name
+                for name, flt in filterset.filters.items()
+                if getattr(flt, "queryset", None) is not None
+            }
+            if set(filterset.errors) <= relation_filters:
+                return queryset.none()
+            raise utils.translate_validation(filterset.errors)
+        return filterset.qs
 
 
 class TurboDRFSearchFilter(SearchFilter):
@@ -28,6 +70,94 @@ class TurboDRFSearchFilter(SearchFilter):
         terms = super().get_search_terms(request)
         max_len = getattr(settings, "TURBODRF_MAX_FILTER_VALUE_LENGTH", 1000)
         return [t for t in terms if len(t) <= max_len]
+
+    def filter_queryset(self, request, queryset, view):
+        """DRF's search, with each ``__``-path term ANDed with the traversal
+        scope of its JOIN targets INSIDE the same ``filter()`` call. On a
+        reverse / M2M relation a scope applied in a separate ``filter()`` is a
+        separate JOIN: one visible sibling satisfied it while the term matched
+        a hidden row."""
+        import operator
+        from functools import reduce
+
+        from django.db import models
+
+        from .validation import build_traversal_scope_q
+
+        search_fields = self.get_search_fields(view, request)
+        search_terms = self.get_search_terms(request)
+        if not search_fields or not search_terms:
+            return queryset
+
+        lookups = []
+        for search_field in search_fields:
+            path = str(search_field).lstrip("^=$@")
+            scope = (
+                build_traversal_scope_q(queryset.model, path, request)
+                if "__" in path
+                else models.Q()
+            )
+            lookups.append((self._construct(str(search_field), queryset), scope))
+
+        base = queryset
+        conditions = (
+            reduce(
+                operator.or_,
+                (models.Q(**{lookup: term}) & scope for lookup, scope in lookups),
+            )
+            for term in search_terms
+        )
+        queryset = queryset.filter(reduce(operator.and_, conditions))
+
+        # Remove duplicates from results, if necessary (as DRF does)
+        if self.must_call_distinct(queryset, search_fields):
+            queryset = queryset.filter(pk=models.OuterRef("pk"))
+            queryset = base.filter(models.Exists(queryset))
+        return queryset
+
+    def _construct(self, search_field, queryset):
+        try:
+            return self.construct_search(search_field, queryset)
+        except TypeError:  # DRF < 3.15: construct_search(field_name)
+            return self.construct_search(search_field)
+
+
+class TurboDRFOrderingFilter(OrderingFilter):
+    """OrderingFilter with a pk tie-breaker: ``?ordering=`` on a non-unique
+    column otherwise leaves ties in plan-dependent order, so a row can repeat
+    or vanish across pages (and the compiled and serializer paths disagree)."""
+
+    def get_ordering(self, request, queryset, view):
+        ordering = super().get_ordering(request, queryset, view)
+        if not ordering:
+            return ordering
+        # Order an FK by its raw column: ordering by the field itself sorts by
+        # the TARGET's Meta.ordering through an unscoped JOIN, leaking the
+        # order of rows the caller can't see.
+        ordering = [_fk_column_term(queryset.model, term) for term in ordering]
+        pk_names = {"pk", "-pk", queryset.model._meta.pk.name}
+        pk_names.add(f"-{queryset.model._meta.pk.name}")
+        if not any(isinstance(o, str) and o in pk_names for o in ordering):
+            ordering = [*ordering, "pk"]
+        return ordering
+
+
+def _fk_column_term(model, term):
+    """``folder`` / ``-folder`` -> ``folder_id`` / ``-folder_id`` for a concrete
+    FK or one-to-one field; any other term unchanged."""
+    from django.core.exceptions import FieldDoesNotExist
+
+    if not isinstance(term, str):
+        return term
+    desc = term.startswith("-")
+    name = term.lstrip("-")
+    try:
+        field = model._meta.get_field(name)
+    except FieldDoesNotExist:
+        return term
+    if field.concrete and (field.many_to_one or field.one_to_one):
+        return f"{'-' if desc else ''}{field.attname}"
+    return term
 
 
 class ORFilterBackend(BaseFilterBackend):
@@ -185,7 +315,7 @@ class ORFilterBackend(BaseFilterBackend):
         for key, value in regular_params.items():
             try:
                 # Handle __in lookups specially
-                if "__in" in key:
+                if key.endswith("__in"):
                     value = value.split(",")
                 # Coerce isnull values to bool — Django's ORM rejects
                 # strings here, so a malformed `?x__isnull=garbage` raises
@@ -241,13 +371,14 @@ class ORFilterBackend(BaseFilterBackend):
             elif isinstance(filterset_fields, list):
                 valid_fields.update(filterset_fields)
 
-        # Also allow direct model field names
-        for field in model._meta.fields:
-            valid_fields.add(field.name)
-
-        # Allow ManyToMany fields
-        for field in model._meta.many_to_many:
-            valid_fields.add(field.name)
+        # Also allow direct model field names — only those the model's
+        # turbodrf() config exposes (a filter on an unexposed column is an
+        # oracle on its value).
+        configured = getattr(view, "_configured_base_fields", None)
+        configured = configured() if callable(configured) else None
+        for field in list(model._meta.fields) + list(model._meta.many_to_many):
+            if configured is None or field.name in configured:
+                valid_fields.add(field.name)
 
         return valid_fields
 
@@ -311,23 +442,16 @@ class ORFilterBackend(BaseFilterBackend):
             from .permissions import permissions_bypassed
 
             if not permissions_bypassed():
-                from .backends import get_user_roles
-
                 try:
-                    user_roles = get_user_roles(user)
-                    # If user has roles, enforce field-level permissions on filters
-                    # If user has NO roles:
-                    #   - Authenticated: denied at has_permission() already
-                    #   - Unauthenticated with guest role: check permissions
-                    #   - Unauthenticated without guest role: allow (public_access
-                    #     handles model-level gating)
-                    if user_roles:
-                        if not check_nested_field_permissions(model, field_path, user):
-                            logger.debug(
-                                f"Permission denied for filter '{field_name}' "
-                                f"(user lacks read permission)"
-                            )
-                            return False
+                    # Every caller is gated, anonymous included: on a
+                    # public_access model the anonymous snapshot has
+                    # model-level read, so field rules still apply.
+                    if not check_nested_field_permissions(model, field_path, user):
+                        logger.debug(
+                            f"Permission denied for filter '{field_name}' "
+                            f"(user lacks read permission)"
+                        )
+                        return False
                 except Exception as e:
                     # Fail closed — deny access on permission check error
                     logger.warning(

@@ -129,6 +129,127 @@ class TestFastJSONFlags(TestCase):
         self.assertEqual(renderer.format, "json")
 
 
+_RENDERER_VARIANTS = {}
+_MISSING = object()
+
+
+def _renderer_variant(lib):
+    """A copy of turbodrf.renderers built as if only ``lib`` were available
+    ('msgspec', 'orjson' or 'stdlib'), or None if it isn't.
+
+    Only the hidden module keys are touched (and restored): patch.dict over
+    sys.modules clears and refills the whole module table on exit, which can
+    re-initialise C extensions imported meanwhile and crash the worker.
+    Variants are built once per process.
+    """
+    import importlib.util
+    import sys
+
+    if lib in _RENDERER_VARIANTS:
+        return _RENDERER_VARIANTS[lib]
+    hidden = {
+        "msgspec": ("orjson",),
+        "orjson": ("msgspec", "msgspec.json"),
+        "stdlib": ("msgspec", "msgspec.json", "orjson"),
+    }[lib]
+    if lib != "stdlib" and importlib.util.find_spec(lib) is None:
+        return None
+    import turbodrf.renderers as live
+
+    saved = {name: sys.modules.get(name, _MISSING) for name in hidden}
+    spec = importlib.util.spec_from_file_location(
+        f"_test_renderers_{lib}", live.__file__
+    )
+    module = importlib.util.module_from_spec(spec)
+    try:
+        for name in hidden:
+            sys.modules[name] = None
+        spec.loader.exec_module(module)
+    finally:
+        for name, value in saved.items():
+            if value is _MISSING:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = value
+    _RENDERER_VARIANTS[lib] = module
+    return module
+
+
+class _ChattyObject:
+    """An object with no JSON representation whose str() would leak."""
+
+    def __str__(self):
+        return "LEAKED_VIA_STR"
+
+
+class TestRendererCoercion(TestCase):
+    """Only the types DRF's JSONEncoder handles are coerced; anything else
+    raises like stock DRF instead of rendering its str()."""
+
+    def test_enc_default_rejects_unknown_objects(self):
+        from turbodrf.renderers import _enc_default
+
+        with self.assertRaises(TypeError):
+            _enc_default(_ChattyObject())
+
+    def test_unknown_object_raises_in_every_variant(self):
+        for lib in ("msgspec", "orjson", "stdlib"):
+            module = _renderer_variant(lib)
+            if module is None:
+                continue
+            with self.subTest(lib=lib):
+                self.assertEqual(module.FAST_JSON_LIB, lib)
+                with self.assertRaises(TypeError):
+                    module.TurboDRFRenderer().render({"p": _ChattyObject()})
+
+    def test_queryset_property_does_not_render_its_str(self):
+        RelatedModel.objects.create(name="LEAKED_ROW")
+        for lib in ("msgspec", "orjson", "stdlib"):
+            module = _renderer_variant(lib)
+            if module is None:
+                continue
+            with self.subTest(lib=lib):
+                with self.assertRaises(TypeError):
+                    module.TurboDRFRenderer().render({"p": RelatedModel.objects.all()})
+
+    def test_supported_types_still_render(self):
+        from django.utils.translation import gettext_lazy
+
+        for lib in ("msgspec", "orjson"):
+            module = _renderer_variant(lib)
+            if module is None:
+                continue
+            with self.subTest(lib=lib):
+                out = json.loads(
+                    module.TurboDRFRenderer().render(
+                        {
+                            "d": Decimal("1.50"),
+                            "lazy": gettext_lazy("hello"),
+                            "u": UUID(int=1),
+                        }
+                    )
+                )
+                self.assertEqual(out["d"], "1.50")
+                self.assertEqual(out["lazy"], "hello")
+                self.assertEqual(out["u"], str(UUID(int=1)))
+
+    def test_decimals_follow_coerce_setting(self):
+        from django.test import override_settings
+
+        for lib in ("msgspec", "orjson", "stdlib"):
+            module = _renderer_variant(lib)
+            if module is None:
+                continue
+            with self.subTest(lib=lib):
+                with override_settings(
+                    REST_FRAMEWORK={"COERCE_DECIMAL_TO_STRING": False}
+                ):
+                    out = json.loads(
+                        module.TurboDRFRenderer().render({"d": Decimal("1.50")})
+                    )
+                self.assertEqual(out["d"], 1.5)
+
+
 # ---------- Exception handler tests ----------
 
 
