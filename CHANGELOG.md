@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.1
+
+- **Django 6.0+: models with an M2M list field weren't compiled.** Django 6.0
+  made `ManyToManyField` non-concrete, and the compiler identified a forward
+  M2M by `concrete`; such models silently fell back to the serializer path
+  (correct output, scoped, but slower). Forward M2Ms are now detected on
+  every Django version.
+- CI installs the matrix Django version together with the dev extras, which
+  had upgraded the "4.2" and "6.0" jobs to Django 6.1.
+
 ## 0.6.0 — Security review: field rules everywhere, nested scoping, list/detail parity
 
 A review of the whole framework (row scoping, field RBAC and writes,

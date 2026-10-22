@@ -127,6 +127,12 @@ def path_leaf_field(model, path):
     return field
 
 
+def _forward_m2m(field):
+    """A ManyToManyField declared on the model (not the reverse side). Not
+    ``concrete``: Django 6.0 made ManyToManyField non-concrete."""
+    return field.many_to_many and not field.auto_created
+
+
 def _single_valued_path(model, path):
     """Check ``path`` crosses only single-valued relations (FK, one-to-one,
     reverse one-to-one) and ends on a concrete field. Raises NotCompilable."""
@@ -696,7 +702,7 @@ def _compile_model(model):
                     f"TurboDRF compiled path: '{field_name}' on "
                     f"{model.__name__} is not a database field or property."
                 )
-            if field.many_to_many and field.concrete:
+            if _forward_m2m(field):
                 m2m_groups.setdefault(field_name, [])
                 bare_m2m.add(field_name)
             elif field.many_to_many or field.one_to_many:
@@ -716,7 +722,7 @@ def _compile_model(model):
                     f"{model.__name__} does not exist."
                 )
 
-            if base_field.many_to_many and base_field.concrete:
+            if _forward_m2m(base_field):
                 # M2M — group sub-fields by base name
                 sub_field = "__".join(parts[1:])
                 m2m_groups.setdefault(base, []).append(sub_field)
