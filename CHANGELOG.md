@@ -7,8 +7,13 @@
   M2M by `concrete`; such models silently fell back to the serializer path
   (correct output, scoped, but slower). Forward M2Ms are now detected on
   every Django version.
+- **Django 4.2: an out-of-range integer pk or filter value returned 500** on
+  SQLite (Django 5.0 made such lookups match nothing). It's now a 404 on
+  object routes and a 400 on lists. A request with too many query / form
+  fields is a 400 on every version.
 - CI installs the matrix Django version together with the dev extras, which
-  had upgraded the "4.2" and "6.0" jobs to Django 6.1.
+  had upgraded the "4.2" and "6.0" jobs to Django 6.1, so Django 4.2 hadn't
+  really been tested.
 
 ## 0.6.0 — Security review: field rules everywhere, nested scoping, list/detail parity
 
