@@ -7,10 +7,11 @@ Tests the ORFilterBackend functionality for OR query support.
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.request import Request
 from rest_framework.test import APIRequestFactory
 
+from tests.fixtures import roles_with_guest
 from tests.test_app.models import RelatedModel, SampleModel
 from turbodrf.filter_backends import ORFilterBackend
 
@@ -21,6 +22,7 @@ class MockView:
     """Mock view for testing filter backend."""
 
 
+@override_settings(TURBODRF_ROLES=roles_with_guest())
 class TestORFilterBackend(TestCase):
     """Test OR filter backend functionality."""
 

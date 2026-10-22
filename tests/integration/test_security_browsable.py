@@ -466,9 +466,10 @@ class OptionsMetadata(SecBase):
             )
         r_d = self.client.options("/api/deals/")
         if r_d.status_code == 200 and isinstance(r_d.data, dict):
-            # compiled=False → client_fields_param None.
-            self.assertIsNone(
-                r_d.data.get("capabilities", {}).get("client_fields_param")
+            # ?fields= works on the serializer path too (compiled=False).
+            self.assertEqual(
+                r_d.data.get("capabilities", {}).get("client_fields_param"),
+                "fields",
             )
 
     def test_options_tenancy_and_field_choices_do_not_leak(self):
@@ -1806,72 +1807,85 @@ class SwaggerInternals(SecBase):
         for cb in (CB_no_attr(), CB_no_actions(), CB_blank_name(), CB_no_basename()):
             self.assertFalse(gen._is_no_slash_duplicate(cb))
 
-    # ---- _extract_model_info ----
+    # ---- model resolution / operation inclusion ----
 
-    def test_extract_model_info_rejects_or_singularizes(self):
-        # Non-/api/ paths and unknown models → None; known paths singularize
-        # via simple .rstrip('s').
+    def _view_for(self, model, user, method="GET"):
+        from rest_framework.request import Request
+
+        from turbodrf.views import TurboDRFViewSet
+
+        class VS(TurboDRFViewSet):
+            pass
+
+        VS.model = model
+        view = VS()
+        request = Request(APIRequestFactory().generic(method, "/api/x/"))
+        request.user = user
+        view.request = request
+        view.format_kwarg = None
+        return view
+
+    def test_model_resolved_from_viewset_not_path(self):
+        # The schema resolves an operation's model from the registered
+        # viewset (never by singularizing the URL), and anything that isn't a
+        # TurboDRF viewset with a model resolves to None (never documented).
+        from rest_framework.viewsets import ViewSet
+
+        from turbodrf.swagger import _turbodrf_model
+
+        self.assertIs(_turbodrf_model(self._view_for(Deal, self.attacker)), Deal)
+        self.assertIs(
+            _turbodrf_model(self._view_for(BankAccount, self.attacker)), BankAccount
+        )
+        self.assertIsNone(_turbodrf_model(ViewSet()))
+        view = self._view_for(Deal, self.attacker)
+        view.model = None
+        self.assertIsNone(_turbodrf_model(view))
+
+    def test_should_include_endpoint_methods_and_roles(self):
         gen = _gen()
-        for p in (
-            "/admin/",
-            "/swagger/",
-            "/redoc/",
-            "/api/nonexistents/",
-            "/api/../etc/passwds/",
-            "/api/déals/",
-            "/",
-            "",
-            "/api/",
-        ):
-            self.assertIsNone(gen._extract_model_info(p))
-        self.assertEqual(gen._extract_model_info("/api/deals/")["model_name"], "deal")
-        self.assertEqual(
-            gen._extract_model_info("/api/bankaccounts/")["model_name"],
-            "bankaccount",
+        # Methods with no TurboDRF action → excluded.
+        for method in ("TRACE", "OPTIONS"):
+            view = self._view_for(Deal, self.attacker, method)
+            self.assertFalse(
+                gen.should_include_endpoint("/api/deals/", method, view, False)
+            )
+        # The attacker's underwriter role grants deal read → included.
+        view = self._view_for(Deal, self.attacker)
+        self.assertTrue(gen.should_include_endpoint("/api/deals/", "GET", view, False))
+        # No-role user and anonymous → excluded, even with public=True.
+        for user in (self.no_role_user, AnonymousUser()):
+            view = self._view_for(Deal, user)
+            self.assertFalse(
+                _gen().should_include_endpoint("/api/deals/", "GET", view, True)
+            )
+
+    def test_prune_definitions_and_strip_sensitive(self):
+        from turbodrf.swagger import (
+            _prune_unreachable_definitions,
+            _strip_sensitive_properties,
         )
 
-    # ---- _has_permission / _filter_schema_fields ----
-
-    def test_has_permission_methods_and_perm_set(self):
-        gen = _gen()
-        info = {"app_label": "test_app", "model_name": "deal"}
-        # Unsupported HTTP methods → False.
-        for m in ("TRACE", "OPTIONS", "HEAD"):
-            self.assertFalse(gen._has_permission(info, m, set()))
-        self.assertFalse(gen._has_permission(info, "GET", set()))
-        perms = {"test_app.deal.read"}
-        self.assertTrue(gen._has_permission(info, "GET", perms))
-        # Lowercase method handled.
-        self.assertTrue(gen._has_permission(info, "get", perms))
-        for m in ("POST", "PUT", "DELETE"):
-            self.assertFalse(gen._has_permission(info, m, perms))
-
-    def test_filter_schema_fields_filters_by_perm(self):
-        gen = _gen()
-        info = {"app_label": "test_app", "model_name": "deal"}
-        # No properties at all → unchanged.
-        self.assertEqual(
-            gen._filter_schema_fields({"type": "object"}, info, set()),
-            {"type": "object"},
-        )
-        # Subset perm → subset properties.
-        sch = {
-            "type": "object",
-            "properties": {
-                "id": {"type": "integer"},
-                "title": {"type": "string"},
-                "secret": {"type": "string"},
+        ok = {"200": {"schema": {"$ref": "#/definitions/A"}}}
+        schema = {
+            "paths": {"/deals/": {"get": {"responses": ok}}},
+            "definitions": {
+                "A": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "b": {"$ref": "#/definitions/B"},
+                        "password": {"type": "string"},
+                    },
+                    "required": ["title", "password"],
+                },
+                "B": {"type": "object", "properties": {"api_key": {}, "name": {}}},
+                "Orphan": {"type": "object", "properties": {"secret": {}}},
             },
         }
-        out = gen._filter_schema_fields(sch, info, {"test_app.deal.id.read"})
-        self.assertEqual(set(out["properties"].keys()), {"id"})
-        # Full perms → all fields kept.
-        out2 = gen._filter_schema_fields(
-            {
-                "type": "object",
-                "properties": {"id": {"type": "integer"}, "title": {"type": "string"}},
-            },
-            info,
-            {"test_app.deal.id.read", "test_app.deal.title.read"},
-        )
-        self.assertEqual(set(out2["properties"].keys()), {"id", "title"})
+        _prune_unreachable_definitions(schema)
+        self.assertEqual(set(schema["definitions"]), {"A", "B"})
+        _strip_sensitive_properties(schema)
+        self.assertEqual(set(schema["definitions"]["A"]["properties"]), {"title", "b"})
+        self.assertEqual(schema["definitions"]["A"]["required"], ["title"])
+        self.assertEqual(set(schema["definitions"]["B"]["properties"]), {"name"})

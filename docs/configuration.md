@@ -32,7 +32,7 @@ Row-level access keys (`tenant_field`, `owner_field`, `bypass_owner_roles`,
 Three formats:
 
 ```python
-# All database fields
+# All concrete and many-to-many fields
 'fields': '__all__'
 
 # Specific fields (same for list and detail)
@@ -44,6 +44,8 @@ Three formats:
     'detail': ['title', 'description', 'author__name', 'author__email', 'price']
 }
 ```
+
+A dict with only `list` or only `detail` uses that list for both views. In every format, names on the sensitive deny-list are dropped (see [Security](security.md#sensitive-fields)), and each caller gets only the fields they can read. The primary key renders only if it's listed.
 
 ### Nested fields
 
@@ -58,28 +60,34 @@ Access related model fields with `__` notation:
 ]
 ```
 
-FK fields are flattened in responses (`author__name` becomes `author_name`). M2M fields are arrays of objects:
+FK fields are flattened in responses (`author__name` becomes `author_name`), and the FK itself renders as its raw id. M2M fields are arrays of objects keyed by the path below the M2M (`tags__group__name` gives `{"group__name": ...}`), in the target's `Meta.ordering`:
 
 ```json
 {
     "title": "Django for APIs",
+    "author": 12,
     "author_name": "William Vincent",
     "tags": [{"name": "Python"}, {"name": "Django"}]
 }
 ```
 
-Maximum nesting depth is 3 by default. Change with `TURBODRF_MAX_NESTING_DEPTH` in settings.
+An M2M listed on its own (`'tags'`) renders a list of target pks. Nested and M2M values are formatted by the same DRF field a top-level field of that type uses (a Decimal renders as a string by default, `DATETIME_FORMAT` applies, files render as absolute URLs). A path ending on an FK renders the value the parent stores: the related pk, or the `to_field` value.
+
+A nested value renders only when the caller can see the related row through that model's own endpoint; otherwise it's `null`, and M2M targets they can't see are left out. See [Security](security.md#nested-fields-across-scoped-relations).
+
+Maximum nesting depth is 3 by default (`a__b__c__d`). Change with `TURBODRF_MAX_NESTING_DEPTH` in settings. Deeper fields are skipped with a logged warning.
 
 ### Client field selection
 
-Clients can request specific fields via `?fields=`:
+Clients can narrow a list or detail response with `?fields=`:
 
 ```
 GET /api/books/?fields=title,price
-GET /api/books/?fields=title,author.name
+GET /api/books/1/?fields=title,author.name
+GET /api/books/?fields=author          # the FK and all its configured nested values
 ```
 
-Only fields configured in `turbodrf()` are available. Dot or underscore notation both work. Permission filtering still applies.
+Names are output keys; dot (`author.name`) or underscore (`author_name`) notation both work. An FK name selects every configured nested value under it, an M2M name selects the whole array, and selecting a nested value also renders its FK's raw id. Only fields configured in `turbodrf()` are available: unknown names are ignored, and if none match, the full field set is returned. Permission filtering still applies.
 
 ## Property / computed read fields
 
@@ -105,7 +113,51 @@ class Book(models.Model, TurboDRFMixin):
 
 Both paths render the same property keys: a property is readable by any role that can read the model (it can't carry its own field-level rule), and sensitive-named properties are dropped.
 
-On the **compiled path** a property is first computed from the fetched row, with no extra query. A property that needs anything else (a related object such as `self.author.name`, a reverse relation, a column not in `fields`) is computed on model instances instead, loaded in one extra query for the affected rows. For related data, `__` field notation (`author__name`) is still cheaper than a property that does `self.author.name`.
+### The property sandbox
+
+A property is computed on a **sandbox** copy of the row, the same way on both paths:
+
+- Only the columns the caller may read are loaded. Reading any other column (a field a role has no read rule for, a `sensitive_fields` entry, `password`) would need a query, so it fails.
+- Related objects are available only if the model declares them in `property_relations`. Each hop is loaded within the caller's scope (the target's own `tenant_field` and predicates, as for `author__name`) and with only the columns the caller may read on that model. A FK whose target is out of scope reads as `None`; out-of-scope rows are missing from a reverse or M2M relation.
+- The property can't query the database. `Book.objects.count()`, `self.tags.filter(...)` and `self.tags.values_list(...)` all fail; `self.tags.all()` on a declared relation works.
+
+A property that fails is left out of the response and logged (a warning the first time, then at debug level). The page's rows are loaded in one query, plus one per declared relation hop.
+
+```python
+class Holding(models.Model, TurboDRFMixin):
+    name = models.CharField(max_length=100)
+    portfolio = models.ForeignKey(Portfolio, null=True, on_delete=models.SET_NULL)
+
+    @property
+    def label(self):
+        portfolio = self.portfolio
+        return f"{self.name} ({portfolio.name})" if portfolio else self.name
+
+    @property
+    def valuation_dates(self):
+        return [v.date for v in self.valuations.all()]   # reverse FK
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            'tenant_field': 'brokerage',
+            'fields': ['name', 'label', 'valuation_dates'],
+            'property_relations': {
+                'label': ['portfolio'],             # or 'portfolio__name'
+                'valuation_dates': ['valuations'],
+            },
+        }
+```
+
+A path may end on a plain field (`portfolio__name`), and may be as deep as `TURBODRF_MAX_NESTING_DEPTH`. Forward and reverse FKs, one-to-ones and M2Ms can be loaded; a generic relation can't.
+
+`unscoped_properties` opts a property out: it runs on the full instance, with every column and unrestricted queries, whatever the caller's tenant, predicates or field rules. Use it only for properties derived from data every reader of the model may see:
+
+```python
+'unscoped_properties': ['exchange_rate'],   # reads shared reference data
+```
+
+A nested property path (`author__display_name`) isn't compiled: a model that lists one is served by the serializer path (`turbodrf_check` says why).
 
 ## Searchable fields
 
@@ -238,6 +290,8 @@ def pending(self, request):
 ```
 
 > **Note:** the scoping is inherited only because the handler goes through `self.get_object()` / `self.get_queryset()`. If you query the model directly (`self.model.objects.get(...)`), you bypass tenant and predicate filtering and must apply it yourself.
+
+`self.get_serializer()` in an action returns the same permission-filtered serializer the CRUD routes use: it renders only the configured detail fields the caller can read and accepts only the ones they can write.
 
 By default an action uses TurboDRF's role check, mapped from the HTTP method (`GET` → `read`, `POST` → `create`, ...). Pass `permission_classes` to replace it for that action, as with DRF's `@action`:
 

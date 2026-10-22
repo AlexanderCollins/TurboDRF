@@ -328,11 +328,13 @@ class TestSugarParser(TestCase):
         self.assertEqual(len(preds), 1)
         self.assertIsInstance(preds[0], Owner)
 
-    def test_owner_field_list_multiple_becomes_either(self):
+    def test_owner_field_list_multiple_becomes_one_owner(self):
+        # One Owner over every column, so a write is checked on all of them
+        # (Either(Owner, Owner) passed whenever one column was left out).
         tf, preds = parse_config({"owner_field": ["author", "editor", "reviewer"]})
         self.assertEqual(len(preds), 1)
-        self.assertIsInstance(preds[0], Either)
-        self.assertEqual(len(preds[0].predicates), 3)
+        self.assertIsInstance(preds[0], Owner)
+        self.assertEqual(preds[0].fields, ["author", "editor", "reviewer"])
 
     def test_full_sugar_form(self):
         tf, preds = parse_config(
@@ -417,8 +419,13 @@ class TestSugarParser(TestCase):
     def test_has_tenancy_declaration(self):
         self.assertTrue(has_tenancy_declaration({"tenancy": "shared"}))
         self.assertTrue(has_tenancy_declaration({"tenant_field": "x"}))
-        self.assertTrue(has_tenancy_declaration({"owner_field": "x"}))
-        self.assertTrue(has_tenancy_declaration({"visibility": []}))
+        self.assertTrue(has_tenancy_declaration({"visibility": [Owner("x")]}))
+        # Owner sugar scopes within a tenant; its bypass roles would see every
+        # tenant. An empty visibility scopes nothing; any other tenancy value
+        # is a typo.
+        self.assertFalse(has_tenancy_declaration({"owner_field": "x"}))
+        self.assertFalse(has_tenancy_declaration({"visibility": []}))
+        self.assertFalse(has_tenancy_declaration({"tenancy": "isolated"}))
         self.assertFalse(has_tenancy_declaration({}))
         self.assertFalse(has_tenancy_declaration({"fields": "__all__"}))
 

@@ -25,11 +25,14 @@ books = Book.objects.values('title', 'price', author_name=F('author__name'))
 return Response(list(books))
 ```
 
+A compiled row reads exactly as the serializer path renders it: values go through the DRF field for their model field (decimals, dates, times, durations), file fields render absolute URLs, binary fields base64, and permissions and nested-value scoping are the same. `@property` fields are the exception to "no model instantiation": they're computed on sandbox instances (see [the property sandbox](configuration.md#the-property-sandbox)), loaded in one extra query per page plus one per declared relation hop.
+
 ### What stays on DRF
 
 - Detail views (single object -- overhead is negligible)
 - All write operations (POST, PUT, PATCH, DELETE -- validation is needed)
 - Browsable API
+- Models whose list fields the compiled path can't render the way the serializer does: a reverse relation, a nested path through a reverse FK (or through an M2M below the first hop), or a nested `@property` path. `python manage.py turbodrf_check` reports which field and why.
 
 ## Fast JSON rendering
 

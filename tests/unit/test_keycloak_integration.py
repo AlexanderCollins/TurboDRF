@@ -323,6 +323,143 @@ class TestUserRolesFromSocialAuth(TestCase):
         self.assertIsInstance(roles, list)
 
 
+class _Association:
+    def __init__(self, provider, extra_data):
+        self.provider = provider
+        self.extra_data = extra_data
+
+
+class _SocialAuthManager:
+    """Minimal stand-in for user.social_auth (a related manager)."""
+
+    def __init__(self, associations, honour_filter=True):
+        self._associations = list(associations)
+        self._honour_filter = honour_filter
+
+    def all(self):
+        return list(self._associations)
+
+    def filter(self, **lookups):
+        if not self._honour_filter:
+            return list(self._associations)
+        return [
+            a
+            for a in self._associations
+            if all(getattr(a, k) == v for k, v in lookups.items())
+        ]
+
+
+@override_settings(TURBODRF_KEYCLOAK_ROLE_MAPPING={})
+class TestKeycloakProviderFiltering(TestCase):
+    """Only the Keycloak association's data is trusted for roles."""
+
+    def _user(self, associations, **kwargs):
+        user = User.objects.create_user(username=f"kc_{len(associations)}")
+        user.social_auth = _SocialAuthManager(associations, **kwargs)
+        return user
+
+    def test_role_claims_from_other_providers_are_ignored(self):
+        user = self._user(
+            [
+                _Association("github", {"roles": ["admin"]}),
+                _Association("keycloak", {"roles": ["viewer"]}),
+            ]
+        )
+        self.assertEqual(get_user_roles_from_social_auth(user), ["viewer"])
+
+    def test_only_other_providers_gives_no_roles(self):
+        user = self._user([_Association("google-oauth2", {"roles": ["admin"]})])
+        self.assertEqual(get_user_roles_from_social_auth(user), [])
+
+    def test_manager_returning_other_providers_is_still_filtered(self):
+        user = self._user(
+            [_Association("github", {"roles": ["admin"]})], honour_filter=False
+        )
+        self.assertEqual(get_user_roles_from_social_auth(user), [])
+
+    @override_settings(TURBODRF_KEYCLOAK_PROVIDER="keycloak-staff")
+    def test_custom_provider_name(self):
+        user = self._user(
+            [
+                _Association("keycloak", {"roles": ["admin"]}),
+                _Association("keycloak-staff", {"roles": ["editor"]}),
+            ]
+        )
+        self.assertEqual(get_user_roles_from_social_auth(user), ["editor"])
+
+
+@override_settings(TURBODRF_KEYCLOAK_ROLE_MAPPING={})
+class TestKeycloakMaxRoleAge(TestCase):
+    """Roles are a login-time snapshot; MAX_ROLE_AGE bounds how long."""
+
+    def _roles(self, extra_data):
+        user = User.objects.create_user(username=f"kc_age_{User.objects.count()}")
+        user.social_auth = _SocialAuthManager([_Association("keycloak", extra_data)])
+        return get_user_roles_from_social_auth(user)
+
+    def test_no_limit_by_default(self):
+        import time
+
+        old = int(time.time()) - 30 * 24 * 3600
+        self.assertEqual(
+            self._roles({"roles": ["viewer"], "auth_time": old}), ["viewer"]
+        )
+
+    @override_settings(TURBODRF_KEYCLOAK_MAX_ROLE_AGE=3600)
+    def test_roles_older_than_limit_are_dropped(self):
+        import time
+
+        old = int(time.time()) - 7200
+        with self.assertLogs("turbodrf.integrations.keycloak", "INFO"):
+            roles = self._roles({"roles": ["viewer"], "auth_time": old})
+        self.assertEqual(roles, [])
+
+    @override_settings(TURBODRF_KEYCLOAK_MAX_ROLE_AGE=3600)
+    def test_fresh_roles_are_kept(self):
+        import time
+
+        recent = int(time.time()) - 60
+        self.assertEqual(
+            self._roles({"roles": ["viewer"], "auth_time": recent}), ["viewer"]
+        )
+
+    @override_settings(TURBODRF_KEYCLOAK_MAX_ROLE_AGE=3600)
+    def test_missing_auth_time_fails_closed(self):
+        for extra in ({"roles": ["viewer"]}, {"roles": ["viewer"], "auth_time": "x"}):
+            self.assertEqual(self._roles(extra), [])
+
+
+class TestKeycloakMiddlewareDisabled(TestCase):
+    """TURBODRF_KEYCLOAK_INTEGRATION=False (default) → middleware is a no-op."""
+
+    def test_middleware_does_nothing_when_integration_disabled(self):
+        from unittest.mock import Mock
+
+        from django.test import RequestFactory
+
+        from turbodrf.integrations.keycloak import KeycloakRoleMiddleware
+
+        class PlainUser:
+            is_authenticated = True
+            roles = []
+
+        user = PlainUser()
+        user.social_auth = _SocialAuthManager(
+            [_Association("keycloak", {"roles": ["admin"]})]
+        )
+        middleware = KeycloakRoleMiddleware(Mock(return_value="ok"))
+
+        with override_settings(TURBODRF_KEYCLOAK_INTEGRATION=False):
+            request = RequestFactory().get("/")
+            request.user = user
+            self.assertEqual(middleware(request), "ok")
+            self.assertNotIn("roles", user.__dict__)
+
+        with override_settings(TURBODRF_KEYCLOAK_INTEGRATION=True):
+            middleware(request)
+            self.assertEqual(user.__dict__["roles"], ["admin"])
+
+
 class TestKeycloakDocumentation(TestCase):
     """Test Keycloak integration documentation."""
 

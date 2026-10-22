@@ -4,9 +4,18 @@
 
 Endpoints require authentication unless `public_access: True` is explicitly set.
 
+`public_access: True` gives anonymous callers model-level read (GET, HEAD,
+OPTIONS) and nothing more. Field rules still bind them: a field that any role
+has a read rule for needs an explicit grant, and anonymous callers get grants
+only through a role named `guest`. Without one they see, filter, search and
+order on only the fields no role has a rule for. See
+[permissions.md](permissions.md#anonymous-callers-and-the-guest-role).
+
 ## Sensitive fields
 
-Fields like `password`, `token`, and `secret_key` are never exposed in API responses or available for filtering, regardless of permissions.
+Fields like `password`, `token`, and `secret_key` are never exposed in API
+responses or available for filtering, regardless of permissions. The check
+runs at every `__` segment of a path, so `author__api_key` is denied too.
 
 Default deny-list:
 
@@ -17,7 +26,29 @@ TURBODRF_SENSITIVE_FIELDS = [
 ]
 ```
 
-Override in your settings to customise.
+Setting `TURBODRF_SENSITIVE_FIELDS` adds your names to this list. It can't
+remove the defaults.
+
+The deny-list applies in every permission mode to list and detail responses
+on both read paths (including `fields: "__all__"`), filters, OPTIONS metadata
+and the OpenAPI schema. With role-based permissions it also applies to search
+and ordering. With `TURBODRF_DISABLE_PERMISSIONS` or
+`TURBODRF_USE_DEFAULT_PERMISSIONS`, search uses `searchable_fields` as written
+and ordering accepts any concrete model field, deny-listed ones included.
+
+### Per-model `sensitive_fields`
+
+A model can also list fields that are readable only through an explicit
+field grant (`app.model.field.read`), never through model-level read:
+
+```python
+class Project(models.Model, TurboDRFMixin):
+    sensitive_fields = ['price']   # readable only with 'myapp.project.price.read'
+```
+
+Like any field rule it gates responses, filters, search, ordering and
+OPTIONS. It restricts reads only: add a `.write` rule to restrict writes. It's
+a role rule, so it has no effect when permissions are bypassed.
 
 ## No-roles denial
 
@@ -25,7 +56,22 @@ Authenticated users with no assigned roles get 403 on all endpoints. This preven
 
 ## Filter security
 
-Users can only filter on fields they have read permission for. This prevents binary search attacks where an attacker infers hidden values by filtering (e.g. `?salary__gte=100000`).
+With role-based permissions, callers can filter and order only on fields the
+model's `fields` config exposes (plus the primary key) that they can read. A
+filter on a hidden column would let an attacker infer its value by binary
+search (e.g. `?salary__gte=100000`). Filters on other fields are ignored and
+logged.
+
+- Nested filters (`?author__name=...`) are permission-checked at every hop,
+  and their JOIN only matches targets the caller can see (see
+  [URL-driven JOIN scoping](#url-driven-join-scoping)). A related field named
+  like a lookup (`folder__date`, where `date` is a field of the folder) is
+  treated as that field, so it's checked and scoped too.
+- An FK or M2M filter naming a row the caller can't see returns an empty 200,
+  the same as a pk that doesn't exist.
+- `__regex` / `__iregex` lookups aren't accepted.
+- `?ordering=<fk>` orders by the stored FK column, not by the target's
+  `Meta.ordering`.
 
 ## Error responses
 
@@ -78,26 +124,40 @@ class Order(models.Model, TurboDRFMixin):
 ```
 
 When `TURBODRF_TENANT_MODEL` is set in settings and `TURBODRF_REQUIRE_TENANCY=True`
-(default), the router refuses to register any model that has neither a tenancy
-declaration nor an explicit `'tenancy': 'shared'` opt-out — closing the
-"developer forgot to scope this" class of bugs at boot.
+(default), the router refuses to register any model that declares neither a
+`tenant_field`, a non-empty `visibility`, nor `'tenancy': 'shared'` — closing
+the "developer forgot to scope this" class of bugs at boot. An `owner_field`
+alone doesn't count: it scopes rows within a tenant, and its bypass roles
+would see every tenant's rows.
 
-See `docs/tenancy.md` for the full predicate vocabulary, sugar form, real-app
-coverage table, and configuration reference.
+See `docs/tenancy.md` for the full predicate vocabulary, sugar form, and
+configuration reference.
 
 ### What the predicate system enforces
 
 - **List/detail/PATCH/DELETE** — every queryset and `get_object()` is AND'd with
   the user's predicate Q. Detail/PATCH/DELETE return 404 (not 403) on filtered
-  rows to avoid existence leaks.
-- **Tenant auto-fill on create** — the tenant FK is filled from `request.user`,
-  client values for the tenant field are overwritten.
-- **FK injection defense** — every FK in the request body must resolve to a row
-  visible under the related model's predicate stack. Cross-tenant FK targets
-  return 400.
+  rows to avoid existence leaks. A predicate that crosses an M2M or reverse
+  relation is applied as a subquery, so it can't duplicate rows.
+- **Tenant on writes** — a direct `tenant_field` missing from the request is
+  filled from `request.user`. A client-supplied value for a different tenant
+  is rejected with a 400. With a chained `tenant_field` (`ledger__firm`),
+  a create, or an update that changes the first hop (`ledger`), must point
+  it at a row in the caller's tenant.
+- **FK injection defense** — every FK and M2M value in the request body must
+  resolve to a row visible under the related model's tenant boundary and
+  predicates. This runs on every model, shared ones included, and an
+  anonymous writer can't reference a tenant-scoped target. Rejected targets
+  return 400 with the same message whether they're hidden or don't exist.
 - **Tenant reassignment rejection** — PATCH cannot change a row's tenant FK to
   a different tenant.
-- **Owner write check** — non-bypass roles cannot assign rows to other users.
+- **Owner write check** — non-bypass roles cannot set an owner column to
+  another user. With a multi-column `owner_field` this covers every listed
+  column. The owner is auto-filled on create only; an update leaves it as is.
+- **`Conditional` write check** — the row is re-checked after the save, in the
+  same transaction. A write that would leave it invisible to the writer is
+  rolled back with a 400.
+- **Primary key** — read-only on update.
 
 ### Defense-in-depth options
 
@@ -113,6 +173,28 @@ should author and version policies in Django `RunSQL` migrations
 directly against the Postgres docs, and verify drift with a
 custom check in CI.
 
+## Nested fields across scoped relations
+
+A nested field (`author__name`) reads a column of another model. Its value
+renders only when every JOIN target along the path is visible to the caller
+through that target's own endpoint (its `tenant_field` and predicates).
+Otherwise the value is `null`. The parent row stays listed: only the nested
+value is withheld. This is the same on detail, uncompiled and compiled lists,
+the browsable API, and create/update responses.
+
+For M2M fields, targets the caller can't see are left out of the array, and
+a sub-field that crosses a further hop (`tags__folder__name`) is `null` where
+that hop's target is out of scope.
+
+Filtering or searching on a nested path can't match an out-of-scope target
+either (see [URL-driven JOIN scoping](#url-driven-join-scoping) and
+[Search field target bypass](#search-field-target-bypass)).
+
+Only `tenant_field` and predicates scope these JOINs. A default-manager filter
+such as soft delete doesn't: like Django's own FK access, a nested FK value
+reads the related row through the base manager. (M2M arrays follow the
+target's default manager.)
+
 ## Compiled M2M target bypass
 
 The compiled read path (default for all models) renders nested many-to-many
@@ -120,26 +202,26 @@ arrays via a separate two-query merge: one query for the parent rows, a
 second on the M2M through-table joining to the **target** model. If that
 join ran unscoped, a model nesting an M2M whose target carries its own
 visibility rules (predicates or tenant_field) would render rows the caller
-could not see by hitting the target's own endpoint — a real
-cross-permission read leak. Two layers prevent it:
+could not see by hitting the target's own endpoint. Two layers prevent it:
 
 1. **Request-time scoping** — the merge's second query is filtered to
    targets visible via the target's own endpoint
-   (`scoped_target_queryset` in `views._compiled_list`), matching what
-   the non-compiled DRF serializer path enforces (`serializers.py`).
-   This holds even when the startup gate below is bypassed.
+   (`scoped_target_queryset` in `views._compiled_list`), and a sub-field
+   that crosses a further hop renders `null` where that hop is out of scope.
+   This matches the serializer path (`serializers.py`) and holds even when
+   the startup gate below is bypassed.
 2. **The startup gate** — unsafe parent/target pairings are refused at
-   boot, so misconfigurations surface at deploy time rather than as
-   silently-filtered output.
+   boot, so misconfigurations surface at deploy time.
 
 ### Startup gate
 
 The router refuses to boot if any compiled model nests an M2M into a
 target that has registered predicates, or into a tenanted target while the
-parent itself is shared. Detection is fully static — done at router init
-in `compiler.validate_compiled_path_safety()` after every model's
-predicates are registered. The error message names the specific
-parent/target pair and lists the available fixes.
+parent itself is shared. Every further hop a sub-field crosses
+(`tags__folder__name`) is checked the same way. Detection is fully static —
+done at router init in `compiler.validate_compiled_path_safety()` after
+every model's predicates are registered. The error message names the
+specific parent/target pair and lists the available fixes.
 
 Safe targets (the gate allows them): pure reference / lookup tables with
 no predicates and no tenant_field — `Tag`, `Category`, `Status` and the
@@ -151,26 +233,26 @@ If the gate fires on your model, choose one:
 
 - **Drop the M2M nesting** from the parent's `turbodrf()` `fields` list.
   The M2M can still be reached via the target's own endpoint, where its
-  predicates apply correctly.
+  predicates apply.
 - **Set `'compiled': False`** on the parent model's `turbodrf()` config.
-  The DRF serializer path applies target predicates correctly.
+  The serializer path applies the same request-time scoping, and the gate
+  only checks compiled models.
 - **Strip the target's row-level rules** if and only if it is genuinely
   public reference data with no per-row visibility — same intent as
   `'tenancy': 'shared'`.
 - **`TURBODRF_ALLOW_UNSAFE_COMPILED_M2M = True`** bypasses the gate
-  entirely. Logs a loud warning per offending model. Intended for
-  migrations where you have audited every offending pairing and confirmed
-  the leak is acceptable; not recommended otherwise.
+  entirely. Logs a loud warning per offending model. Request-time scoping
+  still applies. Intended for migrations; not recommended otherwise.
 
 ## Compiled FK annotation bypass
 
 Compiled FK annotations (e.g. `'fields': ['title', 'author__name']`)
 emit `F('author__name')` in `.values()`, generating a SQL JOIN to the
-target without applying its `tenant_field` or registered predicates.
-Field-level permissions still gate which output keys render, so the
-response itself doesn't carry the leaked column by default — but the
-JOIN still executes, leaking row existence and timing/query-count side
-channels. Same bug class as the compiled M2M target bypass.
+target. At request time, each annotation whose path crosses a target with a
+`tenant_field` or predicates is wrapped in a `CASE`: the value renders only
+where every JOIN target is visible to the caller, and is `null` elsewhere.
+The row stays listed (see
+[Nested fields across scoped relations](#nested-fields-across-scoped-relations)).
 
 ### Startup gate
 
@@ -185,24 +267,29 @@ from the parent.
 - **Drop the FK path** from the parent's `turbodrf()` `fields` list.
   The related field can still be exposed via the target's own
   endpoint.
-- **Set `'compiled': False`** on the parent model. The DRF serializer
-  path applies target predicates correctly.
+- **Set `'compiled': False`** on the parent model. The serializer path
+  applies the same scoping (out-of-scope nested values render `null`).
 - **Strip the target's row-level rules** if and only if it is genuinely
   public reference data.
 - **`TURBODRF_ALLOW_UNSAFE_COMPILED_FK = True`** bypasses the gate
-  entirely. Logs a loud warning. Migrations only; not recommended.
+  entirely. Logs a loud warning. Request-time scoping still applies.
+  Migrations only; not recommended.
 
 ## Search field target bypass
 
-The same JOIN-without-target-predicates pattern applies to DRF's
-`SearchFilter` when `searchable_fields` contains a `__`-traversed path
-(e.g. `searchable_fields = ['author__email']`). The search query
-generates `WHERE author.email ILIKE ...` joined to the target model.
-The parent's tenant + predicate filter still scopes parent rows, but
-the target's own visibility rules are not applied to the join — so a
-search query can substring-match against rows the caller cannot see
-via the target's own endpoint. Even partial matches leak: an attacker
-can `?search=` letter-by-letter to enumerate hidden values.
+The same JOIN pattern applies to DRF's `SearchFilter` when
+`searchable_fields` contains a `__`-traversed path (e.g.
+`searchable_fields = ['author__email']`). The search query generates
+`WHERE author.email ILIKE ...` joined to the target model. Unscoped, a
+search could substring-match rows the caller cannot see via the target's
+own endpoint, and `?search=` letter by letter would enumerate hidden values.
+
+TurboDRF's search filter ANDs each `__`-path term with the traversal scope of
+its JOIN targets inside the same `filter()` call, so a term only matches
+targets the caller can see. Keeping it in one call matters for M2M and
+reverse relations: a scope in a separate `filter()` is a separate JOIN, where
+one visible sibling would satisfy the scope while the term matched a hidden
+row.
 
 ### Startup gate
 
@@ -222,8 +309,8 @@ either Author or Profile has its own rules.
 - **Strip the target's row-level rules** if and only if it is genuinely
   public reference data.
 - **`TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS = True`** bypasses the gate
-  entirely. Logs a loud warning per offending entry. Migrations only;
-  not recommended.
+  entirely. Logs a loud warning per offending entry. Request-time scoping
+  still applies. Migrations only; not recommended.
 
 ## Custom predicate write safety
 
@@ -285,12 +372,17 @@ suddenly can't see X" with no error to point at.
 `TURBODRF_ROLES`, parses each as `app.model.action` or
 `app.model.field.action`, and verifies:
 
-- Segment count is 3 or 4.
-- The `app.model` resolves via Django's app registry.
+- Segment count is 3 or 4. There are no wildcards: `'*'` is rejected.
+- The `app.model` resolves via Django's app registry and is written
+  exactly as the model's lowercase `app_label.model_name`
+  (`books.Book.read` is rejected, because permission checks compare
+  strings exactly).
 - The action is a valid model-level action (`read`, `create`,
   `update`, `delete`) or field-level action (`read`, `write`).
-- For 4-segment strings, the field exists on the model. Close
-  matches are listed in the error message via `difflib`.
+- For 4-segment strings, the field is a concrete or many-to-many field of
+  the model, by name. An FK's attname (`author_id`), a reverse relation or
+  a property is rejected. Close matches are listed in the error message via
+  `difflib`.
 
 ### Resolution
 
@@ -320,11 +412,17 @@ filter with a target-scoping subquery built by
 `validation.build_traversal_scope_q()`. For each model along the JOIN
 chain that has registered predicates or a `tenant_field`, an AND
 clause of the form
-`<prefix>__pk__in=<TargetModel>.objects.filter(<target_q>)` is added
-to the queryset. The `target_q` mirrors the target view's tenant_q +
+`<prefix>__pk__in=<TargetModel>._base_manager.filter(<target_q>)` is
+added to the queryset. The `target_q` mirrors the target view's tenant_q +
 predicate_q construction (see
 `views.py:_get_tenant_q` / `_get_predicate_q`), so the JOIN can never
-return rows the caller cannot see via the target's own endpoint.
+return rows outside the target's tenant boundary or predicates.
+
+The subquery uses the target's **base** manager, as Django's own JOINs
+and FK descriptors do (the serializer path renders the same related row).
+A default-manager filter such as soft delete is not a scoping layer: a row
+whose FK points at a soft-deleted target in the caller's scope stays
+listed. Hide rows with `tenant_field` or a predicate, not a manager.
 
 For paths through targets with no predicates and no `tenant_field`,
 the scope is a no-op `Q()` — no extra subquery cost.
@@ -334,18 +432,53 @@ no rows across a reverse / M2M relation, at that hop or an earlier one)
 is kept: each step is `<prefix>__isnull=True OR <prefix>__pk__in=...`
 when the relation can be empty. An empty relation joins nothing, so it
 can't reveal a target row; a relation pointing at an out-of-scope
-target is still excluded. The same scope is applied to the compiled
-list path's FK annotations and to search over `__`-path
+target is still excluded. The same scope decides whether a nested FK
+value renders on either read path (the value is `null` where the scope
+fails; the row stays), and is applied inside search over `__`-path
 `searchable_fields`.
 
-`?ordering=fk__field` is handled separately: when role-based
-permissions are enabled (the default), `ordering_fields` returns a
-flat list of the user's readable fields, and DRF's `OrderingFilter`
-silently rejects any URL value that isn't in that list. The traversal
-form is therefore unreachable in the default configuration.
+`?ordering=fk__field` is handled separately: `ordering_fields` is a flat
+list of field names (with role-based permissions, the configured fields
+the caller can read), and DRF's `OrderingFilter` silently drops any URL
+value that isn't in it. The traversal form is therefore unreachable.
+`?ordering=<fk>` orders by the stored FK column; ordering by the field
+itself would sort by the target's `Meta.ordering` through an unscoped JOIN.
+The primary key is appended as a tie-breaker.
 
 ### Kill switch
 
 - **`TURBODRF_ALLOW_UNSAFE_FILTER_TRAVERSAL = True`** disables the
-  request-time scoping. Filter `__`-paths then JOIN without target
-  scoping. Migrations only; not recommended.
+  request-time scoping of filter params. Filter `__`-paths then JOIN
+  without target scoping (search and nested values stay scoped).
+  Migrations only; not recommended.
+
+## Known limitations
+
+- **`@property` fields are gated by model-level read.** A property can't
+  carry its own field rule (sensitive-named properties are dropped). What it
+  can read is limited by the [property sandbox](configuration.md#the-property-sandbox):
+  the caller's readable columns, the relations declared in
+  `property_relations` (each hop scoped), and no queries. A property listed
+  in `unscoped_properties` runs outside the sandbox and returns whatever it
+  reads, whatever the caller's tenant, predicates or field rules.
+- **Default managers aren't a security layer.** A manager that hides rows
+  (soft delete) hides them from the model's own endpoint, not from nested
+  FK values or filters on other models. Scope with `tenant_field` or a
+  predicate.
+- **`Members` and `Group` don't check creates.** They scope reads, and so
+  updates and deletes, but a create (or a `Group` update that moves the row
+  to another group) isn't membership-checked. Use `Owner`, or `Custom` with
+  a `write_validator`, when writes must be restricted.
+- **Custom code that queries the model directly bypasses scoping.** Custom
+  actions are scoped only through `self.get_object()` /
+  `self.get_queryset()`.
+- **Bulk permission edits stay cached.** A bulk `RolePermission` QuerySet
+  `update()` / `delete()` doesn't invalidate cached permission snapshots;
+  call `turbodrf.backends.invalidate_user_permissions()` (see
+  [permissions.md](permissions.md#caching)).
+- **Bypassed permission modes** (`TURBODRF_DISABLE_PERMISSIONS`,
+  `TURBODRF_USE_DEFAULT_PERMISSIONS`) have no field rules, so per-model
+  `sensitive_fields` don't apply, and search and ordering don't apply the
+  sensitive deny-list.
+- **Keycloak roles are captured at login.** See
+  [integrations.md](integrations.md#where-the-roles-come-from).

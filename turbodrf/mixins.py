@@ -173,8 +173,10 @@ class TurboDRFMixin:
             ]
 
         if isinstance(fields, dict):
-            # Different fields for list/detail views
-            return fields.get(view_type, [])
+            # Different fields for list/detail views; a view left out of the
+            # dict uses the other one (as the viewset does).
+            other = "detail" if view_type == "list" else "list"
+            return fields.get(view_type, fields.get(other, []))
 
         # If it's a list, use for both views
         return fields

@@ -28,11 +28,11 @@ class Book(models.Model, TurboDRFMixin):
 GET /api/books/?search=django
 ```
 
-Entries may be plain field names or `__`-paths (`author__name`). Search is gated by field-level read permissions -- a caller without read access to a field cannot search by it -- and the whole list is validated at startup (unresolvable paths are dropped, and paths that would join into a predicate-bearing target are refused unless `TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS` is set).
+Entries may be plain field names or `__`-paths (`author__name`). Search is gated by field-level read permissions -- a caller without read access to a field cannot search by it -- and the whole list is validated at startup (unresolvable paths are dropped, and paths that would join into a predicate-bearing target are refused unless `TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS` is set). A `__`-path term only matches related rows the caller can see through that model's own endpoint.
 
 ## Filtering
 
-All model fields are filterable with Django lookups:
+The fields in the model's `fields` config (plus the primary key) that the caller can read are filterable with Django lookups:
 
 ```
 GET /api/books/?author=1                           # Exact match
@@ -41,6 +41,11 @@ GET /api/books/?title__icontains=python             # Text search
 GET /api/books/?published_date__year=2024           # Date
 GET /api/books/?author__name__istartswith=smith      # Related field
 ```
+
+- Filters on any other field are ignored (and logged), so a hidden column can't be probed through filters.
+- `__regex` / `__iregex` lookups aren't accepted.
+- A related-field filter is permission-checked at every hop and only matches related rows the caller can see through that model's own endpoint. A related field named like a lookup (`folder__date`, where `date` is a field of the folder) is treated as that field.
+- An FK or M2M filter naming a row the caller can't see returns an empty `200`, exactly as a pk that doesn't exist does.
 
 ### OR filtering
 
@@ -63,7 +68,10 @@ GET /api/books/?title_or=Django&title_or=Python&price__lt=50
 ```
 GET /api/books/?ordering=price         # Ascending
 GET /api/books/?ordering=-price        # Descending
+GET /api/books/?ordering=author        # By the stored author id
 ```
+
+The same configured, readable fields are orderable; nested paths (`author__name`) aren't. An FK orders by its stored column, not by the related model's `Meta.ordering`. The primary key is appended as a tie-breaker, so rows don't repeat or go missing across pages.
 
 ## Pagination
 

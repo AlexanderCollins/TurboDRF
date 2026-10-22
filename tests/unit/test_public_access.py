@@ -287,8 +287,8 @@ class TestGuestRole(TestCase):
         # So quantity should not be in the serializer at all
 
     def test_unauthenticated_without_guest_role_configured(self):
-        """Test behavior when guest role is not configured."""
-        # This should use default serializer without permission filtering
+        """With no guest role, field rules still bind anonymous callers:
+        a field another role has a read rule for is hidden."""
         from rest_framework.test import APIRequestFactory
 
         from turbodrf.views import TurboDRFViewSet
@@ -314,13 +314,14 @@ class TestGuestRole(TestCase):
             viewset.action = "list"
             viewset.request = django_request
 
-            # Should get default serializer without field filtering
             serializer_class = viewset.get_serializer_class()
             serializer = serializer_class(self.item)
 
-            # Should see all configured fields
+            # `title` has a read rule (viewer) that anonymous doesn't hold;
+            # fields without a rule stay visible.
             data = serializer.data
-            self.assertIn("title", data)
+            self.assertNotIn("title", data)
+            self.assertIn("price", data)
 
 
 class TestPublicAccessConfiguration(TestCase):

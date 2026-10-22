@@ -49,7 +49,10 @@ pytest                                    # run your tests
 
 ## Behavior changes to plan for
 
-- POSTs with cross-tenant FKs now return **400** (FK injection rejected).
+- POSTs with cross-tenant FK or M2M values now return **400** (FK injection
+  rejected).
+- A model with only `owner_field` fails the startup check: add a
+  `tenant_field` (or `'tenancy': 'shared'`).
 - PATCHes that try to reassign the tenant FK now return **400**.
 - Detail/PATCH/DELETE return **404** (not 403) when a row is outside scope.
 - List endpoints return only scoped rows.

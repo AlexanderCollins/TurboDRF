@@ -2,9 +2,10 @@
 TurboDRF Sentry integration.
 
 Optional Sentry tagging and breadcrumb reporting for TurboDRF requests.
-When enabled, every request gets Sentry tags for tenant_id, user_id, and
-user_roles, and security-relevant events (FK injection rejected, tenant
-reassignment rejected, etc.) are recorded as breadcrumbs.
+When enabled, every request gets Sentry tags for tenant_id and user_roles
+plus the user's id (never the username or any other PII), and
+security-relevant events (FK injection rejected, tenant reassignment
+rejected, etc.) are recorded as breadcrumbs.
 
 Off by default. To enable:
 
@@ -26,6 +27,7 @@ without worrying about whether Sentry is set up.
 """
 
 import logging
+from contextlib import ExitStack
 
 logger = logging.getLogger(__name__)
 
@@ -56,23 +58,20 @@ def _sdk():
         return None
 
 
-def set_request_context(request):
-    """Set Sentry tags + user context for the current request scope.
+def _current_scope(sdk):
+    getter = getattr(sdk, "get_current_scope", None)
+    if getter is None:
+        return None
+    try:
+        return getter()
+    except Exception:
+        return None
 
-    Tagged values:
-      - tenant_id (from request.user.<TURBODRF_TENANT_USER_FIELD>.pk)
-      - user_id
-      - user_roles (comma-separated)
 
-    Called automatically by SentryContextMiddleware. Safe to call manually.
-    """
-    sdk = _sdk()
-    if sdk is None:
-        return
-
-    user = getattr(request, "user", None)
+def _user_context(user):
+    """(user_id, tenant_id, roles) for an authenticated user, else None."""
     if user is None or not getattr(user, "is_authenticated", False):
-        return
+        return None
 
     from turbodrf.backends import get_user_roles
     from turbodrf.predicates import get_user_tenant
@@ -80,16 +79,102 @@ def set_request_context(request):
     tenant = get_user_tenant(user)
     tenant_id = getattr(tenant, "pk", tenant) if tenant is not None else None
     roles = list(get_user_roles(user))
+    return getattr(user, "pk", None), tenant_id, roles
+
+
+def set_request_context(request, scope=None):
+    """Set Sentry tags + user context for the current request scope.
+
+    Tagged values:
+      - tenant_id (from request.user.<TURBODRF_TENANT_USER_FIELD>.pk)
+      - user_roles (comma-separated)
+    and the Sentry user is set to ``{"id": user.pk}`` only — no username or
+    other PII, whatever ``send_default_pii`` says.
+
+    For an anonymous request (or a user with no tenant / no roles) the user
+    and tags are CLEARED, so nothing carries over from an earlier request
+    that shared the scope.
+
+    Called automatically by SentryContextMiddleware. Safe to call manually.
+
+    Args:
+        request: The request whose ``user`` to describe.
+        scope: The Sentry scope to write to. Defaults to the module-level
+            API (``sentry_sdk.set_user``) and the current scope.
+    """
+    sdk = _sdk()
+    if sdk is None:
+        return
 
     try:
-        sdk.set_user({"id": user.pk, "username": getattr(user, "username", None)})
-        scope = sdk.get_current_scope()
-        if tenant_id is not None:
-            scope.set_tag("tenant_id", str(tenant_id))
-        if roles:
-            scope.set_tag("user_roles", ",".join(roles))
+        context = _user_context(getattr(request, "user", None))
+        set_user = scope.set_user if scope is not None else sdk.set_user
+        tag_scope = scope if scope is not None else _current_scope(sdk)
+
+        if context is None:
+            set_user(None)
+            tenant_id, roles = None, []
+        else:
+            user_id, tenant_id, roles = context
+            set_user({"id": user_id})
+
+        if tag_scope is not None:
+            tags = {
+                "tenant_id": str(tenant_id) if tenant_id is not None else None,
+                "user_roles": ",".join(roles) if roles else None,
+            }
+            for tag, value in tags.items():
+                if value is None:
+                    tag_scope.remove_tag(tag)
+                else:
+                    tag_scope.set_tag(tag, value)
     except Exception as e:  # never break the request because of Sentry
         logger.debug("Sentry context set failed: %s", e)
+
+
+def _late_user_event_processor(request):
+    """Event processor that describes the user as authenticated by the time
+    the event is captured.
+
+    Middleware runs before DRF authentication, so a token/JWT-authenticated
+    user is still anonymous when SentryContextMiddleware runs. DRF writes the
+    authenticated user back to the Django request, so reading
+    ``request.user`` when an event is captured picks it up.
+    """
+
+    def processor(event, hint):
+        try:
+            context = _user_context(getattr(request, "user", None))
+            if context is not None:
+                user_id, tenant_id, roles = context
+                event["user"] = {"id": user_id}
+                tags = event.get("tags")
+                if not isinstance(tags, dict):
+                    tags = {}
+                    event["tags"] = tags
+                if tenant_id is not None:
+                    tags["tenant_id"] = str(tenant_id)
+                if roles:
+                    tags["user_roles"] = ",".join(roles)
+        except Exception as e:  # never drop an event because of TurboDRF
+            logger.debug("Sentry event processor failed: %s", e)
+        return event
+
+    return processor
+
+
+def _request_scope(sdk):
+    """A context manager yielding a scope confined to one request, or None.
+
+    sentry-sdk 2.x: ``new_scope()``; 1.x: ``push_scope()``.
+    """
+    factory = getattr(sdk, "new_scope", None) or getattr(sdk, "push_scope", None)
+    if factory is None:
+        return None
+    try:
+        return factory()
+    except Exception:
+        return None
 
 
 def report_security_event(event_type, message, **extra):
@@ -150,11 +235,34 @@ class SentryContextMiddleware:
 
     Install AFTER `AuthenticationMiddleware` so request.user is available.
     No-op when sentry-sdk isn't installed or TURBODRF_ENABLE_SENTRY=False.
+
+    The request runs inside its own Sentry scope, so the user and tags set
+    here never carry over to another request. Users that DRF authenticates
+    later (token/JWT) are picked up when an event is captured.
     """
 
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        set_request_context(request)
-        return self.get_response(request)
+        sdk = _sdk()
+        if sdk is None:
+            return self.get_response(request)
+
+        with ExitStack() as stack:
+            scope = None
+            scope_cm = _request_scope(sdk)
+            if scope_cm is not None:
+                try:
+                    scope = stack.enter_context(scope_cm)
+                except Exception as e:  # never break the request
+                    logger.debug("Sentry request scope failed: %s", e)
+                    scope = None
+
+            set_request_context(request, scope=scope)
+            if scope is not None:
+                try:
+                    scope.add_event_processor(_late_user_event_processor(request))
+                except Exception as e:
+                    logger.debug("Sentry event processor registration failed: %s", e)
+            return self.get_response(request)

@@ -96,9 +96,18 @@ class Command(BaseCommand):
                     self.stdout.write(f"      .{sub}")
 
         if plan.property_fields:
+            from turbodrf.properties import property_relations, unscoped_properties
+
+            relations = property_relations(model)
+            unscoped = unscoped_properties(model)
             self.stdout.write(f"\n  {self.style.NOTICE('Property fields:')}")
             for prop_name in plan.property_fields:
-                self.stdout.write(f"    {prop_name} (via DictProxy)")
+                if prop_name in unscoped:
+                    how = "unscoped"
+                else:
+                    loads = ", ".join(relations.get(prop_name) or ()) or "none"
+                    how = f"sandboxed, relations: {loads}"
+                self.stdout.write(f"    {prop_name} ({how})")
 
         # Permission filtering
         if role:

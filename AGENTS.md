@@ -30,7 +30,7 @@ python -m pytest                       # full test suite, parallel by default (-
 python -m pytest -p no:xdist           # disable parallel for debugging / pdb
 python -m pytest tests/unit -q         # unit only — sub-second
 python -m pytest -k <name>             # single test
-python manage.py turbodrf_check        # validate every model's config
+python manage.py turbodrf_check        # report each model's compiled status + tenancy
 ```
 
 The test suite runs in parallel by default via `pytest-xdist` (`-n auto`
@@ -55,7 +55,7 @@ class Project(models.Model, TurboDRFMixin):
     price = models.DecimalField(max_digits=10, decimal_places=2)
 
     searchable_fields = ['title']        # opt-in: ?search=...
-    sensitive_fields = ['price']         # never serialized to anyone w/o read perm
+    sensitive_fields = ['price']         # readable only via 'projects.project.price.read'
 
     @classmethod
     def turbodrf(cls):
@@ -84,6 +84,10 @@ URL or view file needed.
 | `'tenancy': 'shared'` | Reference data: currencies, country codes |
 | `'visibility': [<predicate>, ...]` | Need OR logic / non-tenant scoping (see Predicates below) |
 
+`owner_field` alone doesn't count as a tenancy decision. `'tenancy'` accepts
+only `'shared'`, which can't be combined with `tenant_field`, `owner_field`
+or `visibility`. An empty `visibility` needs a `tenant_field`.
+
 ### Within-tenant access (sugar)
 
 ```python
@@ -103,9 +107,11 @@ INSTALLED_APPS = [..., 'turbodrf']
 TURBODRF_TENANT_MODEL = 'accounts.Workspace'
 TURBODRF_TENANT_USER_FIELD = 'workspace'   # request.user.workspace → tenant
 
-# Roles → field-level perms:
+# Roles → model- and field-level perms. No wildcards: list each one.
 TURBODRF_ROLES = {
-    'admin':  ['*'],                                  # everything
+    'admin':   ['projects.project.read', 'projects.project.create',
+                'projects.project.update', 'projects.project.delete',
+                'projects.project.price.read', 'projects.project.price.write'],
     'manager': ['projects.project.read', 'projects.project.update'],
     'viewer':  ['projects.project.read'],
 }
@@ -116,9 +122,16 @@ TURBODRF_ROLES = {
 TURBODRF_REQUIRE_TENANCY = True
 ```
 
-`request.user.workspace` must return a model instance or PK. Strings,
-dicts, bound methods, and reverse-FK managers all coerce to `None` and
-fail-closed (filter returns zero rows). Pick a real ForeignKey.
+Permission strings must be `app_label.model_name.action` or
+`app_label.model_name.field.action`, with the exact lowercase labels and a
+concrete or M2M field name (not `owner_id`); the router refuses to boot on
+anything else. A field with a `.read` / `.write` rule on any role needs that
+rule for every role. Anonymous callers on a `public_access` model get
+model-level read plus only what a `guest` role grants.
+
+`request.user.workspace` must return a model instance or an integer PK.
+Strings, dicts, bound methods, and reverse-FK managers all coerce to `None`
+and fail-closed (filter returns zero rows). Pick a real ForeignKey.
 
 ---
 
@@ -144,8 +157,8 @@ return {
 | Predicate | Use for |
 |---|---|
 | `Owner(field, bypass=[...])` | Single-owner rows; bypass list of roles see all |
-| `Members(m2m)` | Channels / projects with explicit membership |
-| `Group(fk, user_via='user_set')` | Team-based visibility |
+| `Members(m2m)` | Channels / projects with explicit membership (creates aren't membership-checked) |
+| `Group(fk, user_via='user_set')` | Team-based visibility (creates aren't membership-checked) |
 | `Either(*preds)` | OR composition |
 | `Conditional(when=Q(...), require_roles=[...])` | "Staff loans visible only to staff role" |
 | `Custom(callable, write_validator=...)` | Last resort — arbitrary Q |
@@ -166,23 +179,32 @@ the `tenant_field` setting instead.
    framework's implementation applies the tenant boundary and predicate
    stack. Override = silent BOLA.
 
-3. **Don't widen serializer fields with `extra_kwargs` or custom
+3. **Don't reach for `unscoped_properties`** to make a `@property` work.
+   Properties run in a sandbox: only the caller's readable columns, the
+   relations declared in `property_relations` (loaded within the caller's
+   scope), and no queries. Declare the relations the property reads
+   (`'property_relations': {'label': ['portfolio']}`) and iterate
+   `self.items.all()` instead of querying. `unscoped_properties` returns
+   whatever the property reads to every reader of the model.
+
+4. **Don't widen serializer fields with `extra_kwargs` or custom
    serializers.** Field permissions are enforced via `sensitive_fields`
    and `TURBODRF_ROLES`. Bypassing them leaks data to lower roles.
 
-4. **Don't store secrets in `searchable_fields`.** `?search=guess` does
+5. **Don't store secrets in `searchable_fields`.** `?search=guess` does
    substring-matching against every searchable field. The framework
    intersects this with the user's read permissions, but a field with
    no permission rule defaults to readable.
 
-5. **Don't declare `tenancy: 'shared'`** on tenant-scoped data because
+6. **Don't declare `tenancy: 'shared'`** on tenant-scoped data because
    "the test was failing." That opens BOLA.
 
-6. **Don't bypass `_validate_fk_predicates`** in serializer
-   `create()` / `update()`. FK injection (POST with another tenant's PK)
-   is blocked there.
+7. **Don't bypass `TurboDRFSerializer.create()` / `update()`** (call
+   `super()` if you override them). They run `_apply_predicate_writes`,
+   which validates the tenant and predicates and blocks FK / M2M injection
+   (POST with another tenant's PK).
 
-7. **Don't hand-roll DELETE-allow logic.** RBAC `'.delete'` perms +
+8. **Don't hand-roll DELETE-allow logic.** RBAC `'.delete'` perms +
    predicate visibility decide who can delete what. If a role shouldn't
    delete, omit `.delete` from its perms.
 
@@ -190,9 +212,12 @@ the `tenant_field` setting instead.
 
 ## Permission cache
 
-Permission snapshots are cached for 5 minutes per `(user, model)` pair.
-After granting/revoking a role, snapshots remain stale until the cache
-expires. To force-refresh in code:
+Permission snapshots are cached for 5 minutes per `(user, model)` pair. The
+cache key covers the user's roles and the role configuration (in database
+mode, every role's version), so granting or revoking a role, editing
+`TURBODRF_ROLES`, or saving / deleting a `RolePermission` takes effect on the
+next request. A bulk `RolePermission` QuerySet `update()` / `delete()`
+doesn't bump role versions and stays stale until the TTL. After one:
 
 ```python
 from turbodrf.backends import invalidate_user_permissions
@@ -207,14 +232,14 @@ In tests use `cache.clear()` in `setUp`.
 ## Testing patterns
 
 ```python
-from tests.test_app.apps import set_test_workspace  # in this repo
+from tests.test_app.apps import set_test_brokerage  # in this repo (tenant = Brokerage)
 # In downstream projects: implement an analogous helper that
-# both (a) sets `user._test_workspace` and (b) registers the user in
+# both (a) sets `user._test_brokerage` and (b) registers the user in
 # a class-level dict so DRF's User re-fetch survives.
 
 self.user = User.objects.create_user(...)
 self.user._test_roles = ['member']
-set_test_workspace(self.user, self.workspace_a)
+set_test_brokerage(self.user, self.brokerage_a)
 ```
 
 Field-level perm tests:
@@ -230,7 +255,7 @@ assert snap.can_perform_action('update')
 
 ## Where to look
 
-- `docs/tenancy.md` — full predicate vocabulary + 12-app coverage table
+- `docs/tenancy.md` — full predicate vocabulary, sugar vs power form, startup checks
 - `docs/permissions.md` — RBAC, sensitive fields, field-perm syntax
 - `docs/security.md` — threat model + known limitations
 - `docs/settings_reference.md` — every setting
@@ -243,9 +268,11 @@ assert snap.can_perform_action('update')
 - New TurboDRF models always declare a tenancy key (`tenant_field`,
   `visibility`, or `'shared'`). `TURBODRF_REQUIRE_TENANCY=True` enforces
   this at startup.
-- Run `python manage.py turbodrf_check` before committing — it
-  validates every model's `turbodrf()` config and resolves tenancy
-  paths.
+- Run `python manage.py turbodrf_check` before committing — it reports
+  each model's compiled status (and why an opted-in model isn't compiled),
+  its list fields, and its resolved tenancy. It doesn't run the startup
+  gates or fail on problems; building the router (e.g. running the test
+  suite) does.
 - Keep `tests/test_app/models.py` in sync when adding new
   framework-level fields; downstream apps mirror its patterns.
 - Preserve fail-closed defaults: when in doubt about a permission edge

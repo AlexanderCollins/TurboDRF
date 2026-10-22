@@ -108,9 +108,15 @@ class TestTurboDRFViewSet(TestCase):
         """Test ViewSet basic configuration."""
         self.assertEqual(self.viewset.permission_classes, [TurboDRFPermission])
         self.assertEqual(self.viewset.pagination_class, TurboDRFPagination)
-        self.assertIn(DjangoFilterBackend, self.viewset.filter_backends)
+        self.assertTrue(
+            any(
+                issubclass(b, DjangoFilterBackend) for b in self.viewset.filter_backends
+            )
+        )
         self.assertIn(TurboDRFSearchFilter, self.viewset.filter_backends)
-        self.assertIn(OrderingFilter, self.viewset.filter_backends)
+        self.assertTrue(
+            any(issubclass(b, OrderingFilter) for b in self.viewset.filter_backends)
+        )
 
     def test_get_serializer_class_list_action(self):
         """Test serializer class generation for list action."""

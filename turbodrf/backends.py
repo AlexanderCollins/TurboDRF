@@ -133,6 +133,30 @@ def get_user_roles(user) -> list:
         return []
 
 
+def _grants_public_read(user, model) -> bool:
+    """``public_access`` gives anonymous callers model-level read. Field rules
+    still apply (a field with a read rule needs that grant — from the guest
+    role, if one exists), so anonymous callers see what any role with only
+    model-level read sees."""
+    if user is not None and getattr(user, "is_authenticated", False):
+        return False
+    try:
+        config = model.turbodrf()
+    except Exception:
+        return False
+    return isinstance(config, dict) and bool(config.get("public_access"))
+
+
+def _model_restricted_fields(model) -> Set[str]:
+    """Fields the model declares in ``sensitive_fields``: readable only through
+    an explicit field read rule (``app.model.field.read``), never through
+    model-level read."""
+    declared = getattr(model, "sensitive_fields", None) or ()
+    if isinstance(declared, str):
+        declared = [declared]
+    return set(declared)
+
+
 def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
     """
     Build permission snapshot from static TURBODRF_ROLES configuration.
@@ -175,11 +199,15 @@ def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
                 elif perm_type == "write":
                     all_field_write_rules.add(field_name)
 
+    all_field_read_rules |= _model_restricted_fields(model)
+
     # Build allowed actions
     for action in ["read", "create", "update", "delete"]:
         perm = f"{app_label}.{model_name}.{action}"
         if perm in user_permissions:
             snapshot.allowed_actions.add(action)
+    if _grants_public_read(user, model):
+        snapshot.allowed_actions.add("read")
 
     # Store fields with explicit rules
     snapshot.fields_with_read_rules = all_field_read_rules
@@ -244,7 +272,7 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
 
     # Get user's roles
     user_roles = get_user_roles(user)
-    if not user_roles:
+    if not user_roles and not _grants_public_read(user, model):
         return snapshot
 
     # Query all permissions for this user's roles and this model
@@ -258,24 +286,31 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
         role_id__in=role_ids, app_label=app_label, model_name=model_name
     ).select_related("role")
 
-    # Track which fields have explicit rules (scan all permissions once)
+    # A field with an explicit rule on ANY role is readable / writable only
+    # through that rule — as in static mode. Collecting rules from the user's
+    # own roles only let a role with no field rules read and write every field
+    # another role had restricted.
     all_field_read_rules = set()
     all_field_write_rules = set()
+    for field_name, permission_type in RolePermission.objects.filter(
+        app_label=app_label, model_name=model_name, field_name__isnull=False
+    ).values_list("field_name", "permission_type"):
+        if permission_type == "read":
+            all_field_read_rules.add(field_name)
+        elif permission_type == "write":
+            all_field_write_rules.add(field_name)
+    all_field_read_rules |= _model_restricted_fields(model)
 
-    # First pass: collect model-level permissions and field rules
+    # Collect the user's model-level permissions and field grants
     user_field_perms = set()
     for perm in permissions:
         if perm.action:
             # Model-level permission
             snapshot.allowed_actions.add(perm.action)
         elif perm.field_name and perm.permission_type:
-            # Field-level permission
-            if perm.permission_type == "read":
-                all_field_read_rules.add(perm.field_name)
-                user_field_perms.add(f"{perm.field_name}.read")
-            elif perm.permission_type == "write":
-                all_field_write_rules.add(perm.field_name)
-                user_field_perms.add(f"{perm.field_name}.write")
+            user_field_perms.add(f"{perm.field_name}.{perm.permission_type}")
+    if _grants_public_read(user, model):
+        snapshot.allowed_actions.add("read")
 
     # Store fields with explicit rules
     snapshot.fields_with_read_rules = all_field_read_rules
@@ -366,15 +401,11 @@ def get_cache_key(user, model) -> Optional[str]:
         from .models import TurboDRFRole
 
         if user_roles:
-            # (name, version) pairs — include role identity so two roles that
-            # happen to share a version number don't produce the same key.
-            sig = tuple(
-                sorted(
-                    TurboDRFRole.objects.filter(name__in=user_roles).values_list(
-                        "name", "version"
-                    )
-                )
-            )
+            # (name, version) of EVERY role, not only the user's: a field rule
+            # added to any role restricts that field for all roles, so it must
+            # invalidate every cached snapshot. Role identity is included so
+            # two roles that share a version number don't produce the same key.
+            sig = tuple(sorted(TurboDRFRole.objects.values_list("name", "version")))
         else:
             sig = ()
     else:
@@ -390,6 +421,12 @@ def get_cache_key(user, model) -> Optional[str]:
         except (TypeError, AttributeError):
             sig = ("__unhashable__",)
 
+    # Bumped by invalidate_user_permissions(): a new generation is a new key.
+    generations = cache.get_many(
+        [_generation_key(cache_prefix, None), _generation_key(cache_prefix, user_id)]
+    )
+    sig = (sig, tuple(sorted(generations.items())))
+
     # hashlib (not builtin hash()) so the key is stable across processes.
     # Builtin hash() is PYTHONHASHSEED-randomized per worker, which fragments a
     # shared cache (each Gunicorn worker computing a different key for the same
@@ -399,6 +436,33 @@ def get_cache_key(user, model) -> Optional[str]:
     ).hexdigest()[:16]
 
     return f"{cache_prefix}:{user_id}:{app_label}:{model_name}:{version_hash}"
+
+
+def _generation_key(cache_prefix, user_id):
+    scope = "all" if user_id is None else user_id
+    return f"{cache_prefix}:generation:{scope}"
+
+
+def invalidate_user_permissions(user=None):
+    """Drop cached permission snapshots: one user's, or everyone's when
+    ``user`` is None. Snapshots already pick up role changes on their own (the
+    cache key covers the user's roles and, in database mode, every role's
+    version); use this after changing permissions some other way — a bulk
+    ``RolePermission`` QuerySet ``update()`` / ``delete()``, say."""
+    cache_prefix = getattr(
+        settings, "TURBODRF_PERMISSION_CACHE_PREFIX", "turbodrf_perm"
+    )
+    if user is None:
+        key = _generation_key(cache_prefix, None)
+    else:
+        user_id = getattr(user, "pk", None)
+        if user_id is None:
+            return  # never cached (see get_cache_key)
+        key = _generation_key(cache_prefix, user_id)
+    try:
+        cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, None)
 
 
 def get_cached_snapshot(user, model) -> Optional[PermissionSnapshot]:

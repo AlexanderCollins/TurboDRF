@@ -6,9 +6,12 @@ and TurboDRF's role-based permission system.
 """
 
 import importlib.util
+import logging
 
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
+
+logger = logging.getLogger(__name__)
 
 
 def is_allauth_installed():
@@ -46,9 +49,16 @@ def get_user_roles_from_groups(user):
     """
     Get TurboDRF roles for a user based on their Django groups.
 
-    This function supports two modes:
-    1. Default: Group names are used directly as role names
-    2. Custom mapping: Use TURBODRF_ALLAUTH_ROLE_MAPPING setting
+    Behavior depends on TURBODRF_ALLAUTH_ROLE_MAPPING and
+    TURBODRF_ALLAUTH_STRICT_ROLES (default True):
+
+    - No mapping configured: group names are used directly as role names.
+    - Mapping configured + strict (default): the mapping is an allow-list.
+      Groups not in the mapping are dropped (and logged), so a Django Group
+      that happens to be named 'admin' does NOT become the TurboDRF 'admin'
+      role unless the mapping says so.
+    - Mapping configured + strict=False: legacy passthrough, unmapped groups
+      become roles under their own names.
 
     Args:
         user: Django user object with groups relationship.
@@ -66,21 +76,29 @@ def get_user_roles_from_groups(user):
             'Administrators': 'admin',
             'Content Editors': 'editor'
         }
-        user.groups = [Group(name='Administrators')]
-        get_user_roles_from_groups(user)  # ['admin']
+        user.groups = [Group(name='Administrators'), Group(name='admin')]
+        get_user_roles_from_groups(user)  # ['admin'] ('admin' group dropped)
     """
     role_mapping = get_role_mapping()
+    strict = getattr(settings, "TURBODRF_ALLAUTH_STRICT_ROLES", True)
 
     roles = []
     for group in user.groups.all():
-        if role_mapping:
-            # Use custom mapping, fallback to group name if not in mapping
-            role = role_mapping.get(group.name, group.name)
+        if not role_mapping:
+            # No mapping: use group name as role
+            roles.append(group.name)
+        elif group.name in role_mapping:
+            roles.append(role_mapping[group.name])
+        elif strict:
+            logger.warning(
+                "Django group %r has no entry in TURBODRF_ALLAUTH_ROLE_MAPPING "
+                "and was not mapped to a role. Add it to the mapping or set "
+                "TURBODRF_ALLAUTH_STRICT_ROLES=False to allow passthrough.",
+                group.name,
+            )
         else:
-            # Default: use group name as role
-            role = group.name
-
-        roles.append(role)
+            # Legacy permissive: unmapped groups pass through by name
+            roles.append(group.name)
 
     return roles
 
@@ -89,12 +107,18 @@ class AllAuthRoleMiddleware:
     """
     Middleware to add roles property to authenticated users.
 
-    This middleware automatically populates the `roles` property on
-    authenticated users based on their Django group membership.
+    This middleware populates the `roles` property on authenticated users
+    based on their Django group membership. It is a no-op unless
+    TURBODRF_ALLAUTH_INTEGRATION is True.
 
     The middleware respects existing `roles` properties, so if a user
     already has roles defined (e.g., custom User model), they won't
     be overridden.
+
+    It runs before DRF authentication, so it only sees session-authenticated
+    users. Token/JWT-authenticated users get their roles from the resolver
+    TurboDRF installs on the user model at startup (see
+    turbodrf.integrations.roles).
 
     Usage:
         Add to MIDDLEWARE in settings.py:
@@ -125,6 +149,9 @@ class AllAuthRoleMiddleware:
         Returns:
             Response from the next middleware/view.
         """
+        if not is_integration_enabled():
+            return self.get_response(request)
+
         # Add roles to authenticated users
         if hasattr(request, "user") and request.user.is_authenticated:
             # Check if user already has _test_roles (used by test property)
@@ -174,4 +201,5 @@ def setup_allauth_integration():
         "integration_enabled": is_integration_enabled(),
         "role_mapping": get_role_mapping(),
         "has_custom_mapping": bool(get_role_mapping()),
+        "strict_roles": getattr(settings, "TURBODRF_ALLAUTH_STRICT_ROLES", True),
     }

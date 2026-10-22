@@ -316,7 +316,9 @@ class TestCompiledReadableFieldsDefaultPerms(TestCase):
 class TestCompiledReadableFieldsUnauthenticated(TestCase):
     """Test _get_compiled_readable_fields for unauthenticated users."""
 
-    def test_unauthenticated_returns_none(self):
+    def test_unauthenticated_is_gated(self):
+        """Anonymous callers are gated by their snapshot (a set), never the
+        ungated ``None`` — that is reserved for bypassed permissions."""
         from django.contrib.auth.models import AnonymousUser
 
         from turbodrf.views import TurboDRFViewSet
@@ -327,7 +329,7 @@ class TestCompiledReadableFieldsUnauthenticated(TestCase):
         request = factory.get("/fake/")
         request.user = AnonymousUser()
         result = viewset._get_compiled_readable_fields(request)
-        self.assertIsNone(result)
+        self.assertIsInstance(result, set)
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +371,7 @@ class TestFilterableFieldsUnauthenticated(TestCase):
         result = viewset._get_filterable_fields()
         self.assertIsNone(result)
 
-    def test_unauthenticated_user_returns_none(self):
+    def test_unauthenticated_user_gets_unruled_configured_fields(self):
         from django.contrib.auth.models import AnonymousUser
 
         from turbodrf.views import TurboDRFViewSet
@@ -381,8 +383,9 @@ class TestFilterableFieldsUnauthenticated(TestCase):
         request.user = AnonymousUser()
         viewset.request = request
         result = viewset._get_filterable_fields()
-        # Returns None (no guest role with field restrictions)
-        self.assertIsNone(result)
+        # No guest role: anonymous may filter only on configured fields no
+        # role has a read rule for — on SampleModel, just the pk.
+        self.assertEqual(result, {"id"})
 
     @override_settings(TURBODRF_USE_DEFAULT_PERMISSIONS=True)
     def test_default_perms_returns_none(self):
@@ -762,7 +765,13 @@ class TestRouterNestingDepthWarning(TestCase):
     @override_settings(TURBODRF_MAX_NESTING_DEPTH=0)
     def test_deep_field_triggers_warning(self):
         """A field exceeding max nesting depth triggers a warning log."""
+        from turbodrf import compiler
         from turbodrf.router import TurboDRFRouter
+
+        # Building a router re-registers every compiled plan globally; under
+        # depth 0 they'd lose their nested fields for later tests.
+        saved = dict(compiler._compiled_plans)
+        self.addCleanup(compiler._compiled_plans.update, saved)
 
         router = TurboDRFRouter()
         # The router auto-registers on init; we just need to verify it doesn't crash
@@ -1140,12 +1149,13 @@ class TestGetSchemaWithRoleFiltering(TestCase):
         mock_request.user = MagicMock(is_authenticated=True)  # caller holds 'viewer'
 
         fake_schema = {"paths": {}}
-        with patch(
-            "turbodrf.backends.get_user_roles", return_value=["viewer"]
-        ), patch.object(
-            RoleBasedSchemaGenerator.__bases__[0],
-            "get_schema",
-            return_value=fake_schema,
+        with (
+            patch("turbodrf.backends.get_user_roles", return_value=["viewer"]),
+            patch.object(
+                RoleBasedSchemaGenerator.__bases__[0],
+                "get_schema",
+                return_value=fake_schema,
+            ),
         ):
             gen.get_schema(request=mock_request, public=False)
         self.assertEqual(gen.current_role, "viewer")

@@ -1,5 +1,171 @@
 # Changelog
 
+## 0.6.0 — Security review: field rules everywhere, nested scoping, list/detail parity
+
+A review of the whole framework (row scoping, field RBAC and writes,
+integrations, docs against code, and compiled vs. serializer output) found the
+issues below; each is fixed with regression tests (`test_review_*.py`,
+`test_parity_compiled_vs_serializer.py`, `test_swagger_scoping.py`). Several
+fixes tighten behaviour that apps may rely on — read **Upgrading** first.
+
+### Upgrading
+
+- **Field rules bind anonymous callers.** On a `public_access` model an
+  anonymous caller has model-level read; a field any role has a read rule for
+  now needs a grant, which anonymous callers get only from a `guest` role.
+  Before, an anonymous caller with no `guest` role saw (and could filter,
+  search, order and OPTIONS) every configured field. Add a `guest` role with
+  the field reads public visitors should see.
+- **Tenancy gate (`TURBODRF_REQUIRE_TENANCY`).** Only `tenant_field`, a
+  non-empty `visibility` or `tenancy: 'shared'` satisfy it; an `owner_field`
+  alone no longer does (its bypass roles saw every tenant's rows). Any
+  `tenancy` value other than `'shared'`, `'shared'` combined with scoping keys,
+  and an empty `visibility` now raise `ImproperlyConfigured` at startup.
+- **Nested values from rows outside the caller's scope are `null`.** A row
+  whose FK points at another tenant's row (or a predicate-hidden one) stays
+  listed, with that target's nested values null — on every path. The compiled
+  list used to drop such rows; detail and uncompiled lists rendered the
+  values.
+- **Filtering and ordering use configured fields only** (plus the pk). A
+  column left out of `fields` is no longer filterable or orderable.
+  `__regex` / `__iregex` lookups are no longer accepted.
+- **Owner auto-fill runs on create only**; a PATCH that omits the owner keeps
+  it. **The primary key is read-only on update.**
+- **`TURBODRF_SENSITIVE_FIELDS` adds to the defaults** instead of replacing
+  them.
+- **Integrations:** allauth drops unmapped groups when a mapping is
+  configured (`TURBODRF_ALLAUTH_STRICT_ROLES=False` restores pass-through);
+  Keycloak reads roles only from `TURBODRF_KEYCLOAK_PROVIDER` (default
+  `"keycloak"`); the Keycloak / allauth middleware do nothing when their
+  `TURBODRF_*_INTEGRATION` flag is False; drf-api-tracking skips anonymous
+  requests unless `TURBODRF_TRACKING_ANONYMOUS=True`.
+- **`@property` fields run in a sandbox** (see Security): only the caller's
+  readable columns, no queries, and only the related objects declared in the
+  new `property_relations` key, each hop loaded within the caller's scope. A
+  property that reads an undeclared relation, an unreadable column or runs a
+  query is left out of the response, with a logged warning. Declare its
+  relations (`'property_relations': {'label': ['portfolio']}`), iterate
+  `self.items.all()` rather than filtering, or, for properties derived from
+  data every reader may see, list it in `unscoped_properties`.
+- **Compiled lists match detail exactly** (formatting, keys, M2M shape and
+  order); a nested Decimal on detail now renders as a string. See Fixed.
+
+### Security
+
+- **`@property` fields read data outside the caller's scope and field
+  rules.** A property ran on the full instance: one reading
+  `self.holding.name` rendered another tenant's holding (compiled list,
+  detail, and with permissions bypassed), and one reading a column the caller
+  had no read rule for rendered it. Properties now run on a copy of the row
+  holding only readable columns, with declared relations loaded within the
+  caller's scope and every query blocked; a lazy QuerySet a property returns
+  is evaluated inside the sandbox.
+- **Database permission mode ignored field rules defined on other roles.** A
+  role with model-level read/update and no field rules read and wrote every
+  field another role had restricted. Field rules from any role now bind all
+  roles, as in static mode.
+- **Anonymous callers bypassed field rules and the sensitive deny-list** on
+  `public_access` models (detail, compiled list, filters, search, ordering,
+  OPTIONS), including `fields: "__all__"` and bypassed-permission modes.
+- **Nested FK fields rendered rows outside the caller's scope** on detail,
+  uncompiled lists, the browsable API and detail-only fields (only the
+  compiled list scoped them, by dropping the row). Every JOIN target along a
+  nested path is now checked against its own tenant boundary and predicates;
+  M2M sub-fields crossing a further hop too.
+- **Chained `tenant_field` (`ledger__firm`) allowed cross-tenant writes**: a
+  create or PATCH could attach the row to another tenant's ledger. The first
+  hop's target must now be in the caller's tenant.
+- **FK / M2M injection checks skipped hosts with no `tenant_field` or
+  predicates** (including `tenancy: 'shared'`), skipped M2M fields entirely,
+  and skipped anonymous writers. They now run for every host, every FK and
+  M2M field, and fail closed for anonymous writers on scoped targets.
+- **Multi-column `owner_field` let users assign rows to others**: it compiled
+  to `Either(Owner(a), Owner(b))`, which passed whenever one column was left
+  out. It is now one `Owner` checking every column.
+- **Custom actions got an unfiltered serializer**: `self.get_serializer()` in
+  a `@turbodrf_action` rendered every configured field.
+- **A `fields` dict with only `list` exposed every column on detail** (and
+  accepted writes to them): the missing view fell back to `"__all__"`.
+- **Owner auto-fill on update reassigned ownership** to whoever edited the row
+  last.
+- **A writable primary key on update saved a copy of the row** under the new
+  key (a create through an update-only grant).
+- **A related field named like a lookup bypassed filter scoping**
+  (`?folder__date=…` was read as the `date` lookup on `folder`); filters are
+  now resolved against the model before any lookup is split off.
+- **Search over a reverse / M2M path was scoped in a separate JOIN**, so a
+  visible sibling let a term match a hidden row.
+- **FK filters were a cross-tenant pk existence oracle** (another tenant's pk
+  returned 200, a missing pk 400); both now return an empty 200.
+  `?ordering=<fk>` no longer sorts by the hidden target's `Meta.ordering`.
+- **Tenancy gate loopholes** (see Upgrading) and a permission-string gate that
+  accepted strings the snapshot never matched (`App.Model`, `<fk>_id`).
+- **Per-model `sensitive_fields`** (documented in AGENTS.md) was never read. It
+  now makes the listed fields readable only through an explicit field read
+  grant.
+- **OpenAPI schema leaked every model's fields**, to anonymous callers too:
+  only `paths` were role-filtered. Operations, request / response bodies and
+  definitions are now built for the caller, unreachable definitions pruned and
+  sensitive names never published.
+- **Keycloak trusted role claims from any linked social provider**; new
+  opt-in `TURBODRF_KEYCLOAK_MAX_ROLE_AGE` drops roles captured too long ago.
+- **allauth turned any unmapped Django Group into a role** of the same name.
+- **Sentry received usernames**; it now gets only the user id, with
+  request-scoped context cleared for anonymous requests.
+- **The fast renderer rendered `str()` of any object** it couldn't encode
+  (e.g. a property returning a QuerySet of unscoped rows); it now encodes
+  only what DRF's encoder does.
+- **drf-api-tracking** now masks `TURBODRF_SENSITIVE_FIELDS` in logged bodies.
+
+### Fixed
+
+- **Compiled lists rendered values differently from detail** — Decimals with
+  `str()` (`"0E-8"` for zero at `decimal_places=8`), datetimes in UTC rather
+  than the current timezone, durations, times, dates, files (the stored name,
+  not the URL) and binary data. Values now go through the DRF field
+  ModelSerializer builds for the model field, so `COERCE_DECIMAL_TO_STRING`,
+  `DATETIME_FORMAT` etc. apply on both paths.
+- **Rows whose nested FK pointed at a soft-deleted row vanished** from
+  compiled lists, counts and nested search: traversal scoping used the
+  target's default manager. It uses the base manager now (as Django's JOINs
+  do); tenant and predicate scoping still apply.
+- **Detail and uncompiled lists returned 500 for any model with an M2M
+  sub-field** (`select_related` on an M2M). Only single-valued chains are
+  `select_related` now.
+- **`Either()` dropped a bypass child** (`Q() | Q(x)` is `Q(x)`), so the
+  bypass role saw nothing; a predicate crossing an M2M duplicated rows and
+  made detail raise `MultipleObjectsReturned`. **`Members` / `Group` /
+  `Conditional` writes returned 500**; `Conditional` writes are now verified
+  after the save and rolled back if the row would be invisible to the writer.
+- **Compiled-path parity**: @property fields are computed on model instances
+  in the same sandbox as on detail (`getattr` defaults and `type(self)`
+  behave the same; `DictProxy` is gone); a bare M2M renders its pk list; M2M items follow the
+  target's `Meta.ordering` and default manager; `target__id` / `tags__id` no
+  longer 500; the pk renders only when configured; a nested path ending on a
+  `to_field` FK renders the stored column on both paths; M2M sub-field keys
+  use the full sub-path on both paths. Configs the compiled path can't render
+  faithfully (a nested @property, a path through a reverse FK) are served by
+  the serializer path; `turbodrf_check` says why.
+- **`?fields=`** now also applies to detail and uncompiled lists, and no
+  longer selects every key sharing a prefix (`char` matched `char_null`).
+- **Ordering** gets a pk tie-breaker, so pages are stable.
+- **Models without a manager named `objects`** crashed the router.
+- **`TURBODRF_MAX_NESTING_DEPTH`** is enforced on the compiled path.
+- **`turbodrf_check`** used a different tenant-autodetect default from the
+  router.
+- **`invalidate_user_permissions()`**, documented in AGENTS.md, now exists.
+- **`COERCE_DECIMAL_TO_STRING = False` was ignored** with msgspec or orjson
+  installed: Decimals rendered as strings. They render as numbers now, as
+  with DRF's renderer.
+- **Schema**: logged-in users get their schema without `?role=`; no 500
+  without `SessionMiddleware`; list responses document the pagination
+  envelope; `TURBODRF_SWAGGER_SHOW_ALL_FIELDS` (dead code) is removed.
+- **Integration roles reach token/JWT-authenticated users** (resolved lazily
+  from the user, not only by middleware that runs before DRF auth).
+- **Listing the app as `turbodrf.apps.TurboDRFConfig` crashed startup**; a
+  missing `drf_yasg` is now system-check warning `turbodrf.W001`.
+- **Lint**: the tree passes black 26, isort and flake8 again.
+
 ## 0.5.2 — Compiled-path fixes: NULL FKs, properties, `?fields=`
 
 ### Security

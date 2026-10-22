@@ -52,6 +52,8 @@ myst_enable_extensions = [
     "deflist",
     "html_image",
 ]
+# Generate heading anchors so `page.md#section` links resolve.
+myst_heading_anchors = 3
 
 # Autodoc settings
 autodoc_default_options = {

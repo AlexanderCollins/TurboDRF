@@ -71,11 +71,45 @@ class TestRoleMapping(TestCase):
         self.user.groups.add(self.admin_group, unmapped_group)
 
         with override_settings(TURBODRF_ALLAUTH_ROLE_MAPPING={"admin": "super_admin"}):
-            roles = get_user_roles_from_groups(self.user)
+            with self.assertLogs("turbodrf.integrations.allauth", "WARNING") as logs:
+                roles = get_user_roles_from_groups(self.user)
 
-            # With custom mapping, unmapped groups use their name as role
-            self.assertIn("Unmapped", roles)
-            self.assertIn("super_admin", roles)
+        # With a mapping configured, unmapped groups give no role.
+        self.assertEqual(roles, ["super_admin"])
+        self.assertTrue(any("Unmapped" in line for line in logs.output))
+
+    def test_group_named_like_a_role_is_not_a_role_when_unmapped(self):
+        """A Django Group named 'admin' must not become the admin role when a
+        mapping is configured that doesn't list it."""
+        from turbodrf.integrations.allauth import get_user_roles_from_groups
+
+        administrators = Group.objects.create(name="Administrators")
+        self.user.groups.add(self.admin_group, self.editor_group)
+
+        with override_settings(TURBODRF_ALLAUTH_ROLE_MAPPING={"Editors": "editor"}):
+            roles = get_user_roles_from_groups(self.user)
+        self.assertEqual(roles, [])
+
+        self.user.groups.add(administrators)
+        with override_settings(
+            TURBODRF_ALLAUTH_ROLE_MAPPING={"Administrators": "admin"}
+        ):
+            roles = get_user_roles_from_groups(self.user)
+        self.assertEqual(roles, ["admin"])
+
+    def test_unmapped_groups_pass_through_when_not_strict(self):
+        """TURBODRF_ALLAUTH_STRICT_ROLES=False restores legacy passthrough."""
+        from turbodrf.integrations.allauth import get_user_roles_from_groups
+
+        unmapped_group = Group.objects.create(name="Unmapped")
+        self.user.groups.add(self.admin_group, unmapped_group)
+
+        with override_settings(
+            TURBODRF_ALLAUTH_ROLE_MAPPING={"admin": "super_admin"},
+            TURBODRF_ALLAUTH_STRICT_ROLES=False,
+        ):
+            roles = get_user_roles_from_groups(self.user)
+        self.assertEqual(set(roles), {"super_admin", "Unmapped"})
 
     def test_get_roles_from_groups_multiple_groups(self):
         """Test user with multiple groups gets multiple roles."""
@@ -88,6 +122,53 @@ class TestRoleMapping(TestCase):
         self.assertEqual(set(roles), {"admin", "editor", "viewer"})
 
 
+class TestAllAuthMiddlewareDisabled(TestCase):
+    """TURBODRF_ALLAUTH_INTEGRATION=False (default) → middleware is a no-op."""
+
+    def test_middleware_does_nothing_when_integration_disabled(self):
+        from django.contrib.auth.models import AnonymousUser
+
+        from turbodrf.integrations.allauth import AllAuthRoleMiddleware
+
+        user = _GroupUser(["admin"])
+        get_response = Mock(return_value="response")
+        middleware = AllAuthRoleMiddleware(get_response)
+
+        with override_settings(TURBODRF_ALLAUTH_INTEGRATION=False):
+            request = RequestFactory().get("/")
+            request.user = user
+            self.assertEqual(middleware(request), "response")
+            self.assertNotIn("roles", user.__dict__)
+            user.groups.all.assert_not_called()
+
+            anon_request = RequestFactory().get("/")
+            anon_request.user = AnonymousUser()
+            middleware(anon_request)
+            self.assertNotIn("roles", anon_request.user.__dict__)
+
+        with override_settings(TURBODRF_ALLAUTH_INTEGRATION=True):
+            request = RequestFactory().get("/")
+            request.user = user
+            middleware(request)
+            self.assertEqual(user.__dict__["roles"], ["admin"])
+
+
+class _GroupUser:
+    """Authenticated user-like object without a class-level roles attribute."""
+
+    is_authenticated = True
+
+    def __init__(self, group_names):
+        self.groups = Mock()
+        groups = []
+        for name in group_names:
+            group = Mock()
+            group.name = name
+            groups.append(group)
+        self.groups.all.return_value = groups
+
+
+@override_settings(TURBODRF_ALLAUTH_INTEGRATION=True)
 class TestAllAuthRoleMiddleware(TestCase):
     """Test middleware that adds roles property to users."""
 

@@ -37,7 +37,7 @@ TURBODRF_AUTODETECT_TENANT = False
 
 # Fields that are NEVER exposed via the API, regardless of configuration.
 # These are always stripped from responses and cannot be filtered on.
-# Override in your settings.py to customise.
+# TURBODRF_SENSITIVE_FIELDS in your settings.py ADDS names to this list.
 TURBODRF_SENSITIVE_FIELDS = [
     "password",
     "password_hash",

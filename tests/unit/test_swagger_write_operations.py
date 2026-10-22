@@ -402,25 +402,30 @@ class TestWriteSerializerIntegration(TestCase):
         self.assertTrue(hasattr(update_serializer, "Meta"))
 
 
-class TestSwaggerShowAllFieldsSetting(TestCase):
-    """Test TURBODRF_SWAGGER_SHOW_ALL_FIELDS setting."""
+class TestWriteSerializerIsCallerScoped(TestCase):
+    """The write body is built for the caller's permissions.
 
-    def test_swagger_show_all_fields_default_false(self):
-        """Test that TURBODRF_SWAGGER_SHOW_ALL_FIELDS defaults to False."""
-        from django.conf import settings
+    TURBODRF_SWAGGER_SHOW_ALL_FIELDS was removed (it never had an effect);
+    setting it must not widen the body either.
+    """
+
+    def _write_fields(self, roles, **settings_overrides):
+        from django.core.cache import cache
+        from django.test import override_settings
         from drf_yasg import openapi
 
-        # Default should be False
-        show_all = getattr(settings, "TURBODRF_SWAGGER_SHOW_ALL_FIELDS", False)
-        self.assertFalse(show_all)
+        cache.clear()
+        user = User.objects.create_user(
+            username=f"w_{'_'.join(roles)}_{len(settings_overrides)}", password="x"
+        )
+        user._test_roles = roles
 
-        # Serializer should still be created
         viewset = TurboDRFViewSet()
         viewset.model = SampleModel
         viewset.queryset = SampleModel.objects.all()
         viewset.action = "create"
-
         request = APIRequestFactory().post("/api/samplemodels/")
+        request.user = user
         viewset.request = request
         viewset.format_kwarg = None
 
@@ -432,59 +437,25 @@ class TestSwaggerShowAllFieldsSetting(TestCase):
             request=request,
             overrides={},
         )
+        with override_settings(**settings_overrides):
+            return set(schema.get_request_serializer().fields)
 
-        serializer = schema.get_request_serializer()
-        self.assertIsNotNone(serializer)
+    def test_admin_write_body(self):
+        fields = self._write_fields(["admin"])
+        self.assertIn("price", fields)
+        self.assertIn("secret_field", fields)
+        # Read-only (auto_now) columns are not part of a request body.
+        self.assertNotIn("created_at", fields)
 
-    def test_swagger_with_show_all_fields_enabled(self):
-        """Test serializer creation with TURBODRF_SWAGGER_SHOW_ALL_FIELDS=True."""
-        from django.conf import settings
-        from django.test import override_settings
-        from drf_yasg import openapi
+    def test_editor_write_body_excludes_read_only_and_unreadable(self):
+        fields = self._write_fields(["editor"])
+        self.assertIn("title", fields)
+        self.assertNotIn("price", fields)  # readable, not writable
+        self.assertNotIn("secret_field", fields)  # not readable
 
-        with override_settings(TURBODRF_SWAGGER_SHOW_ALL_FIELDS=True):
-            viewset = TurboDRFViewSet()
-            viewset.model = SampleModel
-            viewset.queryset = SampleModel.objects.all()
-            viewset.action = "create"
-
-            request = APIRequestFactory().post("/api/samplemodels/")
-            viewset.request = request
-            viewset.format_kwarg = None
-
-            schema = TurboDRFSwaggerAutoSchema(
-                view=viewset,
-                path="/api/samplemodels/",
-                method="POST",
-                components=openapi.ReferenceResolver("", force_init=True),
-                request=request,
-                overrides={},
-            )
-
-            serializer = schema.get_request_serializer()
-
-            # Should still create serializer
-            self.assertIsNotNone(serializer)
-            self.assertTrue(hasattr(serializer, "Meta"))
-
-            # Verify the setting was actually True
-            self.assertTrue(getattr(settings, "TURBODRF_SWAGGER_SHOW_ALL_FIELDS"))
-
-    def test_swagger_show_all_fields_only_affects_swagger(self):
-        """Test TURBODRF_SWAGGER_SHOW_ALL_FIELDS affects Swagger only, not API."""
-        from django.test import override_settings
-
-        # This setting should ONLY affect Swagger documentation generation
-        # It should NOT affect actual API permission enforcement
-
-        with override_settings(TURBODRF_SWAGGER_SHOW_ALL_FIELDS=True):
-            # The actual API viewsets and serializers should still enforce permissions
-            # This is a documentation-only setting
-
-            # Create a viewset (not via Swagger schema)
-            viewset = TurboDRFViewSet()
-            viewset.model = SampleModel
-
-            # Regular serializer should still work normally
-            # (This test confirms the setting doesn't break normal operation)
-            self.assertEqual(viewset.model, SampleModel)
+    def test_show_all_fields_setting_is_ignored(self):
+        fields = self._write_fields(
+            ["editor"], DEBUG=True, TURBODRF_SWAGGER_SHOW_ALL_FIELDS=True
+        )
+        self.assertNotIn("price", fields)
+        self.assertNotIn("secret_field", fields)

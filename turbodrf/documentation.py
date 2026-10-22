@@ -78,14 +78,18 @@ def get_turbodrf_schema_view(
         - Title: Customizable via title parameter
         - Version: Customizable via version parameter
         - Generator: RoleBasedSchemaGenerator for permission filtering
+        - public=False: each endpoint's permission check runs for the caller
         - Permissions: AllowAny (filtering happens at schema level)
 
         Set TURBODRF_ENABLE_DOCS = False in settings to disable documentation.
 
     Note:
-        While the view itself allows any user to access the documentation,
-        the RoleBasedSchemaGenerator ensures that users only see the parts
-        of the API they have permission to use based on their roles.
+        While the view itself allows any user to fetch the documentation,
+        the RoleBasedSchemaGenerator scopes the schema to the caller: only
+        the TurboDRF operations they may perform, bodies built for their own
+        field permissions, and only the definitions those operations use. An
+        anonymous caller sees only reads of ``public_access`` models, without
+        fields a role has a read rule for (unless a ``guest`` role grants them).
     """
     # Check if documentation is enabled
     if not getattr(settings, "TURBODRF_ENABLE_DOCS", True):
@@ -102,7 +106,9 @@ def get_turbodrf_schema_view(
             contact=openapi.Contact(email=contact_email),
             license=openapi.License(name=license_name),
         ),
-        public=True,
+        # public=False: drf-yasg runs each endpoint's permission classes for
+        # the caller instead of documenting every endpoint.
+        public=False,
         permission_classes=[permissions.AllowAny],
         generator_class=RoleBasedSchemaGenerator,
     )

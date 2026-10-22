@@ -16,6 +16,11 @@ Uses Django's built-in `view_`, `add_`, `change_`, `delete_` permissions:
 TURBODRF_USE_DEFAULT_PERMISSIONS = True
 ```
 
+Neither mode has field-level rules (a model's `sensitive_fields` included).
+The `TURBODRF_SENSITIVE_FIELDS` deny-list still applies to responses,
+filters and OPTIONS, but not to search or ordering (see
+[Security](security.md#sensitive-fields)).
+
 ## 3. Role-based permissions (default)
 
 Field-level control per role:
@@ -28,18 +33,21 @@ TURBODRF_ROLES = {
         'books.book.create',
         'books.book.update',
         'books.book.delete',
+        'books.book.title.read',
+        'books.book.price.read',
     ],
     'editor': [
         'books.book.read',
         'books.book.update',
+        'books.book.title.read',
         'books.book.price.read',       # Can see price
     ],
     'viewer': [
         'books.book.read',
-        'books.book.title.read',       # Can only see title
+        'books.book.title.read',       # Sees title, not price
     ],
-    'guest': [
-        'books.book.read',             # For public_access endpoints
+    'guest': [                         # anonymous callers on public_access models
+        'books.book.title.read',       # title has read rules above
     ],
 }
 ```
@@ -49,11 +57,35 @@ TURBODRF_ROLES = {
 - Model-level: `app_label.model_name.action` (read, create, update, delete)
 - Field-level: `app_label.model_name.field_name.read` or `.write`
 
+Use the model's exact lowercase `app_label.model_name` and a concrete or
+many-to-many field name (`author`, not `author_id`). There are no wildcards.
+The router checks every string at startup and refuses to boot on a typo (see
+[Security](security.md#permission-string-typo-gate)).
+
 ### How field permissions work
 
-1. If ANY role defines an explicit field rule (e.g. `price.read`), that field requires explicit permission for ALL roles
-2. Fields without explicit rules fall back to model-level permission
-3. This means: to restrict `price` for viewers, you must add `price.read` to at least one role (like admin)
+1. If ANY role defines an explicit field rule (e.g. `price.read`), that field requires explicit permission for ALL roles -- in static and database mode, and for anonymous callers
+2. Fields listed in the model's `sensitive_fields` attribute are readable only through an explicit `.read` grant, as if a rule existed (reads only; add a `.write` rule to restrict writes)
+3. Fields without explicit rules fall back to model-level permission
+4. This means: to restrict `price` for viewers, you must add `price.read` to at least one role (like admin)
+
+### Anonymous callers and the `guest` role
+
+`public_access: True` lets anonymous callers GET (and HEAD / OPTIONS) the
+model's endpoints. It gives them model-level read, as if they held a role
+with only `app.model.read`. Field rules bind them like everyone else: a field
+with a read rule on any role needs an explicit grant, and anonymous callers
+get grants only through a role named `guest`. Without one they see -- and can
+filter, search and order on -- only the fields no role has a rule for. A
+nested path needs read on each model along it, so the related model must be
+`public_access` too, or `guest` must grant its `app.model.read`.
+
+Upgrading from 0.5.2 or earlier, where anonymous callers without a `guest`
+role saw every configured field: add a `guest` role granting the field reads
+public visitors should see.
+
+Anonymous callers can't write through the generated CRUD routes, whatever
+`guest` grants.
 
 ### Assigning roles to users
 
@@ -82,9 +114,8 @@ Authenticated users with no roles get 403.
   settings. Fastest; changes require a deploy.
 - **`'database'`** — read from `TurboDRFRole` / `RolePermission` /
   `UserRole` tables. Permissions can be mutated at runtime by an admin
-  UI without redeploying. Subject to `TURBODRF_PERMISSION_CACHE_TIMEOUT`
-  (default 300s) so high-stakes systems with frequent revocations
-  should set a lower TTL.
+  UI without redeploying, and take effect on the next request (see
+  [Caching](#caching)).
 
 ### Database-backed permissions
 
@@ -105,12 +136,27 @@ UserRole.objects.create(user=user, role=role)
 
 ### Caching
 
-Permission resolutions are cached per `(user, model)` for the duration
-of `TURBODRF_PERMISSION_CACHE_TIMEOUT` seconds (default 300). The cache
-key prefix is `TURBODRF_PERMISSION_CACHE_PREFIX` (default
-`"turbodrf_perm"`). Clear the cache after a role mutation in database
-mode if you can't wait for the TTL — the snapshot machinery uses
-Django's default cache backend, so any standard `cache.delete()` works.
+Permission snapshots are cached per `(user, model)` in Django's default
+cache for `TURBODRF_PERMISSION_CACHE_TIMEOUT` seconds (default 300), under
+the key prefix `TURBODRF_PERMISSION_CACHE_PREFIX` (default
+`"turbodrf_perm"`).
+
+The cache key covers the user's current roles and the role configuration
+(`TURBODRF_ROLES` in static mode; every role's name and version in
+database mode), so these take effect on the next request: assigning or
+removing a user's role, changing `TURBODRF_ROLES`, and saving or deleting a
+`RolePermission` (which bumps its role's version).
+
+A bulk `RolePermission` QuerySet `update()` or `delete()` skips the model's
+`save()` / `delete()`, so it doesn't bump versions, and snapshots stay stale
+until the TTL. Invalidate them after one:
+
+```python
+from turbodrf.backends import invalidate_user_permissions
+
+invalidate_user_permissions(user)   # one user's snapshots
+invalidate_user_permissions()       # everyone's
+```
 
 ### Nested field permissions
 
@@ -124,4 +170,4 @@ If any level fails, the field is excluded.
 
 ### Filter permissions
 
-Users can only filter on fields they have read permission for. Filters on hidden fields are silently ignored -- this prevents information leakage through binary search attacks.
+Users can only filter and order on configured fields (plus the primary key) they have read permission for. Filters on other fields are silently ignored -- this prevents information leakage through binary search attacks. See [Filtering & Search](filtering.md#filtering).

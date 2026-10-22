@@ -155,11 +155,11 @@ class TestGetUserRolesFromSocialAuth(TestCase):
         """Lines 177-188: iterates social_auths and maps roles."""
         user = User.objects.create_user(username="kc_user")
 
-        mock_social = Mock()
+        mock_social = Mock(provider="keycloak")
         mock_social.extra_data = {"roles": ["realm-admin", "viewer"]}
 
         mock_manager = MagicMock()
-        mock_manager.all.return_value = [mock_social]
+        mock_manager.filter.return_value = [mock_social]
         user.social_auth = mock_manager
 
         # Use legacy permissive mode here so 'viewer' passes through
@@ -178,11 +178,11 @@ class TestGetUserRolesFromSocialAuth(TestCase):
         """Line 190: no social_auth has roles, returns []."""
         user = User.objects.create_user(username="kc_empty")
 
-        mock_social = Mock()
+        mock_social = Mock(provider="keycloak")
         mock_social.extra_data = {"sub": "123"}  # no roles claim
 
         mock_manager = MagicMock()
-        mock_manager.all.return_value = [mock_social]
+        mock_manager.filter.return_value = [mock_social]
         user.social_auth = mock_manager
 
         from turbodrf.integrations.keycloak import get_user_roles_from_social_auth
@@ -195,11 +195,11 @@ class TestGetUserRolesFromSocialAuth(TestCase):
         """Nested claim path via social auth extra_data."""
         user = User.objects.create_user(username="kc_nested")
 
-        mock_social = Mock()
+        mock_social = Mock(provider="keycloak")
         mock_social.extra_data = {"realm_access": {"roles": ["editor"]}}
 
         mock_manager = MagicMock()
-        mock_manager.all.return_value = [mock_social]
+        mock_manager.filter.return_value = [mock_social]
         user.social_auth = mock_manager
 
         from turbodrf.integrations.keycloak import get_user_roles_from_social_auth
@@ -213,6 +213,7 @@ class TestGetUserRolesFromSocialAuth(TestCase):
 # ---------------------------------------------------------------------------
 
 
+@override_settings(TURBODRF_KEYCLOAK_INTEGRATION=True)
 class TestKeycloakRoleMiddlewareCall(TestCase):
     """Test the actual __call__ path of KeycloakRoleMiddleware."""
 
@@ -228,10 +229,10 @@ class TestKeycloakRoleMiddlewareCall(TestCase):
         # enters the block that fetches roles from social_auth.
         user._test_roles = []
 
-        mock_social = Mock()
+        mock_social = Mock(provider="keycloak")
         mock_social.extra_data = {"roles": ["admin"]}
         mock_manager = MagicMock()
-        mock_manager.all.return_value = [mock_social]
+        mock_manager.filter.return_value = [mock_social]
         user.social_auth = mock_manager
 
         request = self.factory.get("/")
@@ -281,10 +282,10 @@ class TestKeycloakRoleMiddlewareCall(TestCase):
         # Make existing roles property return [] so middleware enters the block
         user._test_roles = []
 
-        mock_social = Mock()
+        mock_social = Mock(provider="keycloak")
         mock_social.extra_data = {}
         mock_manager = MagicMock()
-        mock_manager.all.return_value = [mock_social]
+        mock_manager.filter.return_value = [mock_social]
         user.social_auth = mock_manager
 
         request = self.factory.get("/")
@@ -336,7 +337,10 @@ class TestTrackingWithMockedPackage(TestCase):
             from turbodrf.tracking import get_tracking_mixin
 
             result = get_tracking_mixin()
-            self.assertIs(result, FakeLoggingMixin)
+            # TurboDRF wraps the LoggingMixin (anonymous-request skip +
+            # sensitive-field masking) rather than returning it bare.
+            self.assertTrue(issubclass(result, FakeLoggingMixin))
+            self.assertIsNot(result, FakeLoggingMixin)
 
     @override_settings(TURBODRF_ENABLE_TRACKING=True)
     def test_get_tracking_mixin_import_error(self):
@@ -398,6 +402,7 @@ class _PlainUser:
         self.groups.all.return_value = []
 
 
+@override_settings(TURBODRF_ALLAUTH_INTEGRATION=True)
 class TestAllAuthMiddlewareDictRoles(TestCase):
     """Test the __dict__['roles'] branch (line 148) of AllAuthRoleMiddleware."""
 

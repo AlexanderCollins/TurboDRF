@@ -42,11 +42,28 @@ TURBODRF_ALLAUTH_ROLE_MAPPING = {
     'Administrators': 'admin',
     'Editors': 'editor',
 }
+TURBODRF_ALLAUTH_STRICT_ROLES = True  # default: True (recommended)
 ```
 
-When the integration is enabled, the middleware looks up the user's Django
+When the integration is enabled, TurboDRF looks up the user's Django
 Groups, maps them via `TURBODRF_ALLAUTH_ROLE_MAPPING`, and exposes them as
-TurboDRF roles for the duration of the request.
+TurboDRF roles for the duration of the request. With
+`TURBODRF_ALLAUTH_INTEGRATION = False` the middleware does nothing, even if
+it's still listed in `MIDDLEWARE`.
+
+### Strict group mapping (default)
+
+When a role mapping is configured and `TURBODRF_ALLAUTH_STRICT_ROLES=True`
+(default), the mapping is an **allow-list**. A group that isn't in the
+mapping gives no role, and a warning is logged. Without this, a Django
+Group that happens to be named `admin` would become the TurboDRF `admin`
+role even though the mapping doesn't mention it.
+
+Set `TURBODRF_ALLAUTH_STRICT_ROLES = False` to restore the old passthrough,
+where unmapped groups become roles under their own names.
+
+With no mapping configured, every group name is used as a role name
+directly.
 
 ---
 
@@ -55,8 +72,8 @@ TurboDRF roles for the duration of the request.
 **Status:** experimental — the role-mapping logic is unit-tested; **not
 verified against a live Keycloak server** in this codebase.
 
-Extracts roles from a Keycloak-issued JWT and maps them to TurboDRF roles.
-Common pattern in B2B SaaS where Keycloak is the central IdP.
+Maps the roles Keycloak granted a user to TurboDRF roles. Common pattern
+in B2B SaaS where Keycloak is the central IdP.
 
 ```bash
 pip install social-auth-app-django
@@ -69,13 +86,46 @@ MIDDLEWARE = [
 ]
 
 TURBODRF_KEYCLOAK_INTEGRATION = True   # default: False
-TURBODRF_KEYCLOAK_ROLE_CLAIM = 'realm_access.roles'  # JSON path in JWT
+TURBODRF_KEYCLOAK_PROVIDER = 'keycloak'              # default: 'keycloak'
+TURBODRF_KEYCLOAK_ROLE_CLAIM = 'realm_access.roles'  # path in the stored claims
 TURBODRF_KEYCLOAK_ROLE_MAPPING = {
     'realm-admin': 'admin',
     'content-editor': 'editor',
 }
 TURBODRF_KEYCLOAK_STRICT_ROLES = True  # default: True (recommended)
+TURBODRF_KEYCLOAK_MAX_ROLE_AGE = None  # default: None (no limit), seconds
 ```
+
+With `TURBODRF_KEYCLOAK_INTEGRATION = False` the middleware does nothing,
+even if it's still listed in `MIDDLEWARE`.
+
+### Where the roles come from
+
+TurboDRF does **not** read or verify a Keycloak token on each request. It
+reads the claims social-auth-app-django stored in the user's
+`UserSocialAuth.extra_data` when they logged in, follows
+`TURBODRF_KEYCLOAK_ROLE_CLAIM` to the role list, and maps it.
+
+That means:
+
+- **Roles are captured at login and last for the session.** A role you
+  revoke in Keycloak still applies in TurboDRF until the user logs in again
+  (which refreshes `extra_data`). Keycloak access tokens expiring doesn't
+  change this.
+- Only the association whose provider is `TURBODRF_KEYCLOAK_PROVIDER`
+  (default `'keycloak'`, the name social-core's Keycloak backend uses) is
+  read. If the user also linked GitHub, Google or any other account, role
+  claims in that account's data are ignored. Set this to your backend's
+  `name` if you use a custom one.
+- To bound how long login-time roles stay valid, set
+  `TURBODRF_KEYCLOAK_MAX_ROLE_AGE` to a number of seconds. Once the stored
+  `auth_time` (written by social-auth at login) is older than that, the user
+  gets no Keycloak roles until they log in again. If `auth_time` is missing
+  the roles are dropped too. Leave it `None` (default) to keep roles for the
+  whole session.
+
+Make sure the claim you point `TURBODRF_KEYCLOAK_ROLE_CLAIM` at is actually
+saved in `extra_data` by your social-auth pipeline / `EXTRA_DATA` settings.
 
 ### Strict mode (default)
 
@@ -100,6 +150,36 @@ no mapping.
 
 ---
 
+## Roles for token / JWT-authenticated requests (allauth and Keycloak)
+
+Django middleware runs **before** DRF authenticates the request. For a
+session login that doesn't matter, because `AuthenticationMiddleware`
+already loaded the user. For DRF token, JWT or any other DRF
+authentication class, the user is still anonymous when
+`AllAuthRoleMiddleware` / `KeycloakRoleMiddleware` run, so the middleware
+can't give them roles.
+
+To cover every authentication method, when `TURBODRF_ALLAUTH_INTEGRATION`
+or `TURBODRF_KEYCLOAK_INTEGRATION` is `True` at startup TurboDRF installs a
+`roles` property on your user model. TurboDRF reads `user.roles` when it
+checks permissions, so the roles are resolved from the authenticated user
+object itself (Keycloak roles first, then allauth group roles, without
+duplicates), whatever authenticated it. They're cached on the user instance,
+so the lookup runs once per request.
+
+Limits:
+
+- If your user model (or another app) already defines `roles` — a field,
+  property or method — TurboDRF leaves it alone and logs that it didn't
+  install the resolver. Your `roles` is then the only source of roles for
+  token/JWT users.
+- In `TURBODRF_PERMISSION_MODE = "database"`, roles come from the
+  `UserRole` table and neither integration is consulted.
+- The flags are read at startup to decide whether to install the
+  resolver; turning an integration on later needs a restart.
+
+---
+
 ## Sentry
 
 **Status:** experimental — opt-in, gated by `TURBODRF_ENABLE_SENTRY`
@@ -108,9 +188,13 @@ project depends on your `sentry_sdk.init(...)` configuration.
 
 When enabled, the framework:
 
-1. **Tags the current Sentry scope** on every request with the user's
-   `tenant_id`, `user_id`, and `user_roles`. Makes Sentry events for that
-   request searchable / filterable by tenant.
+1. **Tags each request's Sentry scope** with the user's `tenant_id` and
+   `user_roles`, and sets the Sentry user to `{"id": <pk>}`. Only the id is
+   sent: no username, email or other PII, regardless of
+   `send_default_pii`. Makes Sentry events for that request searchable /
+   filterable by tenant. The middleware runs each request in its own Sentry
+   scope, so one request's user and tags never carry over to the next, and
+   anonymous requests carry no user or tags.
 2. **Records security-relevant events as breadcrumbs** — FK injection
    blocked, predicate write rejection, tenant reassignment rejected. If a
    user later triggers an unrelated error, the breadcrumbs show what
@@ -133,6 +217,12 @@ MIDDLEWARE = [
     'turbodrf.integrations.sentry.SentryContextMiddleware',
 ]
 ```
+
+The middleware runs before DRF authentication, so for token/JWT requests
+the user is still anonymous when it runs. DRF writes the authenticated user
+back to the Django request, and TurboDRF reads it again when Sentry captures
+an event during the request, so those events still get the user id and
+tags. Breadcrumbs don't depend on the user.
 
 Programmatic API for app-specific events:
 
@@ -187,6 +277,21 @@ TURBODRF_TRACKING_ANONYMOUS = False          # default: False
 When `TURBODRF_ENABLE_TRACKING=True` and `rest_framework_tracking` is
 installed, the framework's viewset base classes pick up the `LoggingMixin`
 automatically. View logs in Django admin under **API Request Logs**.
+
+TurboDRF's version of the mixin differs from the stock one in two ways:
+
+- **Anonymous requests aren't logged** unless
+  `TURBODRF_TRACKING_ANONYMOUS = True`. Only requests whose user is
+  authenticated (after DRF authentication) are recorded by default.
+- **Sensitive values are masked.** drf-api-tracking masks the values of
+  keys named `api`, `token`, `key`, `secret`, `password` and `signature`.
+  TurboDRF adds every name in `TURBODRF_SENSITIVE_FIELDS` (`password_hash`,
+  `secret_key`, `api_key`, `access_token`, `refresh_token`, `session_key`,
+  plus your own additions) to the mixin's `sensitive_fields`, so those
+  values are masked wherever drf-api-tracking masks its own list.
+
+`TURBODRF_ENABLE_TRACKING` is read once, when `turbodrf.views` is imported,
+so changing it needs a restart.
 
 ---
 

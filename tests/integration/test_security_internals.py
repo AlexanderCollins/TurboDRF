@@ -52,12 +52,11 @@ from turbodrf.backends import (
 )
 from turbodrf.compiler import (
     CompiledQueryPlan,
-    DictProxy,
     _build_fk_type_coercers,
     _build_type_coercers,
-    _coerce_decimal,
     _compile_m2m_spec,
     compile_model,
+    field_representation,
     get_compiled_plan,
     is_compiled,
 )
@@ -494,14 +493,13 @@ class InternalHelperTests(AdversaryBase):
 
     # ---- argument coercion -------------------------------------------------
 
-    def test_coerce_decimal_edge_values(self):
-        """None passes through, NaN/Infinity are str()-coerced, int -> str."""
-        self.assertIsNone(_coerce_decimal(None))
-        for v in ("NaN", "Infinity", "-Infinity"):
-            self.assertIsInstance(_coerce_decimal(Decimal(v)), str)
-        self.assertEqual(_coerce_decimal("not a decimal"), "not a decimal")
-        self.assertEqual(_coerce_decimal(42), "42")
-        self.assertEqual(_coerce_decimal(Decimal("0")), "0")
+    def test_decimal_representation_matches_serializer(self):
+        """Decimals render as DRF's DecimalField does: quantized, never "0E-8"."""
+        represent = field_representation(CompiledSampleModel._meta.get_field("price"))
+        self.assertEqual(represent(Decimal("0")), "0.00")
+        self.assertEqual(represent(Decimal("1E-2")), "0.01")
+        self.assertEqual(represent(42), "42.00")
+        self.assertIsNone(field_representation(SampleModel._meta.get_field("title")))
 
     def test_build_type_coercers_silent_skip(self):
         """Unknown / empty fields silently skipped."""
@@ -529,10 +527,9 @@ class InternalHelperTests(AdversaryBase):
             self.assert_no_victim_leak_value(spec)
         except Exception:
             pass
-        # unknown subfield: F() built but no coercer
-        spec = _compile_m2m_spec(CompiledArticle, "categories", ["nonexistent"])
-        self.assertIn("nonexistent", spec["annotations"])
-        self.assertNotIn("nonexistent", spec.get("type_coercers", {}))
+        # unknown subfield: refused at compile time, not a 500 per request
+        with self.assertRaises(ImproperlyConfigured):
+            _compile_m2m_spec(CompiledArticle, "categories", ["nonexistent"])
 
     def test_resolve_tenant_model_inputs(self):
         """nonexistent / malformed / None / class — all handled."""
@@ -550,13 +547,6 @@ class InternalHelperTests(AdversaryBase):
             self.assertFalse(_model_is_tenant(None, "test_app.Brokerage"))
         except (AttributeError, TypeError):
             pass
-
-    def test_dictproxy_attr_access_missing_key(self):
-        """Missing key raises AttributeError, not KeyError."""
-        proxy = DictProxy({"a": 1})
-        self.assertEqual(proxy.a, 1)
-        with self.assertRaises(AttributeError):
-            proxy.nonexistent
 
     # ---- snapshot manipulation -------------------------------------------
 
@@ -676,39 +666,35 @@ class InternalHelperTests(AdversaryBase):
             info=openapi.Info(title="Test", default_version="v1")
         )
 
-        self.assertIsNone(gen._extract_model_info("/not/api/anything"))
-        self.assertIsNone(gen._extract_model_info("/"))
-        self.assertIsNone(gen._extract_model_info("/api/zzznosuch/"))
-        self.assertFalse(
-            gen._has_permission(
-                {"app_label": "test_app", "model_name": "deal"},
-                "TRACE",
-                {"test_app.deal.read"},
-            )
-        )
-        self.assertFalse(
-            gen._has_permission(
-                {"app_label": "test_app", "model_name": "deal"}, "GET", set()
-            )
-        )
+        from rest_framework.views import APIView
 
+        from turbodrf.swagger import _prune_unreachable_definitions
+        from turbodrf.views import TurboDRFViewSet
+
+        # Non-TurboDRF views are never documented.
+        plain = APIView()
+        plain.request = None
+        self.assertFalse(gen.should_include_endpoint("/x/", "GET", plain, True))
+
+        # TurboDRF view, no request (anonymous, no guest role) → excluded,
+        # even with public=True; unknown methods are always excluded.
+        class DealVS(TurboDRFViewSet):
+            model = Deal
+
+        view = DealVS()
+        view.request = None
+        for method in ("GET", "POST", "TRACE"):
+            self.assertFalse(
+                gen.should_include_endpoint("/api/deals/", method, view, True)
+            )
+
+        # Unreferenced definitions (e.g. a victim-named serializer) are pruned.
         schema = {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string"},
-                VICTIM_SECRET_DEAL: {"type": "string"},
-            },
+            "paths": {"/a/": {"get": {"responses": {"200": {"schema": {}}}}}},
+            "definitions": {VICTIM_SECRET_DEAL: {"type": "object"}},
         }
-        out = gen._filter_schema_fields(
-            schema, {"app_label": "test_app", "model_name": "deal"}, set()
-        )
-        self.assertEqual(out["properties"], {})
-        self.assertNotIn(VICTIM_SECRET_DEAL, out["properties"])
-
-        # No properties: returned unchanged
-        self.assertEqual(
-            gen._filter_schema_fields({"type": "object"}, {}, set()), {"type": "object"}
-        )
+        _prune_unreachable_definitions(schema)
+        self.assertNotIn("definitions", schema)
 
     def test_metadata_anon_no_role_no_leak(self):
         """Anon with no roles -> no perm gating, no victim leak."""
@@ -738,74 +724,7 @@ class InternalHelperTests(AdversaryBase):
 
 
 class CompiledPathTests(AdversaryBase):
-    """Compiled query plan + DictProxy attack surface."""
-
-    # ---- DictProxy --------------------------------------------------------
-
-    def test_dictproxy_slot_isolation(self):
-        """DictProxy uses __slots__ so it has no __dict__, can't be
-        setattr'd, doesn't iterate, and its dunder lookups can't be
-        coaxed via dict keys."""
-        d = {"x": "secret", "__class__": "EVIL"}
-        proxy = DictProxy(d)
-
-        self.assertIs(proxy.__class__, DictProxy)
-        with self.assertRaises(AttributeError):
-            proxy.__dict__
-        with self.assertRaises(AttributeError):
-            proxy.evil = "injection"
-        with self.assertRaises(TypeError):
-            iter(proxy)
-        # _d slot is reachable directly (private-by-convention only)
-        self.assertEqual(proxy._d, d)
-        # Dunder defined on type wins over dict key lookup
-        self.assertEqual(proxy._d["__class__"], "EVIL")
-
-    def test_dictproxy_keyerror_becomes_attributeerror(self):
-        """Missing key raises AttributeError (not KeyError)."""
-        proxy = DictProxy({"a": 1})
-        with self.assertRaises(AttributeError):
-            proxy.nonexistent
-
-    def test_dictproxy_property_relational_access_raises(self):
-        """`self.author.name` on int FK raises AttributeError; pickle
-        round-trip is safe (dunder probe returns AttributeError instead of
-        recursing)."""
-        d = {"author": 1}
-        proxy = DictProxy(d)
-        with self.assertRaises(AttributeError):
-            proxy.author.name
-        # Pickle round-trip should now succeed without recursion.
-        import pickle
-
-        roundtrip = pickle.loads(pickle.dumps(DictProxy({"a": 1})))
-        self.assertEqual(roundtrip.a, 1)
-
-    def test_dictproxy_isolation_across_rows(self):
-        """Two proxies share no state; mutating one's _d does not affect
-        the other; circular refs handled."""
-        d1 = {"x": 1}
-        d2 = {"x": 2}
-        p1 = DictProxy(d1)
-        p2 = DictProxy(d2)
-        self.assertEqual(p1.x * 10, 10)
-        self.assertEqual(p2.x * 10, 20)
-        # mutation persists in source dict (documented accepted behavior)
-        p1._d["x"] = "injected"
-        self.assertEqual(d1["x"], "injected")
-        self.assertEqual(d2["x"], 2)
-        # Circular reference: no infinite loop on attr access
-        d3 = {}
-        d3["self"] = d3
-        self.assertIs(DictProxy(d3).self, d3)
-
-    def test_dictproxy_subclassing_safe(self):
-        """Subclassing DictProxy doesn't poison the parent."""
-
-        class Sub(DictProxy):
-            pass
-
-        self.assertEqual(Sub({"a": 1}).a, 1)
+    """Compiled query plan attack surface."""
 
     # ---- ?fields= parameter -----------------------------------------------
 
@@ -2781,13 +2700,13 @@ class IntegrationTests(AdversaryBase):
         u = MagicMock(spec=[])
         self.assertEqual(get_user_roles_from_social_auth(u), [])
 
-        # Multiple associations: first non-empty wins
+        # Multiple Keycloak associations: first non-empty wins
         u = MagicMock()
-        first = MagicMock()
+        first = MagicMock(provider="keycloak")
         first.extra_data = {"roles": ["viewer"]}
-        second = MagicMock()
+        second = MagicMock(provider="keycloak")
         second.extra_data = {"roles": ["admin"]}
-        u.social_auth.all.return_value = [first, second]
+        u.social_auth.filter.return_value = [first, second]
         with override_settings(
             TURBODRF_KEYCLOAK_ROLE_CLAIM="roles",
             TURBODRF_KEYCLOAK_ROLE_MAPPING={},
@@ -2798,15 +2717,15 @@ class IntegrationTests(AdversaryBase):
         # Malformed extra_data variants
         for bad in ("not-a-dict", None):
             u = MagicMock()
-            assoc = MagicMock()
+            assoc = MagicMock(provider="keycloak")
             assoc.extra_data = bad
-            u.social_auth.all.return_value = [assoc]
+            u.social_auth.filter.return_value = [assoc]
             with override_settings(TURBODRF_KEYCLOAK_ROLE_CLAIM="roles"):
                 self.assertEqual(get_user_roles_from_social_auth(u), [])
 
         # Empty associations
         u = MagicMock()
-        u.social_auth.all.return_value = []
+        u.social_auth.filter.return_value = []
         with override_settings(TURBODRF_KEYCLOAK_ROLE_CLAIM="roles"):
             self.assertEqual(get_user_roles_from_social_auth(u), [])
 
@@ -3174,9 +3093,7 @@ class ScopedTargetQuerysetFailClosed(AdversaryBase):
 
     def test_tenanted_target_scopes_to_own_tenant_only(self):
         titles = set(
-            self._scoped(Deal, self._attacker_request()).values_list(
-                "title", flat=True
-            )
+            self._scoped(Deal, self._attacker_request()).values_list("title", flat=True)
         )
         self.assertIn("ATTACKER_DEAL", titles)
         self.assertNotIn(VICTIM_SECRET_DEAL, titles)
@@ -3185,9 +3102,7 @@ class ScopedTargetQuerysetFailClosed(AdversaryBase):
         from turbodrf.predicates import get_predicates, register_predicates
 
         orig = list(get_predicates(RelatedModel))
-        register_predicates(
-            RelatedModel, [Custom(q_func=lambda r, ur: Q(pk__in=[]))]
-        )
+        register_predicates(RelatedModel, [Custom(q_func=lambda r, ur: Q(pk__in=[]))])
         try:
             self.assertEqual(self._scoped(RelatedModel, None).count(), 0)
         finally:

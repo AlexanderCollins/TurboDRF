@@ -5,9 +5,15 @@ Provides integration between Keycloak (or other OpenID Connect providers)
 and TurboDRF's role-based permission system.
 
 This module supports:
-- Role extraction from OpenID Connect ID tokens
+- Role extraction from the claims social-auth stored at login
 - Group mapping from Keycloak groups to TurboDRF roles
 - Custom claims handling for role assignment
+
+Roles are read from the ``extra_data`` social-auth-app-django saved for the
+user's Keycloak association when they logged in. They are NOT re-read from a
+live token on each request, so they stay as they were at login until the
+user logs in again. Set ``TURBODRF_KEYCLOAK_MAX_ROLE_AGE`` to drop them once
+the stored ``auth_time`` is older than that many seconds.
 
 Setup:
 1. Install social auth: pip install social-auth-app-django
@@ -17,8 +23,12 @@ Setup:
 """
 
 import importlib.util
+import logging
+import time
 
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 
 def is_social_auth_installed():
@@ -75,6 +85,57 @@ def get_role_mapping():
         }
     """
     return getattr(settings, "TURBODRF_KEYCLOAK_ROLE_MAPPING", {})
+
+
+def get_provider_name():
+    """
+    Get the social-auth provider name whose data carries Keycloak roles.
+
+    Only associations from this provider are trusted for roles. A user's
+    other linked accounts (GitHub, Google, ...) can never supply them.
+
+    Returns:
+        str: The provider name. Default: 'keycloak'
+    """
+    return getattr(settings, "TURBODRF_KEYCLOAK_PROVIDER", "keycloak")
+
+
+def get_max_role_age():
+    """
+    Get the maximum age, in seconds, of roles captured at login.
+
+    Returns:
+        int | float | None: Seconds after the stored ``auth_time`` beyond
+        which roles are dropped, or None (default) for no limit.
+    """
+    return getattr(settings, "TURBODRF_KEYCLOAK_MAX_ROLE_AGE", None)
+
+
+def _roles_too_old(extra_data):
+    """True when TURBODRF_KEYCLOAK_MAX_ROLE_AGE is set and the stored
+    ``auth_time`` is older than it. A missing or unreadable ``auth_time``
+    counts as too old (fail closed)."""
+    max_age = get_max_role_age()
+    if max_age is None:
+        return False
+    auth_time = extra_data.get("auth_time") if isinstance(extra_data, dict) else None
+    try:
+        age = time.time() - float(auth_time)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Keycloak roles dropped: TURBODRF_KEYCLOAK_MAX_ROLE_AGE is set but "
+            "the stored social-auth data has no usable auth_time."
+        )
+        return True
+    if age > max_age:
+        logger.info(
+            "Keycloak roles dropped: captured at login %ds ago, older than "
+            "TURBODRF_KEYCLOAK_MAX_ROLE_AGE=%s. The user must log in again.",
+            age,
+            max_age,
+        )
+        return True
+    return False
 
 
 def extract_roles_from_token(token_claims):
@@ -140,11 +201,8 @@ def map_keycloak_roles_to_turbodrf(keycloak_roles):
     Returns:
         list: List of TurboDRF role names after mapping.
     """
-    import logging
-
     role_mapping = get_role_mapping()
     strict = getattr(settings, "TURBODRF_KEYCLOAK_STRICT_ROLES", True)
-    logger = logging.getLogger(__name__)
 
     if not role_mapping:
         # No mapping configured — passthrough
@@ -171,10 +229,16 @@ def map_keycloak_roles_to_turbodrf(keycloak_roles):
 
 def get_user_roles_from_social_auth(user):
     """
-    Get TurboDRF roles for a user from their social auth data.
+    Get TurboDRF roles for a user from their Keycloak social auth data.
 
-    This function retrieves the user's OpenID Connect ID token from
-    their social auth association and extracts roles from it.
+    Reads the ``extra_data`` social-auth stored for the user's association
+    with the configured provider (``TURBODRF_KEYCLOAK_PROVIDER``, default
+    'keycloak') at login. Associations with any other provider are ignored:
+    a role claim in, say, a GitHub account's data is never trusted.
+
+    Roles reflect the claims at login time. When
+    ``TURBODRF_KEYCLOAK_MAX_ROLE_AGE`` is set, roles whose ``auth_time`` is
+    older than that are dropped.
 
     Args:
         user: Django user object with social_auth relationship.
@@ -189,19 +253,22 @@ def get_user_roles_from_social_auth(user):
     if not hasattr(user, "social_auth"):
         return []
 
-    # Get the user's social auth associations
-    social_auths = user.social_auth.all()
+    provider = get_provider_name()
 
-    for social_auth in social_auths:
-        # Get extra_data which contains ID token claims
+    for social_auth in user.social_auth.filter(provider=provider):
+        # Re-check in Python: never trust another provider's data even if
+        # the manager returned it.
+        if getattr(social_auth, "provider", None) != provider:
+            continue
+
         extra_data = social_auth.extra_data
-
-        # Extract roles from the token
         keycloak_roles = extract_roles_from_token(extra_data)
-
-        if keycloak_roles:
-            # Map to TurboDRF roles and return
-            return map_keycloak_roles_to_turbodrf(keycloak_roles)
+        if not keycloak_roles:
+            continue
+        if _roles_too_old(extra_data):
+            # Stale login data is never used.
+            continue
+        return map_keycloak_roles_to_turbodrf(keycloak_roles)
 
     return []
 
@@ -210,8 +277,14 @@ class KeycloakRoleMiddleware:
     """
     Middleware to add roles property to users authenticated via Keycloak.
 
-    This middleware automatically populates the `roles` property on
-    authenticated users based on their OpenID Connect ID token claims.
+    This middleware populates the `roles` property on authenticated users
+    from the claims social-auth stored at login. It is a no-op unless
+    TURBODRF_KEYCLOAK_INTEGRATION is True.
+
+    It runs before DRF authentication, so it only sees session-authenticated
+    users. Token/JWT-authenticated users get their roles from the resolver
+    TurboDRF installs on the user model at startup (see
+    turbodrf.integrations.roles).
 
     Usage:
         Add to MIDDLEWARE in settings.py:
@@ -251,6 +324,9 @@ class KeycloakRoleMiddleware:
         Returns:
             Response from the next middleware/view.
         """
+        if not is_integration_enabled():
+            return self.get_response(request)
+
         # Add roles to authenticated users
         if hasattr(request, "user") and request.user.is_authenticated:
             # Check if user already has roles configured
@@ -282,6 +358,8 @@ def setup_keycloak_integration():
         "social_auth_installed": is_social_auth_installed(),
         "integration_enabled": is_integration_enabled(),
         "role_claim_path": get_role_claim_path(),
+        "provider": get_provider_name(),
+        "max_role_age": get_max_role_age(),
         "role_mapping": get_role_mapping(),
         "has_custom_mapping": bool(get_role_mapping()),
     }

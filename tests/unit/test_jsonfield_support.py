@@ -1,7 +1,7 @@
 """Test JSONField support in TurboDRF."""
 
 from django.db import models
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIRequestFactory
 
 from turbodrf.views import TurboDRFViewSet
@@ -22,6 +22,9 @@ class JSONFieldTestModel(models.Model):
         return {"fields": ["id", "name", "data", "metadata"]}
 
 
+# Field-type support, not permissions: the ad-hoc models here have no role
+# grants, so run with permissions off.
+@override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
 class TestJSONFieldSupport(TestCase):
     """Test that JSONField is properly handled in TurboDRF."""
 

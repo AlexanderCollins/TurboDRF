@@ -31,6 +31,8 @@ class TestJSONFieldModel(models.Model):
                 "config",
                 "metadata",
                 "created_at",
+                "uuid_field",
+                "ip_address",
             ]
         }
 
