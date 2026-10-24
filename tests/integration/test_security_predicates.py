@@ -263,7 +263,8 @@ class TestOwnerPredicate(SecurityBase):
 
     def test_validate_write_semantics(self):
         """Self-assignment OK; cross-user errors; chained '__' field skips;
-        no authed user skips (Tenant layer is the gate)."""
+        no authed user errors, as the tenant layer does (an AllowAny action
+        could otherwise set the owner to anyone)."""
         o = Owner("assigned_broker", bypass=["manager"])
         req = self._request_stub()
         self.assertEqual(
@@ -275,7 +276,7 @@ class TestOwnerPredicate(SecurityBase):
 
         o2 = Owner("assigned_broker__pk")
         self.assertEqual(o2.validate_write({"assigned_broker__pk": 999}, None, req), [])
-        self.assertEqual(
+        self.assertNotEqual(
             Owner("assigned_broker").validate_write(
                 {"assigned_broker": self.victim}, None, self._request_stub(authed=False)
             ),
@@ -317,13 +318,17 @@ class TestComposition(SecurityBase):
             restore()
 
     def test_either_validate_write_passes_if_any_child_passes(self):
-        """Either.validate_write returns [] if any child passes; aggregates
-        errors if ALL fail."""
+        """Either.validate_write runs every child and returns the union of
+        their errors: a child that allows the write doesn't override Owner's
+        objection. (It used to return [] as soon as one child passed.)"""
         ok = Custom(q_func=lambda r, u: Q(), write_validator=lambda vd, i, r: [])
         e_pass = Either(Owner("assigned_broker"), ok)
         req = self._request_stub()
-        self.assertEqual(
+        self.assertNotEqual(
             e_pass.validate_write({"assigned_broker": self.victim}, None, req), []
+        )
+        self.assertEqual(
+            e_pass.validate_write({"assigned_broker": self.attacker}, None, req), []
         )
 
         bad = Custom(

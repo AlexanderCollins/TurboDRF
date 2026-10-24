@@ -40,6 +40,17 @@ class TurboDRFConfig(AppConfig):
         """
         checks.register(check_docs_dependencies)
 
+        # Register every TurboDRF model's tenant boundary and predicates now,
+        # not when the URLconf first builds a router: FK-injection checks and
+        # nested-value / filter scoping read a target model's scoping from
+        # this registry, and a process that hasn't built a router (a Celery
+        # worker, a WSGI worker before its first request) would otherwise
+        # treat every model as unscoped. A tenancy misconfiguration raises
+        # here. Each router build re-registers and runs the startup gates.
+        from .tenancy import _register_tenancy
+
+        _register_tenancy()
+
         # Resolve Keycloak / allauth roles from the user object so they also
         # reach token/JWT-authenticated users (the integrations' middleware
         # runs before DRF authentication).
