@@ -11,14 +11,10 @@ All error responses follow a consistent format:
 }
 """
 
-from rest_framework.exceptions import APIException
+from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
+from django.http import Http404
+from rest_framework import exceptions
 from rest_framework.views import exception_handler
-
-
-class NoRoleAssigned(APIException):
-    status_code = 403
-    default_detail = "No role assigned. Contact an administrator to request access."
-    default_code = "no_role_assigned"
 
 
 def _coerce_error_detail(value):
@@ -33,15 +29,22 @@ def _coerce_error_detail(value):
 
 def turbodrf_exception_handler(exc, context):
     """Custom exception handler that wraps errors in a standard format."""
+    # Django's own exceptions as their DRF equivalents (DRF's handler does the
+    # same, after this function has read the code). A 404 gets the generic
+    # message: get_object_or_404's names the model ("No Deal matches the
+    # given query.").
+    if isinstance(exc, Http404):
+        exc = exceptions.NotFound()
+    elif isinstance(exc, DjangoPermissionDenied):
+        exc = exceptions.PermissionDenied()
+
     response = exception_handler(exc, context)
 
     if response is not None:
         code = getattr(exc, "default_code", None) or "error"
         if hasattr(exc, "detail"):
             detail = exc.detail
-            if isinstance(detail, dict):
-                message = _coerce_error_detail(detail)
-            elif isinstance(detail, list):
+            if isinstance(detail, (dict, list)):
                 message = _coerce_error_detail(detail)
             else:
                 message = str(detail)

@@ -1385,9 +1385,9 @@ class TestOPTIONSMetadata(HttpSecurityBase):
         r = self.client.options("/api/deals/")
         if r.status_code != 200 or not isinstance(r.data, dict):
             self.skipTest(f"non-200 OPTIONS: {r.status_code}")
-        tenancy = r.data.get("tenancy", {})
-        self.assertEqual(tenancy.get("tenant_field"), "brokerage")
-        s = str(tenancy)
+        # No tenancy block: it exposed the tenant path and predicate classes.
+        self.assertNotIn("tenancy", r.data)
+        s = str(r.data)
         for n in ("Attacker Co", "Victim Co", "Innocent Co"):
             self.assertNotIn(n, s)
 

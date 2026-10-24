@@ -18,7 +18,7 @@ from rest_framework.exceptions import (
 from rest_framework.test import APIClient, APIRequestFactory
 
 from tests.test_app.models import RelatedModel, SampleModel
-from turbodrf.exceptions import NoRoleAssigned, turbodrf_exception_handler
+from turbodrf.exceptions import turbodrf_exception_handler
 from turbodrf.renderers import FAST_JSON_AVAILABLE, FAST_JSON_LIB, TurboDRFRenderer
 
 User = get_user_model()
@@ -341,36 +341,6 @@ class TestExceptionHandlerNonDRF(TestCase):
         exc = ValueError("boom")
         response = turbodrf_exception_handler(exc, _make_context())
         self.assertIsNone(response)
-
-
-# ---------- NoRoleAssigned exception ----------
-
-
-class TestNoRoleAssigned(TestCase):
-    """Test the custom NoRoleAssigned exception."""
-
-    def test_status_code(self):
-        self.assertEqual(NoRoleAssigned.status_code, 403)
-
-    def test_default_detail(self):
-        exc = NoRoleAssigned()
-        self.assertIn("No role assigned", str(exc.detail))
-
-    def test_default_code(self):
-        self.assertEqual(NoRoleAssigned.default_code, "no_role_assigned")
-
-    def test_custom_detail(self):
-        exc = NoRoleAssigned(detail="Custom message")
-        self.assertEqual(str(exc.detail), "Custom message")
-
-    def test_handled_by_exception_handler(self):
-        exc = NoRoleAssigned()
-        response = turbodrf_exception_handler(exc, _make_context())
-
-        self.assertEqual(response.status_code, 403)
-        error = response.data["error"]
-        self.assertEqual(error["code"], "no_role_assigned")
-        self.assertIn("No role assigned", error["message"])
 
 
 # ---------- Integration: real API request ----------

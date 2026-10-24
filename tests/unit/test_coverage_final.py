@@ -289,12 +289,12 @@ class TestUnpaginatedCompiledList(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# views.py — line 286: _get_compiled_readable_fields with default permissions
+# views.py — line 286: _authorized_readable_fields with default permissions
 # ---------------------------------------------------------------------------
 
 
 class TestCompiledReadableFieldsDefaultPerms(TestCase):
-    """Test _get_compiled_readable_fields returns None for default perms."""
+    """Test _authorized_readable_fields returns None for default perms."""
 
     @override_settings(TURBODRF_USE_DEFAULT_PERMISSIONS=True)
     def test_default_permissions_returns_none(self):
@@ -304,17 +304,17 @@ class TestCompiledReadableFieldsDefaultPerms(TestCase):
         viewset.model = CompiledSampleModel
         factory = APIRequestFactory()
         request = factory.get("/fake/")
-        result = viewset._get_compiled_readable_fields(request)
+        result = viewset._authorized_readable_fields(request)
         self.assertIsNone(result)
 
 
 # ---------------------------------------------------------------------------
-# views.py — line 297: _get_compiled_readable_fields unauthenticated
+# views.py — line 297: _authorized_readable_fields unauthenticated
 # ---------------------------------------------------------------------------
 
 
 class TestCompiledReadableFieldsUnauthenticated(TestCase):
-    """Test _get_compiled_readable_fields for unauthenticated users."""
+    """Test _authorized_readable_fields for unauthenticated users."""
 
     def test_unauthenticated_is_gated(self):
         """Anonymous callers are gated by their snapshot (a set), never the
@@ -328,7 +328,7 @@ class TestCompiledReadableFieldsUnauthenticated(TestCase):
         factory = APIRequestFactory()
         request = factory.get("/fake/")
         request.user = AnonymousUser()
-        result = viewset._get_compiled_readable_fields(request)
+        result = viewset._authorized_readable_fields(request)
         self.assertIsInstance(result, set)
 
 
@@ -1264,13 +1264,13 @@ class TestShouldUseCompiledPath(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# views.py — _get_compiled_readable_fields with snapshot that has
+# views.py — _authorized_readable_fields with snapshot that has
 # readable_fields (line 295-297)
 # ---------------------------------------------------------------------------
 
 
 class TestCompiledReadableFieldsWithSnapshot(TestCase):
-    """Test _get_compiled_readable_fields returns snapshot fields."""
+    """Test _authorized_readable_fields returns snapshot fields."""
 
     def setUp(self):
         self.user = User.objects.create_user(username="comp_read_user", password="pass")
@@ -1295,7 +1295,7 @@ class TestCompiledReadableFieldsWithSnapshot(TestCase):
             "turbodrf.backends.attach_snapshot_to_request",
             return_value=mock_snapshot,
         ):
-            result = viewset._get_compiled_readable_fields(request)
+            result = viewset._authorized_readable_fields(request)
 
         self.assertEqual(result, {"title", "price"})
 
@@ -1321,7 +1321,7 @@ class TestCompiledReadableFieldsWithSnapshot(TestCase):
             "turbodrf.backends.attach_snapshot_to_request",
             return_value=mock_snapshot,
         ):
-            result = viewset._get_compiled_readable_fields(request)
+            result = viewset._authorized_readable_fields(request)
 
         self.assertEqual(result, set())
 
@@ -1518,7 +1518,7 @@ class TestFiltersetM2MReadableFieldsExclusion(TestCase):
             filterset = viewset.get_filterset_fields()
 
         self.assertIn("categories", filterset)
-        self.assertEqual(filterset["categories"], ["exact", "in", "isnull"])
+        self.assertEqual(filterset["categories"], ["exact"])
 
 
 # ---------------------------------------------------------------------------
