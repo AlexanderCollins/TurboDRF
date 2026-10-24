@@ -25,6 +25,14 @@ class TestAppConfig(AppConfig):
         if not hasattr(User, "roles"):
             User.add_to_class("roles", property(get_user_roles))
 
+        # Platform roles (TURBODRF_PLATFORM_ROLE_GETTER's default reads
+        # user.platform_roles): none unless a test sets _test_platform_roles.
+        def get_platform_roles(self):
+            return list(getattr(self, "_test_platform_roles", ()))
+
+        if not hasattr(User, "platform_roles"):
+            User.add_to_class("platform_roles", property(get_platform_roles))
+
         # Brokerage attribute for tenant tests. We need this to survive a
         # fresh DB fetch (validated_data in DRF refetches the User), so we
         # use a class-level registry keyed by user.pk plus the instance

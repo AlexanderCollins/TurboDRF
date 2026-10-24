@@ -83,11 +83,13 @@ def queries_blocked():
 
 
 def _config(model):
+    """The current scope's config of ``model`` (mixins._model_config)."""
+    from .mixins import _model_config
+
     try:
-        config = model.turbodrf()
+        return _model_config(model)
     except Exception:
         return {}
-    return config if isinstance(config, dict) else {}
 
 
 def unscoped_properties(model):

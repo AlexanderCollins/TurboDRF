@@ -4,13 +4,22 @@ Check which models are eligible for the compiled read path.
 Usage:
     python manage.py turbodrf_check
     python manage.py turbodrf_check --model Book
+    python manage.py turbodrf_check --scope platform
 """
 
 from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist
 from django.core.management.base import BaseCommand
 
-from turbodrf.mixins import TurboDRFMixin, _resolve_configured_fields
+from turbodrf.mixins import TurboDRFMixin, _model_config, _resolve_configured_fields
+from turbodrf.scope import (
+    PLATFORM,
+    SCOPES,
+    TENANT,
+    is_platform,
+    platform_block,
+    use_scope,
+)
 
 
 class Command(BaseCommand):
@@ -22,33 +31,51 @@ class Command(BaseCommand):
             type=str,
             help="Check a specific model by name",
         )
+        parser.add_argument(
+            "--scope",
+            choices=SCOPES,
+            default=TENANT,
+            help="Report the tenant API (default) or the platform API: the "
+            "models with a 'platform' block, as a platform router serves them",
+        )
 
     def handle(self, *args, **options):
         target_model = options.get("model")
+        scope = options.get("scope") or TENANT
         models = []
 
         for model in apps.get_models():
             if not issubclass(model, TurboDRFMixin):
                 continue
             config = model.turbodrf()
-            if not config.get("enabled", True):
+            if scope == PLATFORM:
+                block = platform_block(model, config)
+                if block is None or not block.get("enabled", True):
+                    continue
+            elif not config.get("enabled", True):
                 continue
             if target_model and model.__name__ != target_model:
                 continue
             models.append(model)
 
         if not models:
+            where = " with a platform block" if scope == PLATFORM else ""
             if target_model:
-                self.stderr.write(f"No TurboDRF model named '{target_model}' found.")
+                self.stderr.write(
+                    f"No TurboDRF model{where} named '{target_model}' found."
+                )
             else:
-                self.stderr.write("No TurboDRF models found.")
+                self.stderr.write(f"No TurboDRF models{where} found.")
             return
 
-        for model in sorted(models, key=lambda m: m.__name__):
-            self._check_model(model)
+        with use_scope(scope):
+            for model in sorted(models, key=lambda m: m.__name__):
+                self._check_model(model)
 
     def _check_model(self, model):
-        config = model.turbodrf()
+        # The config the current scope serves (a platform block there).
+        config = _model_config(model)
+        platform = is_platform()
         # Same default as the router: compiled unless opted out.
         opted_in = config.get("compiled", True)
         public_access = config.get("public_access", False)
@@ -101,6 +128,9 @@ class Command(BaseCommand):
 
         # Output
         name = f"{model._meta.app_label}.{model.__name__}"
+        if platform:
+            endpoint = config.get("endpoint", f"{model._meta.model_name}s")
+            name += f" (platform: {endpoint}/)"
         status = self.style.SUCCESS("compiled") if compiled else "not compiled"
 
         if issues:
@@ -117,7 +147,8 @@ class Command(BaseCommand):
             f"{field_summary['m2m']} M2M{reverse}, "
             f"{field_summary['property']} property"
         )
-        self.stdout.write(f"  Public access: {public_access}")
+        if not platform:
+            self.stdout.write(f"  Public access: {public_access}")
         unscoped = sorted(config.get("unscoped_properties") or ())
         if unscoped:
             self.stdout.write(
@@ -127,7 +158,10 @@ class Command(BaseCommand):
             )
 
         # Tenancy / predicate report
-        self._report_tenancy(model, config)
+        if platform:
+            self._report_platform_tenancy(model)
+        else:
+            self._report_tenancy(model, config)
 
         if issues:
             self.stdout.write(self.style.ERROR("  Issues:"))
@@ -140,11 +174,28 @@ class Command(BaseCommand):
                 )
             )
         elif not opted_in:
+            where = "its platform block" if platform else "the turbodrf() config"
             self.stdout.write(
                 self.style.WARNING(
                     "  Eligible for compiled path. "
-                    "Remove 'compiled': False from the turbodrf() config."
+                    f"Remove 'compiled': False from {where}."
                 )
+            )
+
+    def _report_platform_tenancy(self, model):
+        """The platform scope applies no row scoping; say which tenant path
+        its writes keep consistent."""
+        from turbodrf.predicates import registered_tenant_field
+
+        self.stdout.write(
+            "  Rows: every tenant (platform scope: no tenant boundary, no "
+            "predicates)"
+        )
+        tenant_field = registered_tenant_field(model)
+        if tenant_field:
+            self.stdout.write(
+                f"  Tenant path: {tenant_field} (creates name it; FK / M2M "
+                f"values must share the row's tenant)"
             )
 
     def _report_tenancy(self, model, config):

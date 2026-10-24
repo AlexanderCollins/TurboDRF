@@ -333,15 +333,19 @@ def _apply_predicate_writes(model, validated_data, instance, request):
 
     Raises serializers.ValidationError on violations. The per-layer logic lives
     in _validate_predicate_writes / _autofill_predicate_writes /
-    _check_fk_injection_writes.
+    _check_fk_injection_writes. The platform scope has its own rules
+    (_apply_platform_writes).
     """
     from .predicates import get_predicates, get_tenant_field
+    from .scope import is_platform
 
     # Defensive: if a caller passes a non-dict body (list, string), pass it
     # through unchanged. The HTTP layer already rejects these upstream;
     # this guard makes the helper safe for direct programmatic use.
     if not isinstance(validated_data, dict):
         return validated_data
+    if is_platform():
+        return _apply_platform_writes(model, validated_data, instance, request)
 
     tenant_field = get_tenant_field(model)
     predicates = get_predicates(model)
@@ -376,6 +380,172 @@ def _apply_predicate_writes(model, validated_data, instance, request):
         raise serializers.ValidationError(fk_errors)
 
     return validated_data
+
+
+def _apply_platform_writes(model, validated_data, instance, request):
+    """Write checks on the platform scope, where no tenant boundary or
+    predicate applies and nothing is filled in from the caller:
+
+    - every FK / M2M value must be a row of a model the platform scope can
+      reach (scope.platform_reachable: a model with a platform block, the
+      tenant model, or a plain model). Any other model's rows read as
+      missing: the unified "not found or not accessible" 400;
+    - a create on a tenant-scoped model must name its tenant (the first hop
+      of its ``tenant_field``);
+    - a row and the rows it points at stay in one tenant: a value whose own
+      tenant differs from the row's is a 400. When an update moves the row to
+      another tenant, the relations it keeps are checked too.
+    """
+    errors = _check_fk_injection_writes(model, validated_data, request, None)
+    if not errors:
+        errors = _platform_tenant_errors(model, validated_data, instance)
+    if errors:
+        _report_write_security_event(
+            "platform_write_rejected",
+            f"Platform write rejected on {model.__name__}",
+            model=model.__name__,
+            fields=list(errors.keys()),
+        )
+        raise serializers.ValidationError(errors)
+    return validated_data
+
+
+def _platform_tenant_model():
+    from django.conf import settings as django_settings
+
+    from .tenancy import _resolve_tenant_model
+
+    try:
+        return _resolve_tenant_model(
+            getattr(django_settings, "TURBODRF_TENANT_MODEL", None)
+        )
+    except Exception:
+        return None
+
+
+def _same_model(a, b):
+    return (
+        a is not None
+        and b is not None
+        and a._meta.concrete_model is b._meta.concrete_model
+    )
+
+
+def _platform_tenant_errors(model, validated_data, instance):
+    """``{field: [error]}`` for a platform write that would leave the row in
+    no tenant, or point it at another tenant's rows (see
+    _apply_platform_writes)."""
+    from django.conf import settings as django_settings
+
+    from .predicates import registered_tenant_field
+
+    tenant_model = _platform_tenant_model()
+    tenant_field = registered_tenant_field(model)
+    is_tenant_model = _same_model(model, tenant_model)
+    if not tenant_field and not is_tenant_model:
+        return {}
+
+    hop = tenant_field.split("__", 1)[0] if tenant_field else None
+    if hop and instance is None and validated_data.get(hop) is None:
+        return {
+            hop: [
+                f"{hop} is required: a create on the platform API must name the "
+                f"row's tenant."
+            ]
+        }
+
+    if is_tenant_model:
+        row_tenant, moved = (instance.pk if instance is not None else None), False
+    else:
+        row_tenant, moved = _platform_row_tenant(
+            model, tenant_field, validated_data, instance
+        )
+    if row_tenant is None:
+        return {}
+
+    tenant_user_field = getattr(django_settings, "TURBODRF_TENANT_USER_FIELD", None)
+    relations = [f for f in model._meta.fields if f.many_to_one or f.one_to_one] + list(
+        model._meta.many_to_many
+    )
+    errors = {}
+    for field in relations:
+        if field.name == hop:
+            continue
+        if field.name in validated_data:
+            value = validated_data[field.name]
+        elif moved and instance is not None:
+            value = getattr(instance, field.name, None)
+            if field.many_to_many:
+                value = list(value.all()) if value is not None else []
+        else:
+            continue
+        values = list(value) if field.many_to_many else [value]
+        for item in values:
+            if item is None:
+                continue
+            target_tenant = _platform_value_tenant(
+                field.related_model, item, tenant_model, tenant_user_field
+            )
+            if target_tenant is not None and target_tenant != row_tenant:
+                errors[field.name] = [
+                    f"Invalid {field.name}: it belongs to a different tenant than "
+                    f"this row."
+                ]
+                break
+    return errors
+
+
+def _platform_row_tenant(model, tenant_field, validated_data, instance):
+    """``(tenant pk, moved)`` of the row after the write: from its
+    ``tenant_field``'s first hop (written, or as stored), and whether the
+    write changes it."""
+    hop, _sep, rest = tenant_field.partition("__")
+    current = getattr(instance, hop, None) if instance is not None else None
+    if hop in validated_data:
+        value = validated_data[hop]
+        moved = instance is not None and _related_pk(value) != _related_pk(current)
+    else:
+        value, moved = current, False
+    pk = _related_pk(value)
+    if pk is None:
+        return None, moved
+    if not rest:
+        return pk, moved
+    target = model._meta.get_field(hop).related_model
+    return (
+        target._base_manager.filter(pk=pk).values_list(rest, flat=True).first(),
+        moved,
+    )
+
+
+def _platform_value_tenant(target, value, tenant_model, tenant_user_field):
+    """The tenant pk of ``value`` (a ``target`` row), or None when it has no
+    tenant of its own: a row of the tenant model is its own tenant; a row of
+    a tenant-scoped model has its ``tenant_field``'s; a row carrying
+    TURBODRF_TENANT_USER_FIELD (typically a user) has that attribute's."""
+    from django.db import models
+
+    from .predicates import registered_tenant_field
+
+    pk = _related_pk(value)
+    if pk is None:
+        return None
+    if _same_model(target, tenant_model):
+        return pk
+    tenant_field = registered_tenant_field(target)
+    if tenant_field:
+        return (
+            target._base_manager.filter(pk=pk)
+            .values_list(tenant_field, flat=True)
+            .first()
+        )
+    if tenant_user_field and hasattr(target, tenant_user_field):
+        from .predicates import user_tenant_value
+
+        if not isinstance(value, models.Model):
+            value = target._base_manager.filter(pk=pk).first()
+        return _related_pk(user_tenant_value(value))
+    return None
 
 
 def _role_filters_writes(request):
@@ -919,7 +1089,9 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         model = getattr(getattr(self, "Meta", None), "model", None)
         if model is None or not hasattr(model, "turbodrf"):
             return attrs
-        config = model.turbodrf()
+        from .mixins import _model_config
+
+        config = _model_config(model)
         if not (isinstance(config, dict) and config.get("full_clean")):
             return attrs
 
@@ -1197,10 +1369,14 @@ class TurboDRFSerializerFactory:
         nested_fields_meta = nested_fields if nested_fields else {}
 
         # Generate unique ref_name for swagger schema generation
+        from .scope import TENANT, current_scope
+
         fields_hash = hashlib.md5(",".join(sorted(all_fields)).encode()).hexdigest()[:8]
         app_label = model_class._meta.app_label
         model_name = model_class._meta.model_name
         ref_name_value = f"{app_label}_{model_name}_{view_type}_{fields_hash}"
+        if current_scope() != TENANT:
+            ref_name_value = f"{current_scope()}_{ref_name_value}"
 
         # Store snapshot for use in create/update methods
         snapshot_to_use = snapshot
