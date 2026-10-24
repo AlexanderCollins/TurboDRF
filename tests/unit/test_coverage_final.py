@@ -26,7 +26,7 @@ Targets:
 
 from decimal import Decimal
 from io import StringIO
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -970,17 +970,17 @@ class TestSerializeM2MException(TestCase):
                 _nested_fields = {"categories": ["categories__name"]}
 
         serializer = BrokenM2MSerializer(self.article)
-        # Patch the categories manager to raise
+        # Make loading the relation raise
         with patch.object(
-            type(self.article),
-            "categories",
-            new_callable=PropertyMock,
-            return_value=None,
+            BrokenM2MSerializer,
+            "_prefetch_to_many",
+            side_effect=Exception("db error"),
         ):
-            data = serializer.data
+            result = serializer._serialize_m2m_field(
+                self.article, "categories", ["categories__name"]
+            )
         # Should return empty list, not crash
-        self.assertIn("categories", data)
-        self.assertEqual(data["categories"], [])
+        self.assertEqual(result, [])
 
 
 # ---------------------------------------------------------------------------

@@ -7,18 +7,24 @@ the caller has no read rule for, any query it cares to run. So every property
 is computed on a sandbox copy of the row:
 
 - The row is loaded with only the columns the caller may read. Every other
-  column is deferred, and loading it is a query.
+  column is deferred, and loading it is a query. A column loaded anyway while
+  the row is built (by a ``post_init`` handler, say) is dropped again.
 - The relations the model names in ``property_relations`` are loaded first,
   each hop within the caller's scope (the target's own ``tenant_field`` and
   predicates, as for a nested ``__`` field) and with only the target columns
   the caller may read. An out-of-scope FK target reads as ``None``; an
-  out-of-scope row is missing from a reverse or many-to-many relation.
-- While the property runs, every database query raises.
+  out-of-scope row is missing from a reverse or many-to-many relation. A hop
+  isn't loaded when the caller can't read its target model or the column it
+  joins on.
+- While the property runs, every database query raises. Its result is turned
+  into plain data (dicts, lists, scalars) before the sandbox closes, so a
+  queryset or generator nested in it can't run later.
 
 A property that needs anything else (an unreadable column, an undeclared
-relation, a query of its own) fails, and is left out of the response and
-logged, like any property that raises. ``unscoped_properties`` opts a property
-out: it runs on the full instance with unrestricted database access.
+relation, a query of its own) or returns a model instance fails, and is left
+out of the response and logged, like any property that raises.
+``unscoped_properties`` opts a property out: it runs on the full instance with
+unrestricted database access.
 
 Config::
 
@@ -26,14 +32,24 @@ Config::
     'unscoped_properties': ['legacy_total'],
 """
 
-import inspect
+import datetime
+import decimal
+import ipaddress
 import logging
+import uuid
+from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager
 
-from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
+from django.core.exceptions import (
+    FieldDoesNotExist,
+    ImproperlyConfigured,
+    ObjectDoesNotExist,
+)
 from django.db import models
 from django.db.models import Prefetch, prefetch_related_objects
 from django.db.models.fields.related import ForeignObjectRel
+from django.db.models.manager import BaseManager
+from django.utils.functional import Promise
 
 logger = logging.getLogger(__name__)
 
@@ -251,9 +267,8 @@ def validate_property_config(model):
 # --------------------------------------------------------------------------
 
 
-def _readable_columns(model, user, bypassed):
+def _readable_columns(model, snapshot_for, bypassed):
     """Concrete field names of ``model`` the caller may read."""
-    from .backends import build_permission_snapshot
     from .validation import is_field_path_sensitive
 
     names = [
@@ -263,15 +278,14 @@ def _readable_columns(model, user, bypassed):
     ]
     if bypassed:
         return set(names)
-    snapshot = build_permission_snapshot(user, model)
+    snapshot = snapshot_for(model)
     return {name for name in names if snapshot.can_read_field(name)}
 
 
-def _hop_readable(model, field, user, bypassed):
+def _hop_readable(model, field, snapshot_for, bypassed):
     """May the caller follow ``field`` from ``model``? Same rule as a nested
     ``__`` field: an explicit read rule if the field has one, else
-    model-level read."""
-    from .backends import build_permission_snapshot
+    model-level read; and the caller must be able to read the target model."""
     from .validation import is_field_path_sensitive
 
     names = {field.name}
@@ -281,14 +295,38 @@ def _hop_readable(model, field, user, bypassed):
         return False
     if bypassed:
         return True
-    snapshot = build_permission_snapshot(user, model)
+    snapshot = snapshot_for(model)
     if snapshot.has_read_rule(field.name):
-        return snapshot.can_read_field(field.name)
-    return snapshot.can_perform_action("read")
+        readable = snapshot.can_read_field(field.name)
+    else:
+        readable = snapshot.can_perform_action("read")
+    return readable and snapshot_for(field.related_model).can_perform_action("read")
 
 
-def _hop_queryset(field, target, request, user, bypassed):
-    """Scoped, column-restricted queryset for one hop's target rows."""
+def _join_column(field):
+    """The column of a hop's source row that its relation joins on."""
+    reverse = isinstance(field, ForeignObjectRel)
+    if not field.many_to_many:
+        return field.field.target_field if reverse else field
+    m2m = field.field if reverse else field
+    source_fk = m2m.m2m_reverse_field_name() if reverse else m2m.m2m_field_name()
+    return m2m.remote_field.through._meta.get_field(source_fk).target_field
+
+
+def _target_columns(field, target, readable):
+    """The columns of a hop's target rows to load: those the caller may read,
+    plus the join column (its value is already known from the source side)."""
+    columns = set(readable)
+    if isinstance(field, ForeignObjectRel) and not field.many_to_many:
+        columns.add(field.field.name)
+    elif not field.many_to_many and not isinstance(field, ForeignObjectRel):
+        columns.add(field.target_field.name)
+    columns.discard(target._meta.pk.name)
+    return columns
+
+
+def _hop_queryset(field, target, request, columns):
+    """Scoped queryset for one hop's target rows, loading only ``columns``."""
     from .validation import scoped_target_queryset
 
     # Django follows a single-valued relation without the default manager
@@ -297,15 +335,38 @@ def _hop_queryset(field, target, request, user, bypassed):
     manager = target._base_manager if single else target._default_manager
     scoped = scoped_target_queryset(target, request, base_manager=single)
     qs = manager.all() if scoped is None else manager.filter(pk__in=scoped.values("pk"))
-
-    columns = _readable_columns(target, user, bypassed)
-    # The join column: its value is already known from the source side.
-    if isinstance(field, ForeignObjectRel) and not field.many_to_many:
-        columns.add(field.field.name)
-    elif not field.many_to_many and not isinstance(field, ForeignObjectRel):
-        columns.add(field.target_field.name)
-    columns.discard(target._meta.pk.name)
     return qs.only(target._meta.pk.name, *columns)
+
+
+def _strip(rows, model, columns):
+    """Drop from ``rows`` every column but the pk and ``columns``: a
+    ``post_init`` handler or ``__init__`` can load a deferred column while a
+    row is built."""
+    keep = {model._meta.pk.attname}
+    keep.update(model._meta.get_field(name).attname for name in columns)
+    drop = [f.attname for f in model._meta.concrete_fields if f.attname not in keep]
+    for row in rows:
+        for attname in drop:
+            row.__dict__.pop(attname, None)
+
+
+def _loaded_rows(instances, lookup):
+    """The rows a prefetch loaded at ``lookup`` (``holding__portfolio``)
+    below ``instances``."""
+    rows = instances
+    for accessor in lookup.split("__"):
+        found = []
+        for row in rows:
+            try:
+                value = getattr(row, accessor)
+            except ObjectDoesNotExist:  # an empty reverse one-to-one
+                continue
+            if isinstance(value, BaseManager):
+                found.extend(value.all())
+            elif value is not None:
+                found.append(value)
+        rows = found
+    return rows
 
 
 # --------------------------------------------------------------------------
@@ -313,16 +374,55 @@ def _hop_queryset(field, target, request, user, bypassed):
 # --------------------------------------------------------------------------
 
 
-def _materialize(value):
-    """Evaluate lazy results inside the sandbox: a queryset or generator
-    returned by a property would otherwise query after it, unscoped."""
-    from django.db.models.manager import BaseManager
+# Values the JSON encoder renders without running any code of their own.
+_SCALARS = (
+    str,
+    int,
+    float,
+    bytes,
+    decimal.Decimal,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+    uuid.UUID,
+    ipaddress.IPv4Address,
+    ipaddress.IPv6Address,
+    ipaddress.IPv4Network,
+    ipaddress.IPv6Network,
+    ipaddress.IPv4Interface,
+    ipaddress.IPv6Interface,
+)
 
+
+def _plain(value):
+    """``value`` as plain data (dicts, lists, scalars), evaluated now: a
+    queryset, manager, generator or other iterable anywhere in a property's
+    result would otherwise run when the response is encoded, after the
+    sandbox, unscoped. A model instance, or anything else the encoder can't
+    render, fails the property."""
+    if value is None or isinstance(value, _SCALARS):
+        return value
+    if isinstance(value, Promise):
+        return str(value)
+    if isinstance(value, models.Model):
+        raise TypeError(
+            f"a @property can't return a model instance "
+            f"({type(value).__name__}); return the fields it needs"
+        )
+    if hasattr(value, "tolist"):  # numpy, as DRF's encoder renders it
+        return _plain(value.tolist())
     if isinstance(value, BaseManager):
         value = value.all()
-    if isinstance(value, models.QuerySet) or inspect.isgenerator(value):
-        return list(value)
-    return value
+    if isinstance(value, Mapping):
+        plain = {}
+        for key, item in value.items():
+            if key is not None and not isinstance(key, (str, int, float)):
+                raise TypeError(f"a @property returned a {type(key).__name__} key")
+            plain[key] = _plain(item)
+        return plain
+    if hasattr(value, "__iter__"):
+        return [_plain(item) for item in value]
+    raise TypeError(f"a @property returned a {type(value).__name__}")
 
 
 def _log_failure(model, name, exc):
@@ -335,7 +435,7 @@ def _log_failure(model, name, exc):
 def evaluate(instance, name, getter):
     """``(True, value)``, or ``(False, None)`` if the property raised."""
     try:
-        return True, _materialize(getter(instance))
+        return True, _plain(getter(instance))
     except Exception as exc:
         _log_failure(type(instance), name, exc)
         return False, None
@@ -344,6 +444,7 @@ def evaluate(instance, name, getter):
 def sandboxed_values(model, pks, getters, request):
     """``{pk: {property: value}}`` for the rows ``pks``, each property computed
     in the sandbox. A property that fails is left out of its row's dict."""
+    from .backends import build_permission_snapshot
     from .permissions import permissions_bypassed
 
     pks = list(dict.fromkeys(pk for pk in pks if pk is not None))
@@ -353,37 +454,62 @@ def sandboxed_values(model, pks, getters, request):
 
     user = getattr(request, "user", None) if request is not None else None
     bypassed = permissions_bypassed()
+    snapshots = {}
+    readable = {}
+
+    def snapshot_for(target):
+        if target not in snapshots:
+            snapshots[target] = build_permission_snapshot(user, target)
+        return snapshots[target]
+
+    def columns_of(target):
+        if target not in readable:
+            readable[target] = _readable_columns(target, snapshot_for, bypassed)
+        return readable[target]
 
     relations = property_relations(model)
-    lookups = {}
+    lookups = {}  # lookup -> (target model, columns it loads, queryset)
     for name in getters:
         for path in relations.get(name) or ():
             if not _within_depth(path):
                 continue
             prefix = []
             for source, field, accessor, target in relation_hops(model, path):
-                if not _hop_readable(source, field, user, bypassed):
+                if not _hop_readable(source, field, snapshot_for, bypassed):
+                    break
+                # The prefetch reads the join column off each source row.
+                join = _join_column(field).name
+                if join != source._meta.pk.name and join not in columns_of(source):
                     break
                 prefix.append(accessor)
                 lookup = "__".join(prefix)
                 if lookup not in lookups:
-                    lookups[lookup] = _hop_queryset(
-                        field, target, request, user, bypassed
-                    )
-    prefetches = [
-        Prefetch(lookup, queryset=lookups[lookup])
-        for lookup in sorted(lookups, key=lambda key: (key.count("__"), key))
-    ]
+                    columns = _target_columns(field, target, columns_of(target))
+                    queryset = _hop_queryset(field, target, request, columns)
+                    lookups[lookup] = (target, columns, queryset)
+    ordered = sorted(lookups, key=lambda key: (key.count("__"), key))
+    prefetches = [Prefetch(lookup, queryset=lookups[lookup][2]) for lookup in ordered]
 
     pk_name = model._meta.pk.name
-    columns = _readable_columns(model, user, bypassed) - {pk_name}
+    columns = columns_of(model) - {pk_name}
     for start in range(0, len(pks), _BATCH_SIZE):
         batch = pks[start : start + _BATCH_SIZE]
         instances = list(
             model._base_manager.filter(pk__in=batch).only(pk_name, *columns)
         )
+        # Building a row can load more than the sandbox allows (a post_init
+        # handler reading a deferred column or a related object): drop it
+        # before the scoped prefetch, which skips a relation already cached.
+        _strip(instances, model, columns)
+        for instance in instances:
+            instance._state.fields_cache.clear()
+            instance.__dict__.pop("_prefetched_objects_cache", None)
         if prefetches:
             prefetch_related_objects(instances, *prefetches)
+            with queries_blocked():
+                for lookup in ordered:
+                    target, target_columns, _queryset = lookups[lookup]
+                    _strip(_loaded_rows(instances, lookup), target, target_columns)
         with queries_blocked():
             for instance in instances:
                 row = results.setdefault(instance.pk, {})

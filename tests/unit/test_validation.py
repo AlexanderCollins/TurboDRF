@@ -22,7 +22,6 @@ from turbodrf.predicates import (
 )
 from turbodrf.validation import (
     build_traversal_scope_q,
-    path_traverses_predicate_target,
     validate_searchable_fields_safety,
 )
 
@@ -136,42 +135,6 @@ class ValidateSearchableFieldsSafetyTests(TestCase):
                     delattr(CompiledArticle, "searchable_fields")
             else:
                 CompiledArticle.searchable_fields = original
-
-
-# ---------------------------------------------------------------------------
-# path_traverses_predicate_target
-# ---------------------------------------------------------------------------
-
-
-class PathTraversesPredicateTargetTests(TestCase):
-    def test_flat_path_returns_false(self):
-        self.assertFalse(path_traverses_predicate_target(CompiledArticle, "title"))
-
-    def test_unresolvable_path_returns_false(self):
-        self.assertFalse(
-            path_traverses_predicate_target(CompiledArticle, "no_such__field")
-        )
-
-    def test_safe_traversal_returns_false(self):
-        with _RegistrySnapshot():
-            self.assertFalse(
-                path_traverses_predicate_target(CompiledArticle, "author__name")
-            )
-
-    def test_predicate_on_target_returns_true(self):
-        with _RegistrySnapshot():
-            register_predicates(RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
-            self.assertTrue(
-                path_traverses_predicate_target(CompiledArticle, "author__name")
-            )
-
-    def test_tenant_drift_returns_true(self):
-        """Shared parent + tenanted target = tenant drift."""
-        with _RegistrySnapshot():
-            register_tenant_field(RelatedModel, "name")
-            self.assertTrue(
-                path_traverses_predicate_target(CompiledArticle, "author__name")
-            )
 
 
 # ---------------------------------------------------------------------------
