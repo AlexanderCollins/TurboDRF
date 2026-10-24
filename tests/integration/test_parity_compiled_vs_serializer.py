@@ -1267,8 +1267,8 @@ class TestQueryParams(ParityHarness):
         )
 
     def test_ordering_by_m2m(self):
-        # Role users may order by an M2M (it's in readable_fields): both paths
-        # duplicate rows identically.
+        # An M2M isn't orderable (the JOIN repeated rows): both paths ignore
+        # the term identically.
         self.assertParity(
             self.parity(
                 ParityAllTypes,

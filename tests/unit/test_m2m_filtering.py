@@ -84,8 +84,9 @@ class TestManyToManyFiltering(TestCase):
 
         filterset_fields = viewset.get_filterset_fields()
 
-        # Categories should have exact, in, and isnull lookups
-        self.assertEqual(filterset_fields.get("categories"), ["exact", "in", "isnull"])
+        # Categories filter by a target pk only (`in` never matched, `isnull`
+        # JOINed the link table unscoped)
+        self.assertEqual(filterset_fields.get("categories"), ["exact"])
 
     def test_get_filterset_fields_includes_regular_and_m2m(self):
         """Test that filterset includes both regular and M2M fields."""
@@ -260,4 +261,4 @@ class TestManyToManyFieldDetection(TestCase):
         # Verify they have appropriate lookups
         self.assertIn("icontains", filterset_fields["title"])
         self.assertIn("gte", filterset_fields["price"])
-        self.assertEqual(filterset_fields["categories"], ["exact", "in", "isnull"])
+        self.assertEqual(filterset_fields["categories"], ["exact"])

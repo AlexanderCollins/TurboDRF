@@ -1128,7 +1128,7 @@ class TestCompiledRegression(TestCase):
             req.user = AnonymousUser()
             viewset.request = req
 
-            readable = viewset._get_compiled_readable_fields(req)
+            readable = viewset._authorized_readable_fields(req)
             if readable is None:
                 self.fail("REGRESSION: anon user with guest role still returns None.")
             self.assertIn("title", readable)

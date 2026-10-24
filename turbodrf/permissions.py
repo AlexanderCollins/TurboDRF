@@ -63,7 +63,14 @@ class TurboDRFPermission(BasePermission):
         }
 
     Special Cases:
-        - Unauthenticated users are allowed read-only access (GET requests)
+        - Unauthenticated callers are refused, except for GET / HEAD /
+          OPTIONS on a model with ``public_access: True`` (field rules still
+          bind them; see backends._grants_public_read).
+        - Authenticated users need a role, and that role's model-level
+          permission, on every model — ``public_access`` included. An
+          authenticated caller's rows are scoped by their tenant and the
+          model's predicates, so they may see rows an anonymous caller never
+          does: only a role grants that.
         - Users must have a 'roles' property that returns a list of role names
     """
 

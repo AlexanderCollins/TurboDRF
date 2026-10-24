@@ -5,11 +5,29 @@ Returns a self-describing JSON for `OPTIONS /api/<endpoint>/` covering:
 - per-field metadata gated by read permission
 - allowed CRUD actions
 - search / ordering / filterable fields (already permission-filtered)
-- tenancy info (tenant_field, predicate summary)
 - pagination capability
 """
 
+from django.conf import settings
 from rest_framework.metadata import SimpleMetadata
+
+# CRUD action -> (HTTP method that routes it, model-level permission).
+_ACTIONS = (
+    ("list", "get", "read"),
+    ("retrieve", "get", "read"),
+    ("create", "post", "create"),
+    ("update", "put", "update"),
+    ("partial_update", "patch", "update"),
+    ("destroy", "delete", "delete"),
+)
+
+# Model-level permission -> Django's model permission codename prefix.
+_DJANGO_PERMS = {
+    "read": "view",
+    "create": "add",
+    "update": "change",
+    "delete": "delete",
+}
 
 
 class TurboDRFMetadata(SimpleMetadata):
@@ -22,30 +40,51 @@ class TurboDRFMetadata(SimpleMetadata):
             return metadata
 
         model = view.model
-        view_type = (
-            "detail"
-            if view.action in ["retrieve", "update", "partial_update"]
-            else "list"
+        # DRF sets action="metadata" for OPTIONS: the route (a lookup in the
+        # URL) says whether this describes the detail view.
+        lookup = getattr(view, "lookup_url_kwarg", None) or getattr(
+            view, "lookup_field", "pk"
         )
-        fields = model.get_api_fields(view_type)
+        detail = lookup in (getattr(view, "kwargs", None) or {}) or view.action in (
+            "retrieve",
+            "update",
+            "partial_update",
+            "destroy",
+        )
+        view_type = "detail" if detail else "list"
+        # The serializer's own field resolution (an `"__all__"` config includes
+        # M2M fields).
+        configured = getattr(view, "_configured_view_fields", None)
+        if callable(configured):
+            fields = configured(view_type)
+        else:
+            fields = model.get_api_fields(view_type)
+        if not isinstance(fields, list):
+            fields = []
 
         # Build snapshot once and reuse for read/write checks
         snapshot = self._get_snapshot(request, model)
+        user = getattr(request, "user", None)
 
         metadata["model"] = {
             "name": str(model._meta.verbose_name),
             "app_label": model._meta.app_label,
-            "fields": self._get_field_metadata(model, fields, request.user, snapshot),
+            "fields": self._get_field_metadata(model, fields, user, snapshot),
         }
-        metadata["actions"] = self._get_allowed_actions(model, request.user, snapshot)
+        metadata["actions"] = self._get_allowed_actions(model, user, snapshot, view)
 
         # New: capability metadata so frontends can introspect what the
         # endpoint supports without reading source.
         metadata["capabilities"] = self._get_capabilities(view, request)
-        metadata["tenancy"] = self._get_tenancy_info(model)
         metadata["pagination"] = self._get_pagination_info(view)
 
         return metadata
+
+    def determine_actions(self, request, view):
+        """Nothing: TurboDRF describes the actions itself (determine_metadata).
+        DRF's version runs the permission checks, ``get_object()`` and the
+        serializer for every write method, only to be replaced."""
+        return {}
 
     def _get_snapshot(self, request, model):
         """Get the user's permission snapshot for this model, or None."""
@@ -95,8 +134,7 @@ class TurboDRFMetadata(SimpleMetadata):
                         can_read = snapshot.can_read_field(field_name)
                         can_write = snapshot.can_write_field(field_name)
                     else:
-                        # No permission system in play (anon w/o guest, or
-                        # perms disabled): assume both
+                        # Permissions bypassed: assume both
                         can_read = True
                         can_write = True
 
@@ -127,29 +165,48 @@ class TurboDRFMetadata(SimpleMetadata):
 
         return field_metadata
 
-    def _get_allowed_actions(self, model, user, snapshot):
-        """Allowed CRUD actions for the calling user.
-
-        Uses the snapshot's allowed_actions (which already applies the
-        permission system uniformly).
+    def _get_allowed_actions(self, model, user, snapshot, view=None):
+        """Allowed CRUD actions for the calling user: those the viewset routes
+        (a ``read_only`` resource or an ``http_methods`` allow-list has no
+        route for the others) that the caller's permissions allow — the
+        snapshot's model-level actions; Django's model permissions with
+        ``TURBODRF_USE_DEFAULT_PERMISSIONS``; every action with
+        ``TURBODRF_DISABLE_PERMISSIONS``.
         """
-        if snapshot is None:
-            # Permissions disabled or default Django perms — allow all
-            return {
-                "list": True,
-                "retrieve": True,
-                "create": True,
-                "update": True,
-                "partial_update": True,
-                "destroy": True,
-            }
+        if view is not None:
+            methods = {m.lower() for m in getattr(view, "http_method_names", ())}
+            read_only = getattr(view, "_read_only", False)
+        else:
+            methods = {method for _name, method, _perm in _ACTIONS}
+            read_only = False
+
+        if snapshot is not None:
+            allowed = snapshot.can_perform_action
+        elif getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False) or not getattr(
+            settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False
+        ):
+
+            def allowed(perm):
+                return True
+
+        else:
+
+            def allowed(perm):
+                # As DefaultDjangoPermission: anonymous callers read a
+                # public_access model, and nothing else.
+                if user is None or not user.is_authenticated:
+                    config = model.turbodrf()
+                    return perm == "read" and bool(config.get("public_access"))
+                return user.has_perm(
+                    f"{model._meta.app_label}."
+                    f"{_DJANGO_PERMS[perm]}_{model._meta.model_name}"
+                )
+
         return {
-            "list": snapshot.can_perform_action("read"),
-            "retrieve": snapshot.can_perform_action("read"),
-            "create": snapshot.can_perform_action("create"),
-            "update": snapshot.can_perform_action("update"),
-            "partial_update": snapshot.can_perform_action("update"),
-            "destroy": snapshot.can_perform_action("delete"),
+            name: method in methods
+            and (perm == "read" or not read_only)
+            and allowed(perm)
+            for name, method, perm in _ACTIONS
         }
 
     def _get_capabilities(self, view, request):
@@ -184,29 +241,6 @@ class TurboDRFMetadata(SimpleMetadata):
         cap["client_fields_param"] = "fields"
 
         return cap
-
-    def _get_tenancy_info(self, model):
-        """Tenancy and predicate summary for the model.
-
-        Lets the frontend know whether the model is tenant-scoped, what
-        predicates apply, and whether they need to send a tenant FK on
-        write (or whether it's auto-filled). Does not leak the user's
-        actual tenant value — just the structure."""
-        from .predicates import get_predicates, get_tenant_field
-
-        tenant_field = get_tenant_field(model)
-        predicates = get_predicates(model)
-
-        config = model.turbodrf() if hasattr(model, "turbodrf") else {}
-        is_shared = config.get("tenancy") == "shared"
-
-        info = {
-            "tenant_field": tenant_field,
-            "scoped": tenant_field is not None or bool(predicates),
-            "shared": is_shared,
-            "predicates": [type(p).__name__ for p in predicates],
-        }
-        return info
 
     def _get_pagination_info(self, view):
         """Pagination knobs the client can use."""
