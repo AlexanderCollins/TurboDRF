@@ -21,7 +21,7 @@ from turbodrf.validation import (
 )
 
 # ---------------------------------------------------------------------------
-# Mixin tests: get_api_fields, get_field_type
+# Mixin tests: get_api_fields
 # ---------------------------------------------------------------------------
 
 
@@ -80,61 +80,6 @@ class TestGetApiFields(TestCase):
         """Calling get_api_fields() with no arg defaults to 'list'."""
         fields = SampleModel.get_api_fields()
         self.assertEqual(fields, ["title", "price", "related__name", "is_active"])
-
-
-class TestGetFieldType(TestCase):
-    """Test TurboDRFMixin.get_field_type for FK traversal and edge cases."""
-
-    def test_simple_field(self):
-        """Direct field returns the field instance."""
-        field = SampleModel.get_field_type("title")
-        self.assertIsNotNone(field)
-        self.assertEqual(field.name, "title")
-
-    def test_fk_nested_field(self):
-        """FK traversal returns the remote field."""
-        field = SampleModel.get_field_type("related__name")
-        self.assertIsNotNone(field)
-        self.assertEqual(field.name, "name")
-
-    def test_nonexistent_leaf_field(self):
-        """Invalid final field returns None."""
-        result = SampleModel.get_field_type("related__nonexistent")
-        self.assertIsNone(result)
-
-    def test_nonexistent_intermediate_field(self):
-        """Invalid intermediate relationship returns None."""
-        result = SampleModel.get_field_type("bogus__name")
-        self.assertIsNone(result)
-
-    def test_non_relational_intermediate_raises(self):
-        """A non-relational field with related_model=None in the middle causes error.
-
-        CharField has related_model=None, so hasattr returns True but the
-        model gets set to None, causing AttributeError on the next step.
-        """
-        with self.assertRaises(AttributeError):
-            SampleModel.get_field_type("title__something")
-
-    def test_deeper_nesting(self):
-        """Two-level traversal: article -> author (FK) -> name."""
-        field = ArticleWithCategories.get_field_type("author__name")
-        self.assertIsNotNone(field)
-        self.assertEqual(field.name, "name")
-
-    def test_single_field_no_parts(self):
-        """Single field path with no __ still works."""
-        field = RelatedModel.get_field_type("description")
-        self.assertIsNotNone(field)
-        self.assertEqual(field.name, "description")
-
-
-# Note: tests for the removed `create_options_metadata` helper used to
-# live here. The helper was deleted along with `turbodrf/utils.py` because
-# it was never used in production — `metadata.py:TurboDRFMetadata` is the
-# real implementation, and it's covered by `test_coverage_swagger.py`
-# (TestTurboDRFMetadata). One orphan test (test_multiple_nested_fields_same_base)
-# also referenced the deleted helper and was removed with it.
 
 
 # ---------------------------------------------------------------------------

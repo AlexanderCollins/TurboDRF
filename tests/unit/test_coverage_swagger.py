@@ -185,48 +185,45 @@ class TestRoleBasedSchemaGeneratorGetSchema(TestCase):
 
 
 class TestGetEndpointsFiltering(TestCase):
-    """Test get_endpoints no-slash filtering."""
+    """The no-slash duplicates are dropped by URL name, in the enumerator
+    (the only drf-yasg hook that sees the URL name). Real drf-yasg output is
+    checked in tests/integration/test_review_schema.py."""
 
-    def test_filters_no_slash_callbacks(self):
+    def _enumerator(self):
+        from turbodrf.swagger import _NoSlashEndpointEnumerator
+
         gen = RoleBasedSchemaGenerator(
             info=openapi.Info(title="T", default_version="v1")
         )
-        regular_cb = MagicMock()
-        regular_cb.cls._basename = "sample"
-        regular_cb.actions = {"get": "list"}
-        regular_cb.name = "sample-list"
-        no_slash_cb = MagicMock()
-        no_slash_cb.cls._basename = "sample"
-        no_slash_cb.actions = {"get": "list"}
-        no_slash_cb.name = "sample-list_no_slash"
-        fake_eps = [
-            ("/api/samples/", "regex", "get", regular_cb),
-            ("/api/samples", "regex", "get", no_slash_cb),
-        ]
-        with patch.object(
-            RoleBasedSchemaGenerator.__bases__[0],
-            "get_endpoints",
-            return_value=fake_eps,
-        ):
-            result = gen.get_endpoints(request=None)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0][0], "/api/samples/")
+        self.assertIs(gen.endpoint_enumerator_class, _NoSlashEndpointEnumerator)
+        return _NoSlashEndpointEnumerator(patterns=[], urlconf=None)
 
-    def test_preserves_callbacks_without_name(self):
-        gen = RoleBasedSchemaGenerator(
-            info=openapi.Info(title="T", default_version="v1")
+    def _callback(self):
+        from turbodrf.router import TurboDRFRouter
+
+        router = TurboDRFRouter()
+        prefix, viewset, basename = router.registry[0]
+        return viewset.as_view({"get": "list"})
+
+    def test_filters_no_slash_url_names(self):
+        enumerator = self._enumerator()
+        cb = self._callback()
+        self.assertTrue(
+            enumerator.should_include_endpoint("/api/samples/", cb, "", "", "s-list")
         )
-        cb = MagicMock()
-        cb.cls._basename = "x"
-        cb.actions = {}
-        cb.name = None
-        with patch.object(
-            RoleBasedSchemaGenerator.__bases__[0],
-            "get_endpoints",
-            return_value=[("/api/x/", "r", "get", cb)],
-        ):
-            result = gen.get_endpoints(request=None)
-        self.assertEqual(len(result), 1)
+        self.assertFalse(
+            enumerator.should_include_endpoint(
+                "/api/samples", cb, "", "", "s-list_no_slash"
+            )
+        )
+
+    def test_preserves_endpoints_without_name(self):
+        enumerator = self._enumerator()
+        self.assertTrue(
+            enumerator.should_include_endpoint(
+                "/api/x/", self._callback(), "", "", None
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +350,8 @@ class TestSwaggerAutoSchemaRequestSerializer(TestCase):
 
         fake_action.kwargs = {"serializer_class": DummySerializer}
         viewset.my_custom = fake_action
+        # The router hands @action(serializer_class=...) to the view instance.
+        viewset.serializer_class = DummySerializer
         viewset.action = "my_custom"
         request = self.factory.post("/api/samplemodels/my_custom/")
         viewset.request = request

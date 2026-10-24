@@ -3,17 +3,57 @@ Role mapping utilities for TurboDRF django-allauth integration.
 
 Provides helper functions for creating and managing role groups,
 syncing groups to roles, and validating role mappings.
+
+The helpers that go from a role to Django groups (and back) follow
+``TURBODRF_ALLAUTH_ROLE_MAPPING`` and ``TURBODRF_ALLAUTH_STRICT_ROLES``
+exactly as :func:`turbodrf.integrations.allauth.get_user_roles_from_groups`
+does, so a group they create or assign really gives the role, and a user
+they report as holding a role really holds it:
+
+- No mapping configured: a group gives the role of the same name.
+- A mapping, strict (default): only the mapped groups give roles.
+- A mapping, ``TURBODRF_ALLAUTH_STRICT_ROLES = False``: the mapped groups,
+  plus an unmapped group under its own name.
 """
 
+from django.conf import settings
 from django.contrib.auth.models import Group
+
+from .allauth import get_role_mapping, get_user_roles_from_groups
+
+
+def _group_names_for_role(role_name):
+    """The Django group names whose members get ``role_name``: the mapping
+    inverted, in mapping order. Empty when no group can give the role
+    (strict mode, and no mapped group maps to it)."""
+    mapping = get_role_mapping() or {}
+    if not mapping:
+        return [role_name]
+    names = [group for group, role in mapping.items() if role == role_name]
+    strict = getattr(settings, "TURBODRF_ALLAUTH_STRICT_ROLES", True)
+    if not strict and role_name not in mapping and role_name not in names:
+        # Passthrough: an unmapped group named after the role gives it.
+        names.append(role_name)
+    return names
+
+
+def _group_name_for_role(role_name):
+    names = _group_names_for_role(role_name)
+    if not names:
+        raise ValueError(
+            f"No Django group gives the TurboDRF role {role_name!r}: it isn't a "
+            f"value in TURBODRF_ALLAUTH_ROLE_MAPPING (and strict mode drops "
+            f"unmapped groups). Add a group for it to the mapping."
+        )
+    return names[0]
 
 
 def create_role_groups(role_names):
     """
-    Create Django groups for standard TurboDRF roles.
+    Create the Django groups that give the TurboDRF roles ``role_names``.
 
-    This helper creates Group objects for each role name provided.
-    If a group already exists, it is skipped.
+    For each role, the first group the mapping maps to it (the role's own
+    name when no mapping is configured) is created if it doesn't exist.
 
     Args:
         role_names: List of role names to create groups for.
@@ -21,37 +61,38 @@ def create_role_groups(role_names):
     Returns:
         list: List of created/existing Group objects.
 
+    Raises:
+        ValueError: If no group can give one of the roles (strict mode,
+            role not a mapping value). Nothing is created then.
+
     Example:
         groups = create_role_groups(['admin', 'editor', 'viewer'])
         # Creates 3 groups if they don't exist
     """
-    created_groups = []
-
-    for role_name in role_names:
-        group, created = Group.objects.get_or_create(name=role_name)
-        created_groups.append(group)
-
-    return created_groups
+    group_names = [_group_name_for_role(role_name) for role_name in role_names]
+    return [Group.objects.get_or_create(name=name)[0] for name in group_names]
 
 
 def sync_groups_to_roles(user):
     """
-    Sync a user's Django groups to TurboDRF role format.
+    The TurboDRF roles a user's Django groups give.
 
-    This is a convenience function that extracts role names from
-    a user's group membership.
+    Same result as
+    :func:`turbodrf.integrations.allauth.get_user_roles_from_groups`: the
+    mapping and strict mode apply, so a group that gives no role isn't
+    reported as one.
 
     Args:
         user: Django user object with groups relationship.
 
     Returns:
-        list: List of role names (group names).
+        list: List of role names.
 
     Example:
         user.groups.add(Group.objects.get(name='admin'))
-        roles = sync_groups_to_roles(user)  # ['admin']
+        roles = sync_groups_to_roles(user)  # ['admin'] (no mapping)
     """
-    return [group.name for group in user.groups.all()]
+    return get_user_roles_from_groups(user)
 
 
 def validate_role_mapping(mapping):
@@ -123,30 +164,35 @@ def create_role_mapping(group_names, role_names=None):
 
 def get_or_create_role_group(role_name):
     """
-    Get or create a Django group for a role.
+    Get or create the Django group that gives a role.
 
-    Convenience function for getting/creating a single group.
+    The first group the mapping maps to ``role_name`` (the role's own name
+    when no mapping is configured).
 
     Args:
-        role_name: Name of the role/group.
+        role_name: Name of the TurboDRF role.
 
     Returns:
         tuple: (Group object, created boolean)
+
+    Raises:
+        ValueError: If no group can give the role (strict mode, role
+            not a mapping value).
 
     Example:
         admin_group, created = get_or_create_role_group('admin')
         if created:
             print("Created new admin group")
     """
-    return Group.objects.get_or_create(name=role_name)
+    return Group.objects.get_or_create(name=_group_name_for_role(role_name))
 
 
 def assign_roles_to_user(user, role_names):
     """
-    Assign roles to a user by adding them to corresponding groups.
+    Give a user exactly the roles ``role_names`` through group membership.
 
-    This helper clears existing groups and assigns new ones based on
-    the provided role names.
+    Clears the user's existing groups, then adds the group that gives each
+    role (see :func:`get_or_create_role_group`).
 
     Args:
         user: Django user object.
@@ -155,44 +201,54 @@ def assign_roles_to_user(user, role_names):
     Returns:
         list: List of Group objects the user was added to.
 
+    Raises:
+        ValueError: If no group can give one of the roles. The user's groups
+            are left untouched then.
+
     Example:
         assign_roles_to_user(user, ['admin', 'editor'])
-        # User is now in 'admin' and 'editor' groups
+        # User is now in the groups that give 'admin' and 'editor'
     """
+    # Resolve every role before touching the user's groups.
+    group_names = [_group_name_for_role(role_name) for role_name in role_names]
     # Clear existing groups
     user.groups.clear()
 
-    # Create/get groups and add user
     groups = []
-    for role_name in role_names:
-        group, _ = get_or_create_role_group(role_name)
+    for name in group_names:
+        group, _ = Group.objects.get_or_create(name=name)
         user.groups.add(group)
         groups.append(group)
 
+    # Roles the integration resolver cached on this instance are stale now.
+    from .roles import _CACHE_ATTR
+
+    getattr(user, "__dict__", {}).pop(_CACHE_ATTR, None)
     return groups
 
 
 def get_users_with_role(role_name):
     """
-    Get all users with a specific role.
+    Get all users the allauth integration gives a role.
+
+    Members of any group that gives ``role_name`` under the current mapping
+    and strict mode.
 
     Args:
         role_name: Name of the role to search for.
 
     Returns:
-        QuerySet: Users in the group with the given role name.
+        QuerySet: Matching users (empty when no group gives the role).
 
     Example:
         admins = get_users_with_role('admin')
         for admin in admins:
             print(admin.username)
     """
-    try:
-        group = Group.objects.get(name=role_name)
-        return group.user_set.all()
-    except Group.DoesNotExist:
-        # Return empty queryset if group doesn't exist
-        from django.contrib.auth import get_user_model
+    from django.contrib.auth import get_user_model
 
-        User = get_user_model()
-        return User.objects.none()
+    User = get_user_model()
+    group_names = _group_names_for_role(role_name)
+    if not group_names:
+        return User._default_manager.none()
+    return User._default_manager.filter(groups__name__in=group_names).distinct()

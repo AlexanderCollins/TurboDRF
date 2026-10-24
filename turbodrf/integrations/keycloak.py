@@ -13,7 +13,10 @@ Roles are read from the ``extra_data`` social-auth-app-django saved for the
 user's Keycloak association when they logged in. They are NOT re-read from a
 live token on each request, so they stay as they were at login until the
 user logs in again. Set ``TURBODRF_KEYCLOAK_MAX_ROLE_AGE`` to drop them once
-the stored ``auth_time`` is older than that many seconds.
+the stored ``auth_time`` is older than that many seconds. Note that
+social-auth's ``UserSocialAuth.refresh_token()`` resets ``auth_time`` to the
+refresh time while keeping the stored role claims, so the limit only bounds
+role age if your app doesn't refresh tokens that way.
 
 Setup:
 1. Install social auth: pip install social-auth-app-django
@@ -24,7 +27,9 @@ Setup:
 
 import importlib.util
 import logging
+import math
 import time
+import warnings
 
 from django.conf import settings
 
@@ -113,15 +118,17 @@ def get_max_role_age():
 
 def _roles_too_old(extra_data):
     """True when TURBODRF_KEYCLOAK_MAX_ROLE_AGE is set and the stored
-    ``auth_time`` is older than it. A missing or unreadable ``auth_time``
-    counts as too old (fail closed)."""
+    ``auth_time`` is older than it. A missing, unreadable or non-finite
+    (``nan`` / ``inf``) ``auth_time`` counts as too old (fail closed)."""
     max_age = get_max_role_age()
     if max_age is None:
         return False
     auth_time = extra_data.get("auth_time") if isinstance(extra_data, dict) else None
     try:
         age = time.time() - float(auth_time)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        age = math.nan
+    if not math.isfinite(age):
         logger.warning(
             "Keycloak roles dropped: TURBODRF_KEYCLOAK_MAX_ROLE_AGE is set but "
             "the stored social-auth data has no usable auth_time."
@@ -149,7 +156,8 @@ def extract_roles_from_token(token_claims):
         token_claims (dict): The ID token claims from the OpenID Connect provider.
 
     Returns:
-        list: List of role names from the token.
+        list: List of role names from the token. Entries that aren't
+        strings (objects, numbers, null) are dropped.
 
     Example:
         # Simple roles claim
@@ -174,7 +182,7 @@ def extract_roles_from_token(token_claims):
 
     # Current should now be a list of roles
     if isinstance(current, list):
-        return current
+        return [role for role in current if isinstance(role, str)]
     else:
         return []
 
@@ -196,17 +204,20 @@ def map_keycloak_roles_to_turbodrf(keycloak_roles):
       roles pass through under their original name.
 
     Args:
-        keycloak_roles (list): List of role names from Keycloak.
+        keycloak_roles (list): List of role names from Keycloak. Entries
+            that aren't strings are ignored (a dict would make the mapping
+            lookup raise).
 
     Returns:
         list: List of TurboDRF role names after mapping.
     """
     role_mapping = get_role_mapping()
     strict = getattr(settings, "TURBODRF_KEYCLOAK_STRICT_ROLES", True)
+    keycloak_roles = [role for role in keycloak_roles if isinstance(role, str)]
 
     if not role_mapping:
         # No mapping configured — passthrough
-        return list(keycloak_roles)
+        return keycloak_roles
 
     mapped_roles = []
     for role in keycloak_roles:
@@ -275,34 +286,19 @@ def get_user_roles_from_social_auth(user):
 
 class KeycloakRoleMiddleware:
     """
-    Middleware to add roles property to users authenticated via Keycloak.
+    Deprecated: does nothing. Remove it from ``MIDDLEWARE``.
 
-    This middleware populates the `roles` property on authenticated users
-    from the claims social-auth stored at login. It is a no-op unless
-    TURBODRF_KEYCLOAK_INTEGRATION is True.
+    When ``TURBODRF_KEYCLOAK_INTEGRATION`` is True at startup, TurboDRF
+    installs a ``roles`` resolver on the user model (see
+    turbodrf.integrations.roles), which gives every request its Keycloak
+    roles whatever authenticated it: session, token or JWT.
 
-    It runs before DRF authentication, so it only sees session-authenticated
-    users. Token/JWT-authenticated users get their roles from the resolver
-    TurboDRF installs on the user model at startup (see
-    turbodrf.integrations.roles).
-
-    Usage:
-        Add to MIDDLEWARE in settings.py:
-
-        MIDDLEWARE = [
-            ...
-            'turbodrf.integrations.keycloak.KeycloakRoleMiddleware',
-            ...
-        ]
-
-        Configure Keycloak integration:
-
-        TURBODRF_KEYCLOAK_INTEGRATION = True
-        TURBODRF_KEYCLOAK_ROLE_CLAIM = 'realm_access.roles'
-        TURBODRF_KEYCLOAK_ROLE_MAPPING = {
-            'realm-admin': 'admin',
-            'content-editor': 'editor',
-        }
+    This middleware used to write the roles onto ``request.user`` for
+    session requests only, shadowing the user model's own ``roles`` for
+    those requests (the same user could get different roles on a session
+    request and a token request), and it queried social-auth on every
+    session request, API or not, twice when the user had no roles. It now
+    passes requests straight through and warns once at startup.
     """
 
     def __init__(self, get_response):
@@ -312,34 +308,20 @@ class KeycloakRoleMiddleware:
         Args:
             get_response: Django's get_response callable.
         """
+        warnings.warn(
+            "turbodrf.integrations.keycloak.KeycloakRoleMiddleware is deprecated "
+            "and does nothing; remove it from MIDDLEWARE. With "
+            "TURBODRF_KEYCLOAK_INTEGRATION=True, the roles resolver TurboDRF "
+            "installs on the user model resolves Keycloak roles for every "
+            "request.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.get_response = get_response
 
     def __call__(self, request):
-        """
-        Process the request and add roles to user.
-
-        Args:
-            request: Django request object.
-
-        Returns:
-            Response from the next middleware/view.
-        """
-        if not is_integration_enabled():
-            return self.get_response(request)
-
-        # Add roles to authenticated users
-        if hasattr(request, "user") and request.user.is_authenticated:
-            # Check if user already has roles configured
-            if not hasattr(request.user, "roles") or not request.user.roles:
-                # Get roles from social auth
-                roles = get_user_roles_from_social_auth(request.user)
-
-                if roles:
-                    # Set roles in user dict to avoid conflicts with properties
-                    request.user.__dict__["roles"] = roles
-
-        response = self.get_response(request)
-        return response
+        """Pass the request through unchanged."""
+        return self.get_response(request)
 
 
 def setup_keycloak_integration():

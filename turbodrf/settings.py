@@ -1,6 +1,10 @@
 """
-Define role-based permissions here.
-Format: role_name -> list of permissions
+Fallback values for the TurboDRF settings that TurboDRF imports from here
+when your Django settings don't define them.
+
+Don't edit this module: set ``TURBODRF_*`` in your project's settings.py.
+Every setting and its default is listed in docs/settings_reference.md; the
+other settings' defaults live where they're read.
 """
 
 # Maximum nesting depth for nested fields and filters
@@ -8,32 +12,6 @@ Format: role_name -> list of permissions
 # WARNING: Values > 3 are UNSUPPORTED and may cause performance issues,
 # security risks, and unexpected behavior. Increase at your own risk.
 TURBODRF_MAX_NESTING_DEPTH = 3
-
-# ---------------------------------------------------------------------------
-# Row-level access control (predicate system)
-# ---------------------------------------------------------------------------
-# The tenant model that owns rows in your application (e.g. 'accounts.Brokerage').
-# When set, every TurboDRF model must declare its relationship to this model
-# via 'tenant_field', 'visibility', or 'tenancy': 'shared' — otherwise the
-# router refuses to register the endpoint at startup.
-TURBODRF_TENANT_MODEL = None
-
-# Attribute on request.user that resolves to the user's tenant (object or PK).
-# Required when TURBODRF_TENANT_MODEL is set. Example: 'brokerage' (so
-# request.user.brokerage returns the Brokerage instance).
-TURBODRF_TENANT_USER_FIELD = None
-
-# When True, the router refuses to register a model that has neither a tenancy
-# declaration ('tenant_field' / 'visibility') nor an explicit
-# 'tenancy': 'shared' opt-out. Forces deliberate decisions about row scope.
-# Recommended for new projects.
-TURBODRF_REQUIRE_TENANCY = True
-
-# When True, the router walks the FK graph at startup to fill in 'tenant_field'
-# automatically when not declared. Ambiguous paths (multiple shortest routes
-# to the tenant model) raise loudly rather than guessing. Default False —
-# explicit declarations are easier to reason about; opt in if you want it.
-TURBODRF_AUTODETECT_TENANT = False
 
 # Fields that are NEVER exposed via the API, regardless of configuration.
 # These are always stripped from responses and cannot be filtered on.
@@ -49,6 +27,10 @@ TURBODRF_SENSITIVE_FIELDS = [
     "session_key",
 ]
 
+# Placeholder used when TURBODRF_ROLES isn't set. It names no real model, so
+# it grants nothing: define your own roles.
+# Format: role_name -> list of "app_label.model_name.action" and
+# "app_label.model_name.field_name.read|write" permissions.
 TURBODRF_ROLES = {
     "super_admin": [
         # Model-level permissions (all models)

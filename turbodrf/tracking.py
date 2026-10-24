@@ -25,29 +25,58 @@ Usage:
 
     Values of keys in TURBODRF_SENSITIVE_FIELDS (passwords, tokens, API
     keys, ...) are masked in the logged request data and query parameters,
-    on top of drf-api-tracking's own masked keys.
+    on top of drf-api-tracking's own masked keys. That includes requests
+    rejected before DRF parsed the body (authentication, permission,
+    throttling or parse errors), whose raw body drf-api-tracking would
+    otherwise store as-is.
 
     View logs in Django admin under "API Request Logs" or query
     the APIRequestLog model programmatically.
 """
 
+import json
+import logging
 from functools import lru_cache
 
 from django.conf import settings
 
+logger = logging.getLogger(__name__)
+
+# drf-api-tracking's own masked key names (BaseLoggingMixin._clean_data).
+_TRACKING_BUILTIN_SENSITIVE = ("api", "token", "key", "secret", "password", "signature")
+
+
+def _is_tracking_app_installed():
+    """True when ``rest_framework_tracking`` is in INSTALLED_APPS. Importing
+    its mixins without the app installed raises RuntimeError (its models have
+    no app), which would break ``turbodrf.views`` at import."""
+    from django.apps import apps
+
+    return apps.is_installed("rest_framework_tracking")
+
 
 def is_tracking_enabled():
-    """Check if API tracking is enabled and available."""
+    """Check if API tracking is enabled and available.
+
+    True only when TURBODRF_ENABLE_TRACKING is set, drf-api-tracking is
+    importable AND ``rest_framework_tracking`` is in INSTALLED_APPS.
+    """
     if not getattr(settings, "TURBODRF_ENABLE_TRACKING", False):
         return False
 
     # Check if drf-api-tracking is installed
     try:
         import rest_framework_tracking  # noqa: F401
-
-        return True
     except ImportError:
         return False
+
+    if not _is_tracking_app_installed():
+        logger.warning(
+            "TURBODRF_ENABLE_TRACKING is True but 'rest_framework_tracking' is "
+            "not in INSTALLED_APPS; API request logging is off."
+        )
+        return False
+    return True
 
 
 def is_anonymous_tracking_enabled():
@@ -56,10 +85,12 @@ def is_anonymous_tracking_enabled():
 
 
 def get_sensitive_field_names():
-    """TurboDRF's sensitive-field deny-list (TURBODRF_SENSITIVE_FIELDS)."""
-    from .settings import TURBODRF_SENSITIVE_FIELDS as default_sensitive
+    """TurboDRF's sensitive-field deny-list: the defaults plus every name in
+    TURBODRF_SENSITIVE_FIELDS (the setting adds to the defaults, it never
+    replaces them)."""
+    from .validation import _get_sensitive_fields
 
-    return set(getattr(settings, "TURBODRF_SENSITIVE_FIELDS", default_sensitive))
+    return set(_get_sensitive_fields())
 
 
 @lru_cache(maxsize=None)
@@ -69,6 +100,11 @@ def build_tracking_mixin(logging_mixin):
     - Masks every name in TURBODRF_SENSITIVE_FIELDS (read at log time, so
       settings overrides apply) in addition to drf-api-tracking's built-in
       api/token/key/secret/password/signature list.
+    - Masks request bodies drf-api-tracking logged raw. It stores
+      ``request.body`` as text before DRF authenticates and parses the
+      request, and only replaces it with the masked, parsed data once that
+      succeeds; a request rejected at authentication, permission, throttling
+      or parsing kept its body unmasked.
     - Skips anonymous requests unless TURBODRF_TRACKING_ANONYMOUS is True.
     """
 
@@ -85,6 +121,39 @@ def build_tracking_mixin(logging_mixin):
                     return False
             parent = getattr(super(), "should_log", None)
             return parent(request, response) if parent is not None else True
+
+        def handle_log(self):
+            log = getattr(self, "log", None)
+            if isinstance(log, dict):
+                for key in ("data", "query_params"):
+                    if isinstance(log.get(key), (str, bytes)):
+                        log[key] = self._turbodrf_mask_raw_body(log[key])
+            return super().handle_log()
+
+        def _turbodrf_mask_raw_body(self, body):
+            """Mask a request body that was logged as raw text.
+
+            A JSON body is parsed and masked like parsed data. Any other body
+            (malformed JSON, form or multipart data, ...) is replaced entirely
+            when it mentions a sensitive name.
+            """
+            if isinstance(body, bytes):
+                body = body.decode(errors="replace")
+            try:
+                parsed = json.loads(body)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, (dict, list)):
+                return json.dumps(
+                    self._clean_data(parsed), ensure_ascii=False, default=str
+                )
+            lowered = body.lower()
+            sensitive = set(_TRACKING_BUILTIN_SENSITIVE) | {
+                str(name).lower() for name in self.sensitive_fields
+            }
+            if any(name in lowered for name in sensitive):
+                return getattr(self, "CLEANED_SUBSTITUTE", "********************")
+            return body
 
     TurboDRFLoggingMixin.__name__ = f"TurboDRF{logging_mixin.__name__}"
     TurboDRFLoggingMixin.__qualname__ = TurboDRFLoggingMixin.__name__

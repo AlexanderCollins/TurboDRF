@@ -1,15 +1,18 @@
 """
 TurboDRF django-allauth integration.
 
-Provides seamless integration between django-allauth authentication
-and TurboDRF's role-based permission system.
+Maps a user's Django groups to TurboDRF roles. With
+``TURBODRF_ALLAUTH_INTEGRATION = True`` at startup, TurboDRF installs a
+``roles`` resolver on the user model (turbodrf.integrations.roles) that uses
+:func:`get_user_roles_from_groups`, so every request gets the same roles
+whatever authenticated it. No middleware is needed.
 """
 
 import importlib.util
 import logging
+import warnings
 
 from django.conf import settings
-from django.contrib.auth.models import AnonymousUser
 
 logger = logging.getLogger(__name__)
 
@@ -105,29 +108,19 @@ def get_user_roles_from_groups(user):
 
 class AllAuthRoleMiddleware:
     """
-    Middleware to add roles property to authenticated users.
+    Deprecated: does nothing. Remove it from ``MIDDLEWARE``.
 
-    This middleware populates the `roles` property on authenticated users
-    based on their Django group membership. It is a no-op unless
-    TURBODRF_ALLAUTH_INTEGRATION is True.
+    When ``TURBODRF_ALLAUTH_INTEGRATION`` is True at startup, TurboDRF
+    installs a ``roles`` resolver on the user model (see
+    turbodrf.integrations.roles), which gives every request its group roles
+    whatever authenticated it: session, token or JWT.
 
-    The middleware respects existing `roles` properties, so if a user
-    already has roles defined (e.g., custom User model), they won't
-    be overridden.
-
-    It runs before DRF authentication, so it only sees session-authenticated
-    users. Token/JWT-authenticated users get their roles from the resolver
-    TurboDRF installs on the user model at startup (see
-    turbodrf.integrations.roles).
-
-    Usage:
-        Add to MIDDLEWARE in settings.py:
-
-        MIDDLEWARE = [
-            ...
-            'turbodrf.integrations.allauth.AllAuthRoleMiddleware',
-            ...
-        ]
+    This middleware used to write the roles onto ``request.user`` for
+    session requests only. That shadowed the user model's own ``roles`` for
+    those requests, so the same user could get different roles on a session
+    request and on a token request, and it queried the groups on every
+    session request, API or not. It now passes requests straight through and
+    warns once at startup.
     """
 
     def __init__(self, get_response):
@@ -137,48 +130,19 @@ class AllAuthRoleMiddleware:
         Args:
             get_response: Django's get_response callable.
         """
+        warnings.warn(
+            "turbodrf.integrations.allauth.AllAuthRoleMiddleware is deprecated "
+            "and does nothing; remove it from MIDDLEWARE. With "
+            "TURBODRF_ALLAUTH_INTEGRATION=True, the roles resolver TurboDRF "
+            "installs on the user model resolves group roles for every request.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.get_response = get_response
 
     def __call__(self, request):
-        """
-        Process the request and add roles to user.
-
-        Args:
-            request: Django request object.
-
-        Returns:
-            Response from the next middleware/view.
-        """
-        if not is_integration_enabled():
-            return self.get_response(request)
-
-        # Add roles to authenticated users
-        if hasattr(request, "user") and request.user.is_authenticated:
-            # Check if user already has _test_roles (used by test property)
-            # or if roles is already customized in __dict__
-            if (
-                not hasattr(request.user, "_test_roles")
-                and "roles" not in request.user.__dict__
-            ):
-                # Get roles from groups
-                roles = get_user_roles_from_groups(request.user)
-
-                # Set _test_roles if the User model uses that pattern
-                # This works with the test User model's roles property
-                if hasattr(request.user, "roles") and isinstance(
-                    getattr(type(request.user), "roles", None), property
-                ):
-                    # If roles is a property, set _test_roles which it checks first
-                    request.user._test_roles = roles
-                else:
-                    # Otherwise set roles directly in __dict__
-                    request.user.__dict__["roles"] = roles
-        elif hasattr(request, "user") and isinstance(request.user, AnonymousUser):
-            # Anonymous users get empty roles
-            request.user.__dict__["roles"] = []
-
-        response = self.get_response(request)
-        return response
+        """Pass the request through unchanged."""
+        return self.get_response(request)
 
 
 def setup_allauth_integration():

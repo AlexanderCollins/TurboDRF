@@ -20,8 +20,8 @@ def get_turbodrf_schema_view(
     title="TurboDRF API",
     version="v1",
     description="Auto-generated API with role-based access control powered by TurboDRF",
-    terms_of_service="https://www.example.com/terms/",
-    contact_email="contact@example.com",
+    terms_of_service=None,
+    contact_email=None,
     license_name="MIT License",
 ):
     """
@@ -36,8 +36,10 @@ def get_turbodrf_schema_view(
         title (str): The API title. Defaults to "TurboDRF API".
         version (str): The API version. Defaults to "v1".
         description (str): The API description. Defaults to auto-generated text.
-        terms_of_service (str): URL to terms of service. Defaults to example URL.
-        contact_email (str): Contact email for API support. Defaults to example email.
+        terms_of_service (str): URL to terms of service. Left out of the
+            schema unless given.
+        contact_email (str): Contact email for API support. Left out of the
+            schema unless given.
         license_name (str): License name. Defaults to "MIT License".
 
     Features:
@@ -103,7 +105,7 @@ def get_turbodrf_schema_view(
             default_version=version,
             description=description,
             terms_of_service=terms_of_service,
-            contact=openapi.Contact(email=contact_email),
+            contact=openapi.Contact(email=contact_email) if contact_email else None,
             license=openapi.License(name=license_name),
         ),
         # public=False: drf-yasg runs each endpoint's permission classes for
