@@ -513,7 +513,9 @@ def _platform_row_tenant(model, tenant_field, validated_data, instance):
         return pk, moved
     target = model._meta.get_field(hop).related_model
     return (
-        target._base_manager.filter(pk=pk).values_list(rest, flat=True).first(),
+        target._base_manager.filter(pk=pk)
+        .values_list(f"{rest}__pk", flat=True)
+        .first(),
         moved,
     )
 
@@ -534,9 +536,11 @@ def _platform_value_tenant(target, value, tenant_model, tenant_user_field):
         return pk
     tenant_field = registered_tenant_field(target)
     if tenant_field:
+        # The tenant's pk, not the FK column (a to_field FK stores another
+        # value).
         return (
             target._base_manager.filter(pk=pk)
-            .values_list(tenant_field, flat=True)
+            .values_list(f"{tenant_field}__pk", flat=True)
             .first()
         )
     if tenant_user_field and hasattr(target, tenant_user_field):
