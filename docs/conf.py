@@ -3,13 +3,34 @@
 # For the full list of built-in configuration values, see the documentation:
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
+import os
+import sys
+from importlib import metadata
+from pathlib import Path
+
+# autodoc imports turbodrf, which needs configured Django settings. Use the
+# test suite's settings, with the repository root on the path.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "tests.settings")
+
+import django  # noqa: E402
+
+django.setup()
+
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "TurboDRF"
 copyright = "2025, TurboDRF Team"
 author = "TurboDRF Team"
-release = "0.4.4"
+try:
+    release = metadata.version("turbodrf")
+except metadata.PackageNotFoundError:  # a checkout that isn't installed
+    import turbodrf
+
+    release = turbodrf.__version__
+version = ".".join(release.split(".")[:2])
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -40,7 +61,9 @@ napoleon_include_special_with_doc = True
 napoleon_use_admonition_for_examples = False
 napoleon_use_admonition_for_notes = False
 napoleon_use_admonition_for_references = False
-napoleon_use_ivar = False
+# Attributes sections as :ivar: fields, so they don't duplicate the
+# attributes autodoc documents.
+napoleon_use_ivar = True
 napoleon_use_param = True
 napoleon_use_rtype = True
 napoleon_preprocess_types = False
@@ -63,3 +86,9 @@ autodoc_default_options = {
     "undoc-members": True,
     "exclude-members": "__weakref__",
 }
+
+
+# Several turbodrf docstrings are plain text that isn't valid reST; autodoc
+# still renders them, but docutils reports their markup. The build runs with
+# -W, so skip those reports (Sphinx's own warnings still fail it).
+suppress_warnings = ["docutils"]

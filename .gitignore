@@ -26,6 +26,9 @@ MANIFEST
 *.manifest
 *.spec
 
+# Sphinx build output
+docs/_build/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -48,10 +51,10 @@ db.sqlite3-journal
 coverage.json
 example_project/cookies.txt
 
-# Internal security audit working notes (full version with exploitation
-# details). Public summary lives at docs/security_audit.md.
-SECURITY_AUDIT.md
-/tmp/turbodrf_pentest_report_*.md
+# Internal security audit working notes (root file only: on a
+# case-insensitive filesystem an unanchored pattern also matches
+# docs/security_audit.md).
+/SECURITY_AUDIT.md
 
 # Environments
 .env

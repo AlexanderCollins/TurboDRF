@@ -19,7 +19,7 @@ already uses allauth for session-based auth (typical for SSR Django
 projects with social login).
 
 ```bash
-pip install turbodrf[allauth]
+pip install "turbodrf[allauth]"
 ```
 
 ```python
@@ -31,12 +31,6 @@ INSTALLED_APPS = [
     'turbodrf',
 ]
 
-MIDDLEWARE = [
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'turbodrf.integrations.allauth.AllAuthRoleMiddleware',
-]
-
 TURBODRF_ALLAUTH_INTEGRATION = True   # default: False
 TURBODRF_ALLAUTH_ROLE_MAPPING = {
     'Administrators': 'admin',
@@ -46,10 +40,12 @@ TURBODRF_ALLAUTH_STRICT_ROLES = True  # default: True (recommended)
 ```
 
 When the integration is enabled, TurboDRF looks up the user's Django
-Groups, maps them via `TURBODRF_ALLAUTH_ROLE_MAPPING`, and exposes them as
-TurboDRF roles for the duration of the request. With
-`TURBODRF_ALLAUTH_INTEGRATION = False` the middleware does nothing, even if
-it's still listed in `MIDDLEWARE`.
+Groups, maps them via `TURBODRF_ALLAUTH_ROLE_MAPPING`, and uses them as the
+user's TurboDRF roles, whatever authenticated the request (see
+[How the integrations resolve roles](#how-the-integrations-resolve-roles)).
+
+`turbodrf.integrations.allauth.AllAuthRoleMiddleware` is deprecated: it does
+nothing, and you can remove it from `MIDDLEWARE`.
 
 ### Strict group mapping (default)
 
@@ -81,10 +77,6 @@ pip install social-auth-app-django
 
 ```python
 # settings.py
-MIDDLEWARE = [
-    'turbodrf.integrations.keycloak.KeycloakRoleMiddleware',
-]
-
 TURBODRF_KEYCLOAK_INTEGRATION = True   # default: False
 TURBODRF_KEYCLOAK_PROVIDER = 'keycloak'              # default: 'keycloak'
 TURBODRF_KEYCLOAK_ROLE_CLAIM = 'realm_access.roles'  # path in the stored claims
@@ -96,8 +88,10 @@ TURBODRF_KEYCLOAK_STRICT_ROLES = True  # default: True (recommended)
 TURBODRF_KEYCLOAK_MAX_ROLE_AGE = None  # default: None (no limit), seconds
 ```
 
-With `TURBODRF_KEYCLOAK_INTEGRATION = False` the middleware does nothing,
-even if it's still listed in `MIDDLEWARE`.
+The roles apply to every authentication method (see
+[How the integrations resolve roles](#how-the-integrations-resolve-roles)).
+`turbodrf.integrations.keycloak.KeycloakRoleMiddleware` is deprecated: it
+does nothing, and you can remove it from `MIDDLEWARE`.
 
 ### Where the roles come from
 
@@ -150,29 +144,26 @@ no mapping.
 
 ---
 
-## Roles for token / JWT-authenticated requests (allauth and Keycloak)
+## How the integrations resolve roles
 
-Django middleware runs **before** DRF authenticates the request. For a
-session login that doesn't matter, because `AuthenticationMiddleware`
-already loaded the user. For DRF token, JWT or any other DRF
-authentication class, the user is still anonymous when
-`AllAuthRoleMiddleware` / `KeycloakRoleMiddleware` run, so the middleware
-can't give them roles.
+When `TURBODRF_ALLAUTH_INTEGRATION` or `TURBODRF_KEYCLOAK_INTEGRATION` is
+`True` at startup, TurboDRF installs a `roles` property on your user model.
+TurboDRF reads `user.roles` when it checks permissions, so the roles are
+resolved from the authenticated user object itself (Keycloak roles first,
+then allauth group roles, without duplicates), whether a session, a DRF
+token, a JWT or any other authentication class authenticated it. They're
+cached on the user instance, so the lookup runs once per request.
 
-To cover every authentication method, when `TURBODRF_ALLAUTH_INTEGRATION`
-or `TURBODRF_KEYCLOAK_INTEGRATION` is `True` at startup TurboDRF installs a
-`roles` property on your user model. TurboDRF reads `user.roles` when it
-checks permissions, so the roles are resolved from the authenticated user
-object itself (Keycloak roles first, then allauth group roles, without
-duplicates), whatever authenticated it. They're cached on the user instance,
-so the lookup runs once per request.
+`AllAuthRoleMiddleware` and `KeycloakRoleMiddleware` used to set the roles
+instead. Django middleware runs before DRF authenticates the request, so
+they never saw token or JWT users; they're now deprecated no-ops.
 
 Limits:
 
 - If your user model (or another app) already defines `roles` — a field,
   property or method — TurboDRF leaves it alone and logs that it didn't
-  install the resolver. Your `roles` is then the only source of roles for
-  token/JWT users.
+  install the resolver. Your `roles` is then the only source of roles, and
+  neither integration is consulted.
 - In `TURBODRF_PERMISSION_MODE = "database"`, roles come from the
   `UserRole` table and neither integration is consulted.
 - The flags are read at startup to decide whether to install the

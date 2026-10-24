@@ -7,8 +7,6 @@ omit =
     */__pycache__/*
     */venv/*
     */.tox/*
-    */setup.py
-    */user_extensions.py
 
 [report]
 exclude_lines =

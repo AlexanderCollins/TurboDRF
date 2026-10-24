@@ -9,8 +9,8 @@ Every TurboDRF model needs a `turbodrf()` classmethod that returns a config dict
 def turbodrf(cls):
     return {
         'enabled': True,              # Enable/disable API (default: True)
-        'endpoint': 'books',          # Custom endpoint name (default: pluralized model name)
-        'fields': '__all__',          # Fields to expose (see below)
+        'endpoint': 'books',          # URL segment (default: lowercase model name + 's')
+        'fields': ['title', 'price'], # Fields to expose (default: '__all__'; see below)
         'public_access': False,       # Allow unauthenticated GET (default: False)
         'lookup_field': 'slug',       # URL lookup field (default: pk)
         'compiled': True,             # Use compiled read path (default: True)
@@ -27,9 +27,26 @@ def turbodrf(cls):
 Row-level access keys (`tenant_field`, `owner_field`, `bypass_owner_roles`,
 `visibility`, `tenancy`) are covered in [Tenancy & row-level access](tenancy.md).
 
+- The default endpoint adds an `s` to the lowercase model name, without
+  pluralizing: `Category` is served at `/api/categorys/`. Set `endpoint` for
+  anything else.
+- `enabled: False` removes the endpoint. The model's tenancy is still
+  registered, so declare it as for any other model (see
+  [Tenancy](tenancy.md#hard-fail-at-startup)).
+- A `fields` entry or `lookup_field` that names nothing on the model (a
+  typo) stops the router at startup.
+
+> ⚠ **Unknown keys are ignored.** `turbodrf()` doesn't reject keys it doesn't
+> know, so a misspelling such as `'owner_feild'` or `'read_onyl'` silently
+> drops that setting, which for a scoping key means rows go unscoped. Copy key
+> names from this page or [the settings reference](settings_reference.md#per-model-configuration-in-turbodrf-classmethod),
+> and check `python manage.py turbodrf_check` after changing them.
+
 ## Fields
 
-Three formats:
+Always set `fields` explicitly. It defaults to `'__all__'`, which exposes
+every concrete and many-to-many field, including ones added to the model
+later. Three formats:
 
 ```python
 # All concrete and many-to-many fields
