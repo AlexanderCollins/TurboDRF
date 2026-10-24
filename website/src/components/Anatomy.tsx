@@ -83,7 +83,7 @@ export default function Anatomy({ code, pins, keys, rows, callers, roles }: Prop
           })}
         </pre>
         <div className="border-t border-[var(--line)] px-5 py-4">
-          <div className="eyebrow !text-[.6rem] mb-2.5">TURBODRF_ROLES in settings.py</div>
+          <div className="eyebrow !text-[.6rem] mb-2.5">Roles in settings.py</div>
           <div className="space-y-1.5">
             {roles.map((r) => (
               <div key={r.role} className={`flex flex-wrap items-center gap-1.5 text-[.72rem] ${caller.role === r.role ? '' : 'opacity-55'}`}>
@@ -97,10 +97,10 @@ export default function Anatomy({ code, pins, keys, rows, callers, roles }: Prop
         </div>
       </div>
 
-      {/* What each caller gets */}
+      {/* What each user gets */}
       <div className="min-w-0 order-1 lg:order-2 p-4 sm:p-5 flex flex-col gap-4">
         <div>
-          <div className="eyebrow !text-[.6rem] mb-2.5">Who's asking?</div>
+          <div className="eyebrow !text-[.6rem] mb-2.5">Choose a user</div>
           <div className="flex flex-wrap gap-2" role="tablist">
             {callers.map((c, i) => (
               <button
@@ -188,7 +188,7 @@ export default function Anatomy({ code, pins, keys, rows, callers, roles }: Prop
 
         <button type="button" className="self-start text-xs ink-3 hover:text-[var(--mint)] flex items-center gap-1.5 mt-auto" onClick={() => setRaw(!raw)}>
           <span className={raw ? 'icon-[lucide--layout-list] size-3.5' : 'icon-[lucide--braces] size-3.5'} />
-          {raw ? 'Show as rows' : 'Show the raw JSON response'}
+          {raw ? 'Show as rows' : 'Show the JSON response'}
         </button>
       </div>
     </div>

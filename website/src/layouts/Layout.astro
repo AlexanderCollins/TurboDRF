@@ -7,11 +7,11 @@ import SearchDialog from '../components/SearchDialog.astro';
 interface Props { title: string; description?: string; card?: string }
 const {
   title,
-  description = 'TurboDRF turns Django models into a REST API with a mixin and one method, and checks every request against field-level roles and row-level tenancy.',
+  description = 'TurboDRF generates a Django REST Framework API from your models, with role-based field permissions and tenant isolation on every request.',
   card = 'home',
 } = Astro.props;
 const canonical = new URL(Astro.url.pathname, Astro.site);
-const fullTitle = title === 'TurboDRF' ? 'TurboDRF: secure REST APIs from your Django models' : `${title} · TurboDRF`;
+const fullTitle = title === 'TurboDRF' ? 'TurboDRF: generate a REST API from your Django models' : `${title} · TurboDRF`;
 const ogImage = new URL(`/og/${card}.jpg`, Astro.site);
 ---
 <!doctype html>
