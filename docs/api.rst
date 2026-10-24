@@ -48,6 +48,16 @@ Router
    :undoc-members:
    :show-inheritance:
 
+Scope
+-----
+
+The scope a request runs in, ``"tenant"`` or ``"platform"`` (see
+:doc:`platform <platform>`).
+
+.. autofunction:: turbodrf.scope.current_scope
+
+.. autofunction:: turbodrf.scope.use_scope
+
 Settings
 --------
 

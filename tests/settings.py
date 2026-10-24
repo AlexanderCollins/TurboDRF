@@ -266,6 +266,54 @@ TURBODRF_ROLES = {
     ],
 }
 
+# Tenant roles on the platform-scope test models (test_platform_*.py).
+TURBODRF_ROLES["account_admin"] = [
+    "test_app.platformaccount.read",
+    "test_app.platformaccount.create",
+    "test_app.platformaccount.update",
+    "test_app.platformaccount.delete",
+    "test_app.platformticket.read",
+    "test_app.platformticket.create",
+    "test_app.platformticket.update",
+    "test_app.platformticket.delete",
+]
+
+# Platform roles (the platform router's own map; tenant roles never apply on
+# it, nor these on the tenant router). "account_admin" shares a tenant role's
+# name and grants something else here.
+TURBODRF_PLATFORM_ROLES = {
+    "admin": [
+        "test_app.brokerage.read",
+        "test_app.platformaccount.read",
+        "test_app.platformaccount.create",
+        "test_app.platformaccount.update",
+        "test_app.platformaccount.delete",
+        "test_app.platformjob.read",
+        "test_app.platformjob.create",
+        "test_app.platformjob.payload.read",
+        "test_app.platformticket.read",
+        "test_app.platformticket.create",
+        "test_app.platformticket.update",
+        "test_app.platformticket.delete",
+        "test_app.platformticket.internal_note.read",
+        "test_app.platformticket.internal_note.write",
+    ],
+    "support": [
+        "test_app.brokerage.read",
+        "test_app.platformaccount.read",
+        "test_app.platformjob.read",
+        "test_app.platformticket.read",
+        "test_app.platformticket.create",
+        "test_app.platformticket.update",
+        "test_app.platformticket.internal_note.read",
+    ],
+    "auditor": [
+        "test_app.platformjob.read",
+        "test_app.platformjob.payload.read",
+    ],
+    "account_admin": ["test_app.platformjob.read"],
+}
+
 # Predicate / row-level access control settings
 # We do NOT set TURBODRF_TENANT_MODEL globally — that would force every
 # existing test model to declare tenancy. Predicate-specific tests use

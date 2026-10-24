@@ -258,6 +258,40 @@ the `tenant_field` setting instead.
 
 ---
 
+## Platform scope (staff across tenants)
+
+For an operator's own staff console, don't hand-write cross-tenant views. Give
+the model a `'platform'` block and serve it from a platform router:
+
+```python
+'platform': {
+    'endpoint': 'jobs',
+    'read_only': True,
+    'fields': ['id', 'kind', 'status', 'workspace', 'workspace__name', 'payload'],
+    'searchable_fields': ['kind'],          # must be in the block's fields
+    'actions': [retry],
+},
+
+# urls.py
+console = TurboDRFRouter(scope='platform', gate=[IsPlatformStaff])
+```
+
+- The block takes the API-shaping keys only; a tenancy key in it raises.
+  Nothing is inherited from the top level: set `fields`.
+- `gate` is required: permission classes checked first on every route.
+- Platform roles: `TURBODRF_PLATFORM_ROLE_GETTER` (default
+  `user.platform_roles`) and `TURBODRF_PLATFORM_ROLES` (always static). Tenant
+  roles grant nothing there.
+- A relation may reach only models with a `'platform'` block
+  (`{'enabled': False}` for no route), the tenant model, or non-TurboDRF
+  models.
+- A platform create must name the row's tenant; FK / M2M values must belong
+  to the same tenant.
+
+Details: `docs/platform.md`.
+
+---
+
 ## What NEVER to do
 
 1. **Don't add endpoints that call `Model.objects.all()`.** They bypass the
@@ -359,6 +393,7 @@ assert snap.can_perform_action('update')
 - [docs/quickstart.md](docs/quickstart.md) — a working project, step by step
 - [docs/configuration.md](docs/configuration.md) — every `turbodrf()` key, custom endpoints
 - [docs/tenancy.md](docs/tenancy.md) — full predicate vocabulary, sugar vs power form, startup checks
+- [docs/platform.md](docs/platform.md) — the platform scope: a staff API across tenants
 - [docs/permissions.md](docs/permissions.md) — RBAC, roles, sensitive fields, field-perm syntax
 - [docs/security.md](docs/security.md) — threat model + known limitations
 - [docs/settings_reference.md](docs/settings_reference.md) — every setting

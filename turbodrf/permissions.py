@@ -8,11 +8,19 @@ access control for the auto-generated APIs.
 from django.conf import settings
 from rest_framework.permissions import BasePermission, DjangoModelPermissions
 
+from .scope import is_platform
+
 
 def permissions_bypassed():
     """True when TurboDRF's field/permission gating should be skipped —
     permissions are globally disabled or default Django permissions are in use.
+
+    Never on the platform scope: TURBODRF_DISABLE_PERMISSIONS and
+    TURBODRF_USE_DEFAULT_PERMISSIONS apply to the tenant scope only, and a
+    platform request is always checked against TURBODRF_PLATFORM_ROLES.
     """
+    if is_platform():
+        return False
     return getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False) or getattr(
         settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False
     )
@@ -72,6 +80,9 @@ class TurboDRFPermission(BasePermission):
           model's predicates, so they may see rows an anonymous caller never
           does: only a role grants that.
         - Users must have a 'roles' property that returns a list of role names
+        - On the platform scope there is no anonymous access, the roles are
+          the caller's platform roles and the permissions those of
+          TURBODRF_PLATFORM_ROLES (see turbodrf.scope).
     """
 
     def has_permission(self, request, view):
@@ -88,9 +99,11 @@ class TurboDRFPermission(BasePermission):
             bool: True if permission is granted, False otherwise.
         """
         from .backends import attach_snapshot_to_request
+        from .mixins import _model_config
 
         model = view.model
-        config = model.turbodrf()
+        # The current scope's config: a platform block has no public_access.
+        config = _model_config(model)
 
         # Check if public access is allowed for this model
         # Default to False (secure by default)
@@ -175,8 +188,10 @@ class DefaultDjangoPermission(DjangoModelPermissions):
 
         For unauthenticated users, respects public_access configuration.
         """
+        from .mixins import _model_config
+
         model = view.model
-        config = model.turbodrf()
+        config = _model_config(model)
 
         # Check if public access is allowed for this model
         # Default to False (secure by default)

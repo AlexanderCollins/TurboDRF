@@ -481,6 +481,29 @@ The primary key is appended as a tie-breaker.
   without target scoping (search and nested values stay scoped).
   Migrations only; not recommended.
 
+## Platform scope
+
+A `TurboDRFRouter(scope="platform", gate=[...])` serves every tenant's rows to
+an operator's staff. What keeps it contained (details in
+[platform.md](platform.md)):
+
+- **Opt-in per model.** Only models with a `'platform'` block are served, and
+  a relation can reach only models with a block, the tenant model, or models
+  that aren't TurboDRF models. A path into any other model is refused at
+  startup, and its rows read as none at request time.
+- **A gate on every route.** The router refuses to build without one; it runs
+  before the role check on every route and action, OPTIONS and the schema
+  view, and a viewset's `get_permissions()` can't remove it.
+- **Separate roles.** Platform roles come from
+  `TURBODRF_PLATFORM_ROLE_GETTER` and permissions from
+  `TURBODRF_PLATFORM_ROLES`; tenant roles (static or database) grant nothing
+  there, and platform roles nothing on the tenant router. Snapshots are cached
+  per scope. No anonymous access, and the permission bypass settings don't
+  apply.
+- **Writes stay in one tenant.** A create names its tenant (nothing is filled
+  in from the staff member), and FK / M2M values must belong to the row's
+  tenant.
+
 ## Known limitations
 
 - **`@property` fields are gated by model-level read.** A property can't

@@ -18,22 +18,34 @@ from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
 from django.db import models
 from django.db.models import Case, F, Value, When
 
+from .scope import is_platform
+
 logger = logging.getLogger(__name__)
 
-# Module-level registry: model class -> CompiledQueryPlan
+# Module-level registries: model class -> CompiledQueryPlan, one per scope
+# (a model's platform block compiles its own list fields).
 _compiled_plans = {}
+_platform_compiled_plans = {}
+
+
+def _plans():
+    return _platform_compiled_plans if is_platform() else _compiled_plans
 
 
 def register_compiled_plan(model, plan):
-    _compiled_plans[model] = plan
+    _plans()[model] = plan
+
+
+def unregister_compiled_plan(model):
+    _plans().pop(model, None)
 
 
 def get_compiled_plan(model):
-    return _compiled_plans.get(model)
+    return _plans().get(model)
 
 
 def is_compiled(model):
-    return model in _compiled_plans
+    return model in _plans()
 
 
 class NotCompilable(Exception):
@@ -720,7 +732,10 @@ def compile_blocker(model):
 
 
 def _compile_model(model):
-    config = model.turbodrf()
+    from .mixins import _model_config
+
+    # The current scope's config (a platform block on the platform scope).
+    config = _model_config(model)
 
     if not config.get("compiled", True):
         return None
