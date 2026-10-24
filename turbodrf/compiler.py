@@ -41,19 +41,41 @@ class NotCompilable(Exception):
     path does; the model falls back to the serializer path."""
 
 
-# Model fields whose DRF serializer field renders a value differently from DRF's
-# JSON encoder rendering the raw Python value: Decimal("0") with
+# Django model fields whose raw value (as .values() returns it) the JSON
+# encoder renders exactly as their DRF serializer field does: the DRF field's
+# to_representation is str() / int() / float() / bool() of it, or the value
+# itself. Every other field renders through its DRF field: Decimal("0") with
 # decimal_places=8 is "0.00000000", not "0E-8"; datetimes are converted to the
 # current timezone and keep their microseconds; durations are "1 02:00:00", not
-# "93600.0"; DATE_FORMAT / DATETIME_FORMAT / TIME_FORMAT apply.
-_DRF_FORMATTED_FIELDS = (
-    models.DecimalField,
-    models.DateField,
-    models.TimeField,
-    models.DurationField,
+# "93600.0"; DATE_FORMAT / DATETIME_FORMAT / TIME_FORMAT apply; an ArrayField
+# renders each item through its base field.
+_RAW_FIELDS = (
+    models.CharField,
+    models.TextField,
+    models.IntegerField,
+    models.FloatField,
+    models.BooleanField,
+    models.UUIDField,
+    models.GenericIPAddressField,
+    models.JSONField,
 )
 
 _field_representations = {}
+
+
+def _renders_raw(model_field):
+    """True if ``model_field``'s raw value renders as its DRF field renders
+    it. A relation renders its raw target value (PrimaryKeyRelatedField's
+    ``.pk``, SlugRelatedField's ``to_field``). Choices go through DRF's
+    ChoiceField, and a field class from outside Django through the DRF field
+    ModelSerializer picks for it (its value may be any Python object)."""
+    if model_field.is_relation:
+        return True
+    return (
+        isinstance(model_field, _RAW_FIELDS)
+        and not model_field.choices
+        and type(model_field).__module__.startswith("django.")
+    )
 
 
 def _drf_field(model_field):
@@ -83,15 +105,43 @@ def field_representation(model_field, request=None):
         return _file_representation(model_field, request)
     if isinstance(model_field, models.BinaryField):
         return _binary_representation
-    if not isinstance(model_field, _DRF_FORMATTED_FIELDS):
+    if _renders_raw(model_field):
         return None
     try:
         return _field_representations[model_field]
     except KeyError:
         pass
-    represent = _drf_field(model_field).to_representation
+    from rest_framework.fields import ModelField
+
+    try:
+        represent = _drf_field(model_field)
+    except Exception:
+        represent = None
+    if isinstance(represent, ModelField):
+        # DRF's fallback for a field it has no mapping for: it renders from
+        # the model instance, not from a value.
+        represent = None
+    if represent is not None:
+        represent = represent.to_representation
+    # None: no DRF field renders the value, which then renders raw (the
+    # compiled path refuses such a field, see _check_representable).
     _field_representations[model_field] = represent
     return represent
+
+
+def _check_representable(model_field, where):
+    """Raise NotCompilable for a field the compiled path can't render through
+    a DRF field the way the serializer path does."""
+    if model_field is None or _renders_raw(model_field):
+        return
+    if isinstance(model_field, (models.FileField, models.BinaryField)):
+        return
+    field_representation(model_field)
+    if _field_representations.get(model_field) is None:
+        raise NotCompilable(
+            f"'{where}' is a {type(model_field).__name__}, which has no DRF "
+            f"field to render it through"
+        )
 
 
 def _file_representation(model_field, request):
@@ -181,6 +231,7 @@ def _build_type_coercers(model, field_names):
             continue
         if isinstance(field, models.FileField):
             continue
+        _check_representable(field, field_name)
         represent = field_representation(field)
         if represent is not None:
             coercers[field_name] = represent
@@ -194,6 +245,7 @@ def _build_fk_type_coercers(model, fk_annotations):
         leaf = path_leaf_field(model, f_expr.name)
         if isinstance(leaf, models.FileField):
             continue
+        _check_representable(leaf, f_expr.name)
         represent = field_representation(leaf)
         if represent is not None:
             coercers[output_key] = represent
@@ -238,6 +290,7 @@ def _compile_m2m_spec(model, m2m_field_name, sub_field_names):
         leaf = path_leaf_field(related_model, sub_field)
         if isinstance(leaf, models.FileField):
             continue
+        _check_representable(leaf, f"{m2m_field_name}__{sub_field}")
         represent = field_representation(leaf)
         if represent is not None:
             m2m_coercers[sub_field] = represent
@@ -270,6 +323,19 @@ def _target_ordering(related_model, target_fk):
     return terms
 
 
+def _relation_flags(fk_annotations):
+    """{flag alias: [output keys]}: the nested values of each relation path,
+    under the alias its visibility flag is selected as (see
+    apply_to_queryset)."""
+    by_relation = defaultdict(list)
+    for key, expr in fk_annotations.items():
+        by_relation[expr.name.rsplit("__", 1)[0]].append(key)
+    return {
+        f"_tdrf_visible_{i}": by_relation[relation]
+        for i, relation in enumerate(sorted(by_relation))
+    }
+
+
 class CompiledQueryPlan:
     """Pre-computed query plan for a model's list view."""
 
@@ -291,6 +357,9 @@ class CompiledQueryPlan:
         self.property_fields = property_fields
         self.type_coercers = type_coercers
         self.pk_field = pk_field
+        # The configured list fields the plan renders (after the sensitive
+        # deny-list and the nesting-depth limit), as ``?fields=`` selects them.
+        self.configured_fields = list(original_fields)
         self._original_fields = set(original_fields)
 
         # FK annotation keys that would collide with a model field or attname
@@ -358,6 +427,8 @@ class CompiledQueryPlan:
             fk_visibility: Optional dict {output_key: Q}. A nested value
                 renders only where its Q holds (the JOIN target is in the
                 caller's scope) and is NULL elsewhere — the row itself stays.
+                The Q is selected once per relation path, as a flag
+                post_process reads, however many nested values share it.
 
         Returns (compiled_queryset, active_plan_tuple).
         """
@@ -444,10 +515,17 @@ class CompiledQueryPlan:
 
         annotations = {}
         for key, expr in active_fk.items():
-            visible = (fk_visibility or {}).get(key)
-            if visible:
-                expr = Case(When(visible, then=expr), default=Value(None))
             annotations[self._fk_aliases.get(key, key)] = expr
+        for alias, keys in _relation_flags(active_fk).items():
+            visible = next(
+                (fk_visibility[k] for k in keys if (fk_visibility or {}).get(k)), None
+            )
+            if visible:
+                annotations[alias] = Case(
+                    When(visible, then=Value(True)),
+                    default=Value(False),
+                    output_field=models.BooleanField(),
+                )
 
         compiled_qs = queryset.values(*values_fields, **annotations)
         return compiled_qs, (active_simple, active_fk, active_m2m, active_props)
@@ -476,11 +554,17 @@ class CompiledQueryPlan:
         """
         active_simple, active_fk, active_m2m, active_props = active_plan
 
-        # 0. Internal aliases back to their output keys.
+        # 0. Internal aliases back to their output keys, and nested values
+        #    whose relation the caller can't see to NULL.
         for key, alias in self._fk_aliases.items():
             if key in active_fk:
                 for row in rows:
                     row[key] = row.pop(alias, None)
+        for alias, keys in _relation_flags(active_fk).items():
+            for row in rows:
+                if not row.pop(alias, True):
+                    for key in keys:
+                        row[key] = None
 
         # 1. Property fields, computed on model instances (as the serializer
         #    path does).
@@ -531,16 +615,16 @@ class CompiledQueryPlan:
         through_qs = spec["through_model"]._base_manager.filter(
             **{f"{source_fk}__in": pk_values}
         )
-        # F4: scope to target rows visible via the target's endpoint.
+        # The serializer reads the M2M through the target's default manager:
+        # a target it hides (soft delete) isn't rendered. F4: scope to target
+        # rows visible via the target's endpoint (that queryset is built on
+        # the default manager already).
+        if target_filter is None:
+            default_qs = related_model._default_manager.all()
+            if default_qs.query.has_filters():
+                target_filter = default_qs.values("pk")
         if target_filter is not None:
             through_qs = through_qs.filter(**{f"{target_fk}__in": target_filter})
-        # The serializer reads the M2M through the target's default manager:
-        # a target it hides (soft delete) isn't rendered.
-        default_qs = related_model._default_manager.all()
-        if default_qs.query.has_filters():
-            through_qs = through_qs.filter(
-                **{f"{target_fk}__in": default_qs.values("pk")}
-            )
         ordering = _target_ordering(related_model, target_fk)
         if ordering:
             through_qs = through_qs.order_by(*ordering)
@@ -684,9 +768,6 @@ def _compile_model(model):
     bare_m2m = set()  # M2Ms listed on their own (render pks)
     property_fields = {}
 
-    # Track which base FK fields we've added
-    fk_base_fields_added = set()
-
     for field_name in list_fields:
         if "__" not in field_name:
             # Simple field — check if it's a DB column or property
@@ -733,10 +814,8 @@ def _compile_model(model):
                 fk_annotations[output_key] = F(field_name)
 
                 # Ensure base FK field is in simple_fields (for the raw ID)
-                if base not in fk_base_fields_added:
-                    fk_base_fields_added.add(base)
-                    if base not in simple_fields:
-                        simple_fields.append(base)
+                if base not in simple_fields:
+                    simple_fields.append(base)
             else:
                 raise ImproperlyConfigured(
                     f"TurboDRF compiled path: '{field_name}' on "
@@ -809,26 +888,23 @@ def _walk_fk_annotation_chain(model, path):
 
 
 def validate_compiled_path_safety(model):
-    """Refuse to boot if the compiled read path would render related rows
-    the caller shouldn't see.
+    """Refuse to boot if the compiled read path would JOIN into related rows
+    with their own row-level rules.
 
-    Two related cases are checked:
+    At request time the compiled list already scopes both cases below to the
+    targets the caller can see (``views._compiled_list``: the M2M merge's
+    second query is filtered, a nested FK value is NULL where its target is
+    out of scope). This gate catches the configurations at deploy time
+    instead, as defence in depth. Two related cases are checked:
 
     1. **Compiled M2M target bypass.** The compiled M2M merge issues a
-       separate through-table query (``post_process``, ~line 285-291)
-       that does NOT apply the target model's ``tenant_field`` or
-       registered predicates to the join. The non-compiled DRF path at
-       ``serializers.py:333-363`` does. A model that nests an M2M whose
-       target carries its own visibility rules would therefore leak
-       target rows the caller cannot see via the target's own endpoint.
+       separate through-table query (``CompiledQueryPlan._merge_m2m``)
+       joining the target model. A model that nests an M2M whose target
+       carries its own visibility rules is refused.
 
     2. **Compiled FK annotation bypass.** ``F('author__name')`` produces
-       a SQL JOIN to ``author`` without applying ``author``'s own
-       predicates. Field-level permission gating strips which output
-       keys render, so the response itself doesn't carry the leaked
-       column by default — but the JOIN still executes, leaking row
-       existence and timing/query-count side channels. Same shape as
-       the M2M case; same fix.
+       a SQL JOIN to ``author``. Same shape as the M2M case; same rule,
+       checked at every model along the JOIN chain.
 
     Detection is fully static: walk each compiled plan's ``m2m_specs``
     and ``fk_annotations``, look up every model along the JOIN chain in

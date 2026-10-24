@@ -223,9 +223,10 @@ class TestTenantFilterAttacks(_BaseFixture):
 
     def test_chained_tenancy_traversal_no_leak(self):
         """Transaction filters that traverse to victim brokerage / bank /
-        amount — must produce empty result."""
+        amount — must produce empty result. A path the config doesn't expose
+        (bank_account__deal__brokerage) is ignored: the result can't depend
+        on the probed value."""
         for q in (
-            f"bank_account__deal__brokerage={self.brokerage_victim.id}",
             f"bank_account={self.victim_bank.id}",
             "amount__gte=999999",
         ):
@@ -234,6 +235,13 @@ class TestTenantFilterAttacks(_BaseFixture):
                 assert_no_secrets(self, r)
                 if r.status_code == 200:
                     self.assertEqual(len(r.data.get("data", [])), 0)
+        unfiltered = self.client.get("/api/transactions/").data["data"]
+        r = self.client.get(
+            "/api/transactions/?bank_account__deal__brokerage="
+            f"{self.brokerage_victim.id}"
+        )
+        assert_no_secrets(self, r)
+        self.assertEqual(r.data["data"], unfiltered)
 
     def test_bankaccount_filter_by_victim_deal(self):
         r = self.client.get(f"/api/bankaccounts/?deal={self.victim_deal.id}")

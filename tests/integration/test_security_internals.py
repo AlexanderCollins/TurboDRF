@@ -2770,7 +2770,7 @@ class IntegrationTests(AdversaryBase):
         without granting admin; pk=0 / pk=None handled in cache key."""
         from turbodrf.backends import get_user_roles
 
-        for roles in (None, ("underwriter",), "admin", {"underwriter"}):
+        for roles in (None, ("underwriter",), {"underwriter"}):
             u = User.objects.create_user(username=f"u_{roles}", password="x")
             u._test_roles = roles
             try:
@@ -2778,6 +2778,11 @@ class IntegrationTests(AdversaryBase):
             except Exception:
                 r = []
             self.assertNotIn("admin", r or [])
+
+        # A string is one role name, never its characters.
+        u = User.objects.create_user(username="u_str", password="x")
+        u._test_roles = "viewer"
+        self.assertEqual(get_user_roles(u), ["viewer"])
 
         # User has both _test_roles and __dict__-injected 'roles'
         u = User.objects.create_user(username="dual", password="x")

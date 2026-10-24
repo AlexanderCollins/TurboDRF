@@ -3,6 +3,15 @@ Fast JSON renderer for TurboDRF.
 
 Uses msgspec (fastest) > orjson > stdlib json, depending on what's installed.
 Both msgspec and orjson are ~5-7x faster than stdlib json.
+
+Serializer fields hand the renderer plain JSON types, which every encoder
+renders identically. A raw Python value (from an @property or a custom action)
+of a type the library encodes natively can render differently from DRF's
+JSONRenderer: msgspec encodes bytes as base64 (DRF: decoded text) and a
+timedelta as an ISO 8601 duration (DRF: seconds, ``"90.0"``); both libraries
+encode NaN / infinity as ``null`` (DRF refuses them) and encode Enum and
+dataclass values (DRF raises TypeError). Return JSON types from properties and
+actions where the exact rendering matters.
 """
 
 import decimal
@@ -20,8 +29,9 @@ def _enc_default(obj):
     """Encode a value the fast library can't handle natively.
 
     Only the types DRF's own JSONEncoder handles are coerced (lazy strings,
-    dates, timedeltas, UUIDs, bytes, ...), with DRF's own logic. Anything
-    else raises TypeError, as it does under stock DRF. Never fall back to
+    IP addresses, ...), with DRF's own logic. Anything else raises TypeError,
+    as it does under stock DRF. Types the library encodes itself never reach
+    this hook (see the module docstring). Never fall back to
     ``str(obj)``: an @property returning a QuerySet or a model instance would
     otherwise render its ``__str__`` (unscoped rows) into the response.
 

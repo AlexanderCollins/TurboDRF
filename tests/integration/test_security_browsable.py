@@ -473,16 +473,13 @@ class OptionsMetadata(SecBase):
             )
 
     def test_options_tenancy_and_field_choices_do_not_leak(self):
-        # Tenancy block exposes only the structural field name (no tenant
-        # value/id). Field choices are filtered by visibility — no
+        # No tenancy block: it exposed the tenant path and predicate classes
+        # to any reader. Field choices are filtered by visibility — no
         # VICTIM-tagged choice values for unreadable fields.
         r = self.client.options("/api/deals/")
         if r.status_code == 200 and isinstance(r.data, dict):
-            tenancy = r.data.get("tenancy", {})
-            self.assertNotIn("tenant_value", tenancy)
-            self.assertNotIn("tenant_id", tenancy)
-            self.assertNotIn(str(self.brokerage_attacker.id), str(tenancy))
-            self.assertEqual(tenancy.get("tenant_field"), "brokerage")
+            self.assertNotIn("tenancy", r.data)
+            self.assertNotIn("tenant_field", str(r.data))
             fields = (r.data.get("model") or {}).get("fields", {}) or {}
             for finfo in fields.values():
                 for c in finfo.get("choices") or []:

@@ -1025,9 +1025,14 @@ class TestManyToManyFieldNesting:
         class MockView:
             filterset_fields = ["tags"]
 
-        # Viewer can filter by tags__name (has explicit permission)
+        # Viewer can filter by tags__name (has explicit permission). A nested
+        # path is filterable only where configured: the mock view has no
+        # TurboDRF config, so configure both paths here.
         self.user._test_roles = ["viewer"]
-        valid_fields = backend._get_valid_filter_fields(MockView(), Article)
+        valid_fields = backend._get_valid_filter_fields(MockView(), Article) | {
+            "tags__name",
+            "tags__slug",
+        }
         is_valid = backend._is_valid_filter_field(
             "tags__name", valid_fields, Article, self.user
         )

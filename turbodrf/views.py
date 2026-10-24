@@ -1,8 +1,12 @@
+import copy
+
 from django.conf import settings
+from django.db import models
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
+from .backends import _permission_memo
 from .filter_backends import (
     ORFilterBackend,
     TurboDRFFilterBackend,
@@ -18,41 +22,32 @@ from .permissions import (
 from .serializers import TurboDRFSerializer
 from .tracking import get_viewset_base_classes
 
-_UNSET = object()
-
 # CRUD actions that write. Refused on a `read_only: True` resource.
 _CRUD_WRITE_ACTIONS = frozenset({"create", "update", "partial_update", "destroy"})
 
+# DRF SearchFilter prefixes TurboDRF accepts on a `searchable_fields` entry:
+# istartswith, iexact and (Postgres) full-text search. `$` (regex) isn't: a
+# client-supplied pattern can backtrack catastrophically.
+_SEARCH_PREFIXES = "^=@"
+
 
 class Authorization:
-    """The single authorization decision for one request — the chokepoint every
-    data route routes through.
+    """The row-level authorization decision for one request — the chokepoint
+    every data route routes through.
 
     Produced once by ``TurboDRFViewSet.authorize()``. It carries the row-level
-    scope (tenant + within-tenant predicate ``Q`` objects, applied by
-    ``scope()``) and the field-level allowlist (``readable_fields``). The tenant
-    ``Q`` is applied as a SEPARATE filter, outside the predicate algebra, so an
-    ``Either()`` can never OR-compose it away.
-
-    ``readable_fields`` is computed lazily so the hot ``get_queryset`` path does
-    not build a permission snapshot it does not need.
+    scope (tenant + within-tenant predicate ``Q`` objects), applied by
+    ``scope()``. The tenant ``Q`` is applied as a SEPARATE filter, outside the
+    predicate algebra, so an ``Either()`` can never OR-compose it away. The
+    field-level allowlist is the permission snapshot's
+    (``TurboDRFViewSet._authorized_readable_fields``).
     """
 
-    __slots__ = ("tenant_q", "predicate_q", "_fields_fn", "_fields")
+    __slots__ = ("tenant_q", "predicate_q")
 
-    def __init__(self, tenant_q, predicate_q, fields_fn):
+    def __init__(self, tenant_q, predicate_q):
         self.tenant_q = tenant_q
         self.predicate_q = predicate_q
-        self._fields_fn = fields_fn
-        self._fields = _UNSET
-
-    @property
-    def readable_fields(self):
-        """Field-level allowlist (a set of base field names), or ``None`` when
-        no role system applies. Computed on first access."""
-        if self._fields is _UNSET:
-            self._fields = self._fields_fn()
-        return self._fields
 
     def scope(self, queryset):
         """Apply row-level access — the one place row scoping happens. Tenant
@@ -87,8 +82,25 @@ def _requested_client_fields(request):
     return [f.strip().replace(".", "_") for f in raw.split(",") if f.strip()]
 
 
+def _select_configured_fields(fields, wanted):
+    """The entries of a configured ``fields`` list that the ``?fields=`` output
+    keys ``wanted`` select: by output key (``author_name``, sent as
+    ``author_name`` or ``author.name``), and an FK / M2M base for all its
+    nested entries. The one selector both read paths use, so a compiled list
+    row and its detail agree. Empty when it selects nothing."""
+    return [
+        f
+        for f in fields
+        if f.replace("__", "_") in wanted or f.split("__")[0] in wanted
+    ]
+
+
 def _q_spans_multivalued(model, q):
-    """True if any lookup in ``q`` traverses an M2M or reverse relation."""
+    """True if any lookup in ``q`` may traverse an M2M or reverse relation.
+
+    A child that isn't a ``(lookup, value)`` pair (an ``Exists()`` or other
+    expression, say from a ``Custom`` predicate) can't be inspected, so it
+    counts as multi-valued: the subquery form is correct either way."""
     from django.core.exceptions import FieldDoesNotExist
     from django.db.models import Q
 
@@ -97,6 +109,8 @@ def _q_spans_multivalued(model, q):
             if _q_spans_multivalued(model, child):
                 return True
             continue
+        if not isinstance(child, tuple) or not isinstance(child[0], str):
+            return True
         current = model
         for part in child[0].split("__"):
             if current is None:
@@ -109,6 +123,77 @@ def _q_spans_multivalued(model, q):
                 return True
             current = field.related_model if field.is_relation else None
     return False
+
+
+def _resolve_row_scoping(model):
+    """``(tenant_field, predicates)`` for ``model`` — from its registration
+    (the router registers every TurboDRF model), else resolved from its config
+    as the router would. ``None`` if neither is possible: the caller fails
+    closed."""
+    from .predicates import (
+        _model_predicates,
+        _model_tenant_fields,
+        get_predicates,
+        get_tenant_field,
+        has_tenancy_declaration,
+    )
+
+    if model is None or not hasattr(model, "_meta"):
+        return None
+    if model in _model_predicates or model in _model_tenant_fields:
+        return get_tenant_field(model), list(get_predicates(model))
+    tenant_model = getattr(settings, "TURBODRF_TENANT_MODEL", None)
+    try:
+        from .tenancy import resolve_tenancy_for_model
+
+        config = model.turbodrf()
+        tenant_field, predicates, autodetected = resolve_tenancy_for_model(
+            model,
+            config,
+            tenant_model,
+            autodetect=getattr(settings, "TURBODRF_AUTODETECT_TENANT", False),
+        )
+    except Exception:
+        return None
+    if (
+        getattr(settings, "TURBODRF_REQUIRE_TENANCY", True)
+        and tenant_model is not None
+        and tenant_field is None
+        and not has_tenancy_declaration(config)
+        and not autodetected
+    ):
+        return None  # the router refuses to boot such a model
+    return tenant_field, list(predicates)
+
+
+def _filter_lookups(field):
+    """The django-filter lookups offered on a concrete model field, or None
+    for a field django-filter can't filter (JSON, binary, file, file path)."""
+    if isinstance(
+        field,
+        (
+            models.JSONField,
+            models.BinaryField,
+            models.FilePathField,
+            models.FileField,
+        ),
+    ):
+        return None
+    # A custom JSON field that isn't a JSONField subclass.
+    if "json" in field.__class__.__name__.lower():
+        return None
+    if isinstance(field, (models.IntegerField, models.DecimalField, models.FloatField)):
+        return ["exact", "gte", "lte", "gt", "lt"]
+    if isinstance(field, (models.DateField, models.DateTimeField)):
+        return ["exact", "gte", "lte", "gt", "lt", "year", "month", "day"]
+    if isinstance(field, (models.CharField, models.TextField)):
+        return ["exact", "icontains", "istartswith", "iendswith"]
+    if isinstance(field, models.UUIDField):
+        return ["exact", "isnull"]
+    if isinstance(field, models.GenericIPAddressField):
+        return ["exact", "istartswith"]
+    # Booleans, foreign keys, everything else: exact.
+    return ["exact"]
 
 
 class TurboDRFPagination(PageNumberPagination):
@@ -157,8 +242,6 @@ class TurboDRFPagination(PageNumberPagination):
             Response: A Response object containing pagination metadata
                      and the serialized data.
         """
-        from rest_framework.response import Response
-
         return Response(
             {
                 "pagination": {
@@ -195,20 +278,29 @@ class TurboDRFPagination(PageNumberPagination):
         }
 
 
-# Get base classes with optional tracking mixin
-_viewset_bases = get_viewset_base_classes()
+def _split_search_prefix(entry):
+    """``'^title'`` -> ``('^', 'title')``; ``'title'`` -> ``('', 'title')``.
+    The prefix is any one DRF SearchFilter prefix character (``^ = @ $``)."""
+    if isinstance(entry, str) and entry[:1] in "^=@$":
+        return entry[0], entry[1:]
+    return "", entry
 
 
 def _is_resolvable_search_path(model, path):
-    """True if `path` walks resolvable concrete fields on `model`.
+    """True if ``path`` (a ``searchable_fields`` entry) can be searched.
 
-    A search field must be a real model field (or a `__`-traversed chain
-    of FK relations ending in a concrete field) so DRF's SearchFilter can
-    build a valid `icontains` Q. An unresolvable path (typo, FK with no
-    sub-field) raises FieldError at SQL-build time.
+    It may carry one DRF SearchFilter prefix TurboDRF accepts (``^``, ``=``,
+    ``@``; not ``$``, a regex). The rest must walk resolvable fields on
+    ``model``: a concrete column, or a ``__``-traversed chain of relations
+    ending on one, so SearchFilter can build a valid lookup. A path ending on a
+    relation (``author``) has no column to match text against, and an
+    unresolvable one (a typo) raises FieldError at SQL-build time.
     """
     from django.core.exceptions import FieldDoesNotExist
 
+    prefix, path = _split_search_prefix(path)
+    if prefix and prefix not in _SEARCH_PREFIXES:
+        return False
     if not isinstance(path, str) or not path:
         return False
     if "." in path:  # DRF uses `__`, not `.`
@@ -220,13 +312,16 @@ def _is_resolvable_search_path(model, path):
             field = current._meta.get_field(part)
         except FieldDoesNotExist:
             return False
-        is_last = i == len(parts) - 1
-        if is_last:
-            return True
+        if i == len(parts) - 1:
+            return not field.is_relation
         if not field.is_relation or field.related_model is None:
             return False
         current = field.related_model
     return False
+
+
+# Get base classes with optional tracking mixin
+_viewset_bases = get_viewset_base_classes()
 
 
 class TurboDRFViewSet(*_viewset_bases):
@@ -301,11 +396,9 @@ class TurboDRFViewSet(*_viewset_bases):
         JSONRenderer subclass is left untouched (only the exact stock class
         is swapped).
         """
+        from .renderers import FAST_JSON_AVAILABLE, TurboDRFRenderer
+
         renderers = super().get_renderers()
-        try:
-            from .renderers import FAST_JSON_AVAILABLE, TurboDRFRenderer
-        except ImportError:
-            return renderers
         if not FAST_JSON_AVAILABLE:
             return renderers
         from rest_framework.renderers import JSONRenderer
@@ -323,8 +416,11 @@ class TurboDRFViewSet(*_viewset_bases):
         pass
 
     model = None  # Will be set by the router
-    _predicates = []  # Populated by router: within-tenant predicates only
-    _tenant_field = None  # Populated by router: mandatory tenant boundary
+    # Populated by the router: within-tenant predicates only, and the
+    # mandatory tenant boundary. A hand-written subclass that sets neither
+    # gets its model's (see _ensure_row_scoping).
+    _predicates = []
+    _tenant_field = None
     _read_only = False  # Set by router for `read_only: True` resources
 
     # NOTE on @action routes: custom @action methods that call
@@ -332,11 +428,22 @@ class TurboDRFViewSet(*_viewset_bases):
     # If you bypass those (e.g. self.model.objects.get(...) directly), scoping
     # is bypassed too — you must apply it manually.
 
+    def dispatch(self, request, *args, **kwargs):
+        # Roles and permission snapshots are looked up once per request (see
+        # backends._permission_memo), not once per field / filter / hop.
+        with _permission_memo():
+            return super().dispatch(request, *args, **kwargs)
+
     def handle_exception(self, exc):
         from django.core.exceptions import RequestDataTooBig, TooManyFieldsSent
+        from django.http import Http404
         from rest_framework import exceptions
 
-        if isinstance(exc, OverflowError):
+        if isinstance(exc, Http404):
+            # get_object_or_404's message names the model ("No Deal matches
+            # the given query."): every 404 gets the generic one.
+            exc = exceptions.NotFound()
+        elif isinstance(exc, OverflowError):
             # Django < 5.0 on SQLite: an integer lookup past the column's range
             # raises instead of matching nothing.
             if (self.lookup_url_kwarg or self.lookup_field) in self.kwargs:
@@ -455,19 +562,42 @@ class TurboDRFViewSet(*_viewset_bases):
         return set()
 
     def authorize(self, request):
-        """THE authorization chokepoint.
+        """THE row-level authorization chokepoint.
 
         Computes, once for ``request``, the row-level scope (mandatory tenant
-        boundary + discretionary within-tenant predicates) and the field-level
-        allowlist, returned as an :class:`Authorization`. Every data route —
-        list/detail, filter, search, ordering, OPTIONS, compiled — derives its
-        access decision from this single result so the pathways cannot drift.
+        boundary + discretionary within-tenant predicates), returned as an
+        :class:`Authorization`. Every data route — list/detail, filter,
+        search, ordering, OPTIONS, compiled — gets its rows through it, so the
+        pathways cannot drift. Fails closed (no rows) when the viewset's row
+        scoping can't be resolved.
         """
+        if not self._ensure_row_scoping():
+            from .predicates import _no_match_q
+
+            return Authorization(_no_match_q(), None)
         tenant_q = self._get_tenant_q(request) if self._tenant_field else None
         predicate_q = self._get_predicate_q(request) if self._predicates else None
-        return Authorization(
-            tenant_q, predicate_q, lambda: self._authorized_readable_fields(request)
-        )
+        return Authorization(tenant_q, predicate_q)
+
+    def _ensure_row_scoping(self):
+        """Make ``_tenant_field`` / ``_predicates`` hold this viewset's row
+        scoping. The router sets them on the viewsets it builds; a hand-written
+        ``TurboDRFViewSet`` subclass that sets neither gets its model's, from
+        the model's registration (or its config). False when they can't be
+        resolved."""
+        names = ("_tenant_field", "_predicates")
+        if any(name in self.__dict__ for name in names):
+            return True
+        for klass in type(self).__mro__:
+            if klass is TurboDRFViewSet:
+                break
+            if any(name in vars(klass) for name in names):
+                return True
+        resolved = _resolve_row_scoping(self.model)
+        if resolved is None:
+            return False
+        self._tenant_field, self._predicates = resolved
+        return True
 
     def list(self, request, *args, **kwargs):
         """List action with optional compiled read path.
@@ -494,31 +624,26 @@ class TurboDRFViewSet(*_viewset_bases):
 
     def _compiled_list(self, request):
         from .compiler import get_compiled_plan
+        from .validation import build_traversal_scope_q, scoped_target_queryset
 
         plan = get_compiled_plan(self.model)
 
-        # Get base queryset (preserves tenant scoping, custom managers)
-        queryset = self.get_queryset()
+        # Base queryset (tenant + predicate scoping, custom managers). The
+        # compiled path renders nested values itself, so get_queryset skips
+        # the serializer path's select_related and visibility annotations.
+        self._compiled_read = True
+        try:
+            queryset = self.get_queryset()
+        finally:
+            self._compiled_read = False
 
         # Apply filter backends (search, filtering, ordering, OR filters)
         # Filters operate on the normal queryset before .values() is applied
         queryset = self.filter_queryset(queryset)
 
-        # F4: a nested value renders only where every JOIN target along its
-        # path is visible to the caller through the target's own endpoint, and
-        # is NULL elsewhere. The row itself is the parent's: it stays listed
-        # (as on detail), so lists, counts and detail agree.
-        from .validation import build_traversal_scope_q as _btsq
-
-        fk_visibility = {}
-        for _key, _f_expr in plan.fk_annotations.items():
-            _q = _btsq(self.model, _f_expr.name, request)
-            if _q:
-                fk_visibility[_key] = _q
-
         # Per-nested-field perm gates for the compiled path — both FK
         # and M2M sides. Filtering by BASE field alone would leak nested
-        # fields the user shouldn't see.
+        # fields the user shouldn't see. None: permissions are bypassed.
         allowed_fk_keys = self._filter_compiled_fk_annotations(plan, request)
         allowed_m2m = self._filter_compiled_m2m_subfields(plan, request)
 
@@ -527,7 +652,7 @@ class TurboDRFViewSet(*_viewset_bases):
         # read and the bases of readable nested paths (a reverse one-to-one is
         # no snapshot field) — gated exactly as on the serializer (detail)
         # path, so list and detail agree.
-        readable_fields = self._get_compiled_readable_fields(request)
+        readable_fields = self._authorized_readable_fields(request)
         if readable_fields is not None:
             readable_fields = set(readable_fields)
             if plan.property_fields:
@@ -535,15 +660,52 @@ class TurboDRFViewSet(*_viewset_bases):
             if allowed_fk_keys:
                 readable_fields |= {plan._fk_base_field(k) for k in allowed_fk_keys}
 
-        # Client-driven field selection via ?fields= parameter
-        # Only fields already in the model's turbodrf() config are allowed
-        requested_fields = self._parse_client_fields(request, plan)
-        if requested_fields is not None:
-            # Intersect with permission-allowed fields
-            if readable_fields is not None:
-                readable_fields = readable_fields & requested_fields
-            else:
-                readable_fields = requested_fields
+        # ?fields= selects among the configured fields, exactly as on the
+        # serializer path (_select_configured_fields).
+        selection = self._compiled_client_selection(request, plan)
+        if selection is not None:
+            bases, fk_keys, m2m_subs = selection
+            readable_fields = (
+                bases if readable_fields is None else readable_fields & bases
+            )
+            allowed_fk_keys = (
+                fk_keys if allowed_fk_keys is None else allowed_fk_keys & fk_keys
+            )
+            if allowed_m2m is None:
+                allowed_m2m = {
+                    base: set(spec["sub_fields"])
+                    for base, spec in plan.m2m_specs.items()
+                }
+            allowed_m2m = {
+                base: (
+                    subs & m2m_subs.get(base, set())
+                    if plan.m2m_specs[base]["sub_fields"]
+                    else subs
+                )
+                for base, subs in allowed_m2m.items()
+            }
+
+        # F4: a nested value renders only where every JOIN target along its
+        # path is visible to the caller through the target's own endpoint, and
+        # is NULL elsewhere. The row itself is the parent's: it stays listed
+        # (as on detail), so lists, counts and detail agree. One scope per
+        # relation path, for the nested values that render.
+        fk_visibility, scopes = {}, {}
+        for key, f_expr in plan.fk_annotations.items():
+            if allowed_fk_keys is not None and key not in allowed_fk_keys:
+                continue
+            if (
+                readable_fields is not None
+                and plan._fk_base_field(key) not in readable_fields
+            ):
+                continue
+            relation = f_expr.name.rsplit("__", 1)[0]
+            if relation not in scopes:
+                scopes[relation] = build_traversal_scope_q(
+                    self.model, f_expr.name, request
+                )
+            if scopes[relation]:
+                fk_visibility[key] = scopes[relation]
 
         # Apply .values() + F() annotations
         compiled_qs, active_plan = plan.apply_to_queryset(
@@ -553,33 +715,37 @@ class TurboDRFViewSet(*_viewset_bases):
             allowed_m2m_subfields=allowed_m2m,
             fk_visibility=fk_visibility,
         )
+        # Count the scoped, filtered rows without the nested-value JOINs and
+        # visibility flags .values() adds: they're single-valued, so they
+        # can't change the count, and COUNT(*) over them is wasted work.
+        compiled_qs.count = queryset.count
 
         # F4: scope the M2M merge's second query to targets visible via the
         # target's own endpoint (no-op for public M2M targets), and null a
         # sub-field whose further hop is out of scope. active_plan[2] is the
         # active M2M spec map.
-        from .validation import scoped_target_queryset as _stq
-
-        _m2m_filters = {}
-        _m2m_visibility = {}
-        for _m2m_name, _spec in active_plan[2].items():
-            _scoped = _stq(_spec["related_model"], request)
-            if _scoped is not None:
-                _m2m_filters[_m2m_name] = _scoped.values("pk")
-            for _sub in _spec["sub_fields"]:
-                _q = _btsq(
-                    _spec["through_model"], f"{_spec['target_fk']}__{_sub}", request
-                )
-                if _q:
-                    _m2m_visibility.setdefault(_m2m_name, {})[_sub] = _q
+        m2m_filters, m2m_visibility = {}, {}
+        for m2m_name, spec in active_plan[2].items():
+            scoped = scoped_target_queryset(spec["related_model"], request)
+            if scoped is not None:
+                m2m_filters[m2m_name] = scoped.values("pk")
+            sub_scopes = {}
+            for sub in spec["sub_fields"]:
+                relation = sub.rsplit("__", 1)[0] if "__" in sub else ""
+                if relation not in sub_scopes:
+                    sub_scopes[relation] = build_traversal_scope_q(
+                        spec["through_model"], f"{spec['target_fk']}__{sub}", request
+                    )
+                if sub_scopes[relation]:
+                    m2m_visibility.setdefault(m2m_name, {})[sub] = sub_scopes[relation]
 
         def _render(rows):
             return plan.post_process(
                 rows,
                 active_plan,
-                m2m_target_filters=_m2m_filters,
+                m2m_target_filters=m2m_filters,
                 request=request,
-                m2m_visibility=_m2m_visibility,
+                m2m_visibility=m2m_visibility,
             )
 
         # Paginate the .values() queryset (works because it's still a queryset)
@@ -589,71 +755,40 @@ class TurboDRFViewSet(*_viewset_bases):
 
         return Response(_render(list(compiled_qs)))
 
-    def _parse_client_fields(self, request, plan):
-        """Parse ?fields= parameter and validate against model config.
-
-        Returns a set of allowed field names, or None if no ?fields= param.
-        Client can use dot notation (author.name) or underscore (author_name).
-        Only fields in the model's turbodrf() config are allowed.
-        """
-        fields_param = request.query_params.get("fields")
-        if not fields_param:
+    def _compiled_client_selection(self, request, plan):
+        """What ``?fields=`` selects on the compiled list, as ``(base fields,
+        FK annotation keys, {M2M: sub-fields})``, or None to render every
+        field: the configured entries _select_configured_fields picks, as on the
+        serializer path. So ``?fields=author_name`` renders ``author`` (the
+        raw id) and ``author_name`` only, and an unconfigured pk selects
+        nothing."""
+        wanted = set(_requested_client_fields(request))
+        if not wanted:
             return None
-
-        # Build the set of all configured field names (output keys)
-        allowed = set(plan.simple_fields)
-        allowed.update(plan.fk_annotations.keys())  # e.g. 'related_name'
-        allowed.update(plan.m2m_specs.keys())  # e.g. 'categories'
-        allowed.update(plan.property_fields.keys())
-
-        # Parse client request — accept both dot and underscore notation
-        requested = set()
-        for field in _requested_client_fields(request):
-            if field in allowed:
-                requested.add(field)
-            # An FK base selects its nested values too ("author" ->
-            # author_name, author_email) — not every key sharing the prefix
-            # ("char" must not select "char_null").
-            for key in plan.fk_annotations:
-                if plan._fk_base_field(key) == field:
-                    requested.add(key)
-
-        # Include base FK fields for any requested FK annotations so that
-        # apply_to_queryset (which filters FK annotations by base field
-        # membership) keeps them in the active plan — and renders the raw id,
-        # as the serializer path does for a nested field.
-        for fk_key in plan.fk_annotations:
-            if fk_key in requested:
-                base = plan._fk_base_field(fk_key)
-                if base:
-                    requested.add(base)
-
-        return requested if requested else None
+        selected = _select_configured_fields(plan.configured_fields, wanted)
+        if not selected:
+            return None
+        bases, fk_keys, m2m_subs = set(), set(), {}
+        for entry in selected:
+            base, _, rest = entry.partition("__")
+            bases.add(base)
+            if not rest:
+                continue
+            if base in plan.m2m_specs:
+                m2m_subs.setdefault(base, set()).add(rest)
+            else:
+                fk_keys.add(entry.replace("__", "_"))
+        return bases, fk_keys, m2m_subs
 
     def _select_client_fields(self, fields):
-        """The configured ``fields`` the ``?fields=`` parameter selects, by
-        output key (``author_name`` or ``author.name``, an FK base for all its
-        nested values, an M2M for all its sub-fields). Unchanged without the
-        parameter or when it selects nothing."""
+        """The configured ``fields`` the ``?fields=`` parameter selects (see
+        _select_configured_fields). Unchanged without the parameter or when it
+        selects nothing."""
         request = getattr(self, "request", None)
         wanted = set(_requested_client_fields(request)) if request else set()
         if not wanted:
             return fields
-        selected = []
-        for field in fields:
-            base = field.split("__")[0]
-            if field.replace("__", "_") in wanted or base in wanted:
-                selected.append(field)
-        return selected or fields
-
-    def _get_compiled_readable_fields(self, request):
-        """Readable BASE fields for the compiled path's filter step.
-
-        Delegates to the single field-allowlist source
-        ``_authorized_readable_fields`` so the compiled path and the row
-        chokepoint agree.
-        """
-        return self._authorized_readable_fields(request)
+        return _select_configured_fields(fields, wanted) or fields
 
     def _readable_property_fields(self, plan, request):
         """@property fields in the compiled plan that the caller may read.
@@ -750,52 +885,41 @@ class TurboDRFViewSet(*_viewset_bases):
             - Nested fields are collected and passed to the serializer
             - The serializer handles traversal and flattening
         """
-        config = self.model.turbodrf()
-        fields = config.get("fields", "__all__")
-
-        # Handle different field configurations
-        if isinstance(fields, dict):
-            # Different fields for list and detail views. A view type left out
-            # of the dict uses the other one — never "__all__", which exposed
-            # (and accepted writes to) every column.
-            list_fields = fields.get("list", fields.get("detail", []))
-            detail_fields = fields.get("detail", list_fields)
-            fields_to_use = list_fields if self.action == "list" else detail_fields
-        else:
-            fields_to_use = fields
-        if fields_to_use == "__all__" and hasattr(self.model, "_meta"):
-            # Resolve here so the sensitive deny-list below applies to it.
-            fields_to_use = [f.name for f in self.model._meta.fields] + [
-                f.name for f in self.model._meta.many_to_many
-            ]
-
-        # ?fields= selects among the configured fields on reads, as on the
-        # compiled list.
-        if self.action in ("list", "retrieve") and isinstance(fields_to_use, list):
-            fields_to_use = self._select_client_fields(fields_to_use)
-
-        # Store original fields before processing
-        original_fields = (
-            fields_to_use if isinstance(fields_to_use, list) else fields_to_use
+        fields_to_use = self._configured_view_fields(
+            "list" if self.action == "list" else "detail"
         )
 
-        # Process fields to separate simple and nested fields
         if isinstance(fields_to_use, list):
-            simple_fields = []
-            nested_fields = {}
-
             from django.core.exceptions import ValidationError
 
             from .validation import is_field_path_sensitive, validate_nesting_depth
 
+            # Strip sensitive at every segment of the path (I-2 fix), and
+            # paths deeper than TURBODRF_MAX_NESTING_DEPTH.
+            renderable = []
             for field in fields_to_use:
-                # Strip sensitive at every segment of the path (I-2 fix).
                 if is_field_path_sensitive(field):
                     continue
                 try:
                     validate_nesting_depth(field)
                 except ValidationError:
                     continue
+                renderable.append(field)
+            fields_to_use = renderable
+
+            # ?fields= selects among the configured fields on reads, as on the
+            # compiled list.
+            if self.action in ("list", "retrieve"):
+                fields_to_use = self._select_client_fields(fields_to_use)
+
+        configured_fields = fields_to_use
+
+        # Process fields to separate simple and nested fields
+        if isinstance(fields_to_use, list):
+            simple_fields = []
+            nested_fields = {}
+
+            for field in fields_to_use:
                 if "__" in field:
                     # This is a nested field
                     base_field = field.split("__")[0]
@@ -814,23 +938,27 @@ class TurboDRFViewSet(*_viewset_bases):
 
         # Check if we should use the factory for permission-based filtering
         request = getattr(self, "request", None)
-        user = getattr(request, "user", None) if request else None
 
         # Permission-filtered serializer for every action that renders or
         # accepts fields — custom actions included (their get_serializer()
         # otherwise rendered every configured field) — and for every caller:
-        # an anonymous caller on a public_access model is gated by its snapshot
-        # too. Only bypassed permissions get the plain serializer.
-        if not permissions_bypassed() and user and self.action != "destroy":
-            from .backends import attach_snapshot_to_request
+        # an anonymous caller is gated by its snapshot too, whether DRF
+        # represents it as AnonymousUser or None (UNAUTHENTICATED_USER: None).
+        # Only bypassed permissions (or no request at all: programmatic use)
+        # get the plain serializer.
+        if (
+            not permissions_bypassed()
+            and request is not None
+            and self.action != "destroy"
+        ):
             from .serializers import TurboDRFSerializerFactory
 
-            snapshot = attach_snapshot_to_request(request, self.model)
+            snapshot = self._caller_snapshot(request)
             view_type = "list" if self.action == "list" else "detail"
             return TurboDRFSerializerFactory.create_serializer(
                 self.model,
-                original_fields,
-                user,
+                configured_fields,
+                getattr(request, "user", None),
                 view_type=view_type,
                 snapshot=snapshot,
             )
@@ -890,6 +1018,28 @@ class TurboDRFViewSet(*_viewset_bases):
 
         return serializer_class
 
+    def _configured_view_fields(self, view_type):
+        """The model's configured fields for ``view_type`` (``'list'`` or
+        ``'detail'``), as a list. A view type left out of a dict config uses
+        the other one — never ``"__all__"``, which exposed (and accepted writes
+        to) every column; ``"__all__"`` itself is every concrete and M2M field
+        (resolved here so the sensitive deny-list applies to it). The serializer
+        and OPTIONS share this resolution."""
+        fields = self.model.turbodrf().get("fields", "__all__")
+        if isinstance(fields, dict):
+            list_fields = fields.get("list", fields.get("detail", []))
+            if view_type == "list":
+                fields = list_fields
+            else:
+                fields = fields.get("detail", list_fields)
+        if fields == "__all__" and hasattr(self.model, "_meta"):
+            return [f.name for f in self.model._meta.fields] + [
+                f.name for f in self.model._meta.many_to_many
+            ]
+        if isinstance(fields, (list, tuple)):
+            return list(fields)
+        return fields
+
     def get_queryset(self):
         """Base queryset with `select_related` for FK fields referenced in
         `turbodrf()` config. Predicate / tenant filters are AND'd onto the
@@ -912,9 +1062,15 @@ class TurboDRFViewSet(*_viewset_bases):
         # Add default ordering by primary key to avoid pagination warnings
         queryset = unscoped if unscoped.ordered else unscoped.order_by("pk")
 
+        # The compiled list renders nested values itself, and a delete renders
+        # nothing: neither needs the serializer's JOINs and visibility flags.
+        renders_instances = not getattr(self, "_compiled_read", False) and (
+            getattr(self, "action", None) != "destroy"
+        )
+
         # select_related the single-valued relation chains nested fields
         # traverse (an M2M or reverse FK can't be select_related: 500).
-        nested = self._nested_relation_paths()
+        nested = self._nested_relation_paths() if renders_instances else ()
         if nested:
             queryset = queryset.select_related(*nested)
 
@@ -924,6 +1080,9 @@ class TurboDRFViewSet(*_viewset_bases):
         # algebra, never OR-composable away by an Either().
         request = getattr(self, "request", None)
         queryset = self.authorize(request).scope(queryset)
+        if not renders_instances:
+            self._nested_visibility = {}
+            return queryset
         return self._annotate_nested_visibility(queryset, request)
 
     def _configured_nested_paths(self):
@@ -998,39 +1157,6 @@ class TurboDRFViewSet(*_viewset_bases):
         context["turbodrf_nested_visibility"] = getattr(self, "_nested_visibility", {})
         return context
 
-    def filter_queryset(self, queryset):
-        """Run DRF's filter backends, then close the ordering JOIN-target leak:
-        scope nested ``__``-paths used by an active ordering to rows the
-        caller can see via the target's own endpoint. (Search scopes its
-        nested paths itself, inside its own filter — see
-        TurboDRFSearchFilter.)
-        """
-        queryset = super().filter_queryset(queryset)
-        request = getattr(self, "request", None)
-        if request is None:
-            return queryset
-
-        from django.db.models import Q
-
-        from .validation import build_traversal_scope_q
-
-        paths = set()
-        ordering = request.query_params.get("ordering", "") or ""
-        if ordering:
-            allowed_order = self.ordering_fields
-            if isinstance(allowed_order, (list, tuple, set)):
-                for token in ordering.split(","):
-                    token = token.strip().lstrip("-")
-                    if "__" in token and token in allowed_order:
-                        paths.add(token)
-
-        scope = Q()
-        for path in paths:
-            scope &= build_traversal_scope_q(self.model, path, request)
-        if scope:
-            queryset = queryset.filter(scope)
-        return queryset
-
     @property
     def search_fields(self):
         """Search fields, intersected with the caller's read permissions.
@@ -1044,34 +1170,27 @@ class TurboDRFViewSet(*_viewset_bases):
         the raw list. The HTTP layer always has a request.
         """
         from .mixins import get_searchable_fields
+        from .validation import filter_readable_fields, is_field_path_sensitive
 
-        base = get_searchable_fields(self.model)
-        if not base:
-            return []
-        # Drop entries that aren't resolvable model fields. A misconfigured
-        # `searchable_fields = ['nonexistent']` would otherwise raise
-        # FieldError at SQL-build time → uncaught 500. Operator-mistake
-        # triggered, but failing closed (silent drop) is safer than 5xx.
-        base = [f for f in base if _is_resolvable_search_path(self.model, f)]
-        if not base:
-            return []
-
-        from .validation import is_field_path_sensitive
+        # Drop entries that can't be searched — a typo, a path ending on a
+        # relation, a `$` (regex) prefix. They would raise FieldError at
+        # SQL-build time → uncaught 500. Operator-mistake triggered, but
+        # failing closed (silent drop) is safer than 5xx. A DRF prefix (`^`,
+        # `=`, `@`) is kept on the entry; the permission checks use the path.
+        prefixes = {}
+        for entry in get_searchable_fields(self.model):
+            if _is_resolvable_search_path(self.model, entry):
+                prefix, path = _split_search_prefix(entry)
+                prefixes.setdefault(path, prefix)
 
         # The sensitive deny-list applies even with permissions bypassed.
-        base = [f for f in base if not is_field_path_sensitive(f.lstrip("^=$@"))]
-        if permissions_bypassed():
-            return base
-
+        paths = [p for p in prefixes if not is_field_path_sensitive(p)]
         request = getattr(self, "request", None)
-        if request is None:
-            return base
-
-        from .validation import filter_readable_fields
-
-        return filter_readable_fields(
-            self.model, list(base), getattr(request, "user", None)
-        )
+        if paths and not permissions_bypassed() and request is not None:
+            paths = filter_readable_fields(
+                self.model, paths, getattr(request, "user", None)
+            )
+        return [prefixes[path] + path for path in paths]
 
     @property
     def ordering_fields(self):
@@ -1080,9 +1199,17 @@ class TurboDRFViewSet(*_viewset_bases):
         attacker without read perm on `salary` could otherwise sort by it
         and binary-search the value).
 
+        Only concrete, single-valued columns are orderable. Ordering by an
+        M2M or reverse relation JOINs the related rows unscoped: it repeats
+        rows (and the paginator then drops others) and leaks the order and
+        link count of rows the caller can't see; a @property isn't a column.
+        An FK orders by its stored column (TurboDRFOrderingFilter).
+
         With permissions bypassed: every configured field. Sensitive fields
         are never orderable.
         """
+        from django.core.exceptions import FieldDoesNotExist
+
         from .validation import _get_sensitive_fields
 
         sensitive_fields = _get_sensitive_fields()
@@ -1090,7 +1217,17 @@ class TurboDRFViewSet(*_viewset_bases):
             readable = self._configured_base_fields()
         else:
             readable = self._get_filterable_fields() or set()
-        return [name for name in readable if name not in sensitive_fields]
+        orderable = []
+        for name in sorted(readable):
+            if name in sensitive_fields:
+                continue
+            try:
+                field = self.model._meta.get_field(name)
+            except FieldDoesNotExist:
+                continue
+            if field.concrete and not field.many_to_many:
+                orderable.append(name)
+        return orderable
 
     def get_filterset_fields(self):
         """
@@ -1108,99 +1245,21 @@ class TurboDRFViewSet(*_viewset_bases):
             GET /api/articles/?created_at__gte=2024-01-01
             GET /api/articles/?title__icontains=django
             GET /api/articles/?price__gte=10&price__lte=100
-            GET /api/products/?categories__slug=electronics
+            GET /api/articles/?categories=3
 
         Note:
             JSONField and BinaryField are excluded from automatic filtering
             as they require special handling that django-filter doesn't
             support out of the box.
+
+        Computed once per request: django-filter, the OR filter backend and
+        OPTIONS all read it.
         """
-        from django.db import models
+        request = getattr(self, "request", None)
+        cached = self.__dict__.get("_filterset_fields")
+        if cached is not None and request is not None and cached[0] is request:
+            return cached[1]
 
-        filterset_fields = {}
-
-        # Helper function to get lookups for a field
-        def get_field_lookups(field):
-            field_class_name = field.__class__.__name__
-
-            # Skip fields that django-filter doesn't support or that
-            # don't make sense to filter
-            unsupported_fields = ["JSONField", "BinaryField", "FilePathField"]
-            if field_class_name in unsupported_fields:
-                return None
-
-            # Also check by importing JSONField classes directly for extra safety
-            try:
-                from django.db.models import JSONField as ModelsJSONField
-
-                if isinstance(field, ModelsJSONField):
-                    return None
-            except ImportError:
-                pass
-
-            # Check for PostgreSQL JSONField (older Django versions)
-            try:
-                from django.contrib.postgres.fields import JSONField as PGJSONField
-
-                if isinstance(field, PGJSONField):
-                    return None
-            except ImportError:
-                pass
-
-            # Skip any field that has 'json' in its class name (case insensitive)
-            # This catches custom JSONField implementations
-            if "json" in field_class_name.lower():
-                return None
-
-            # Define lookups based on field type
-            if isinstance(
-                field, (models.IntegerField, models.DecimalField, models.FloatField)
-            ):
-                # Numeric fields get comparison lookups
-                return ["exact", "gte", "lte", "gt", "lt"]
-            elif isinstance(field, (models.DateField, models.DateTimeField)):
-                # Date fields get date lookups
-                return [
-                    "exact",
-                    "gte",
-                    "lte",
-                    "gt",
-                    "lt",
-                    "year",
-                    "month",
-                    "day",
-                ]
-            elif isinstance(field, models.BooleanField):
-                # Boolean fields only need exact
-                return ["exact"]
-            elif isinstance(field, (models.CharField, models.TextField)):
-                # Text fields get string lookups
-                return [
-                    "exact",
-                    "icontains",
-                    "istartswith",
-                    "iendswith",
-                ]
-            elif isinstance(field, models.ForeignKey):
-                # Foreign keys get exact lookup
-                return ["exact"]
-            elif isinstance(field, (models.FileField, models.ImageField)):
-                # Skip FileField and ImageField - django-filter doesn't support them
-                # Attempting to filter by these fields causes:
-                # "AssertionError: ... resolved field 'X' with 'exact' lookup to an
-                # unrecognized field type ImageField"
-                return None
-            elif isinstance(field, models.UUIDField):
-                # UUID fields only support exact matching
-                return ["exact", "isnull"]
-            elif isinstance(field, models.GenericIPAddressField):
-                # IP address fields support exact and startswith
-                return ["exact", "istartswith"]
-            else:
-                # Default to exact lookup
-                return ["exact"]
-
-        # Get sensitive fields deny-list
         from .validation import _get_sensitive_fields
 
         sensitive_fields = _get_sensitive_fields()
@@ -1211,26 +1270,25 @@ class TurboDRFViewSet(*_viewset_bases):
         if readable_fields is None:
             readable_fields = self._configured_base_fields()
 
-        # Get all regular fields from the model
+        filterset_fields = {}
         for field in self.model._meta.fields:
-            if field.name in sensitive_fields:
+            if field.name in sensitive_fields or field.name not in readable_fields:
                 continue
-            if readable_fields is not None and field.name not in readable_fields:
-                continue
-            lookups = get_field_lookups(field)
+            lookups = _filter_lookups(field)
             if lookups:
                 filterset_fields[field.name] = lookups
 
-        # Get all ManyToMany fields
+        # An M2M filters by a target pk (`?categories=3`, matched against the
+        # targets the caller can see). Its `in` / `isnull` lookups aren't
+        # offered: django-filter's `in` never matched, and `isnull` JOINed the
+        # link table unscoped, repeating rows and counting hidden targets.
         for field in self.model._meta.many_to_many:
-            if field.name in sensitive_fields:
+            if field.name in sensitive_fields or field.name not in readable_fields:
                 continue
-            if readable_fields is not None and field.name not in readable_fields:
-                continue
-            # ManyToMany fields support filtering by ID and null checks
-            # They also support filtering through related model fields via __ notation
-            filterset_fields[field.name] = ["exact", "in", "isnull"]
+            filterset_fields[field.name] = ["exact"]
 
+        if request is not None:
+            self._filterset_fields = (request, filterset_fields)
         return filterset_fields
 
     def _get_filterable_fields(self):
@@ -1311,10 +1369,29 @@ class TurboDRFViewSet(*_viewset_bases):
             serializer.data, status=status.HTTP_201_CREATED, headers=headers
         )
 
-    def _prefill_required_fields(self, request):
+    def update(self, request, *args, **kwargs):
+        """Update a model instance. A full update (PUT) that leaves out the
+        tenant FK gets it pre-filled, as on create: it's required, and the
+        row is in the caller's tenant anyway. The owner isn't: an update
+        leaves it as is."""
+        partial = kwargs.pop("partial", False)
+        instance = self.get_object()
+        data = request.data
+        if not partial:
+            data = self._prefill_required_fields(request, owner=False)
+        serializer = self.get_serializer(instance, data=data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        if getattr(instance, "_prefetched_objects_cache", None):
+            # As DRF's UpdateModelMixin: drop a stale prefetch cache.
+            instance._prefetched_objects_cache = {}
+        return Response(serializer.data)
+
+    def _prefill_required_fields(self, request, owner=True):
         """Inject tenant/owner FKs into request.data so the serializer's
         required-field check passes. Only fills missing values — explicit
         user values pass through and are validated by the serializer.
+        ``owner=False`` fills the tenant only.
         """
         from .predicates import Owner, get_user_tenant
 
@@ -1327,24 +1404,29 @@ class TurboDRFViewSet(*_viewset_bases):
         # of crashing here on .copy() / dict() calls.
         if not isinstance(request.data, dict):
             return request.data
+        if not self._ensure_row_scoping():
+            return request.data  # the serializer's own checks refuse the write
 
-        try:
-            data = request.data.copy()
-        except AttributeError:
-            data = dict(request.data)
-
+        fill = {}
         # Tenant from the mandatory layer (setting, not predicate)
         if self._tenant_field and "__" not in self._tenant_field:
-            if self._tenant_field not in data:
+            if self._tenant_field not in request.data:
                 tenant = get_user_tenant(request.user)
                 if tenant is not None:
-                    data[self._tenant_field] = getattr(tenant, "pk", tenant)
+                    fill[self._tenant_field] = getattr(tenant, "pk", tenant)
 
         # Owner from within-tenant predicates
-        for pred in self._predicates:
+        for pred in self._predicates if owner else ():
             if isinstance(pred, Owner) and len(pred.fields) == 1:
                 field = pred.fields[0]
-                if "__" not in field and field not in data:
-                    data[field] = request.user.pk
+                if "__" not in field and field not in request.data:
+                    fill[field] = request.user.pk
 
+        if not fill:
+            return request.data
+        # A shallow copy: QueryDict.copy() deep-copies, and an uploaded file
+        # spooled to disk (over FILE_UPLOAD_MAX_MEMORY_SIZE) can't be copied.
+        data = copy.copy(request.data)
+        for field, value in fill.items():
+            data[field] = value
         return data

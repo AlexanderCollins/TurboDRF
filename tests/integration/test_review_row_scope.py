@@ -180,11 +180,19 @@ class TestCrossTenantNestedValueOnEveryPath(TestCase):
 
 class TestLookupNamedRelatedFieldIsScoped(_Fixture):
     """``?folder__date=`` — a related field named like a lookup — goes through
-    the same scoping and permission checks as any nested filter."""
+    the same scoping and permission checks as any nested filter. (A nested
+    filter needs its path configured: ScopeItem lists ``folder__date`` here.)"""
 
     def setUp(self):
         super().setUp()
         ScopeItem.objects.create(label="i", brokerage=self.A, folder=self.folder_priv)
+        config = dict(ScopeItem.turbodrf())
+        config["fields"] = [*config["fields"], "folder__date"]
+        patcher = patch.object(
+            ScopeItem, "turbodrf", classmethod(lambda cls: dict(config))
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_scoped_baselines(self):
         self._as(self.a2)
