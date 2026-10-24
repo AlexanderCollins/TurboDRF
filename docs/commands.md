@@ -13,6 +13,7 @@ Report how each TurboDRF model is served and scoped:
 ```bash
 python manage.py turbodrf_check
 python manage.py turbodrf_check --model Book    # by class name
+python manage.py turbodrf_check --scope platform
 ```
 
 For each enabled model it prints:
@@ -21,6 +22,8 @@ For each enabled model it prints:
 - A breakdown of the list fields (DB, FK, M2M, property) and any that don't resolve.
 - `public_access`.
 - Tenancy, when `TURBODRF_TENANT_MODEL` is set: the resolved `tenant_field` (marked when auto-detected; the command uses the router's `TURBODRF_AUTODETECT_TENANT` default, `False`), the within-tenant predicates, `shared`, or `NOT DECLARED` for a model the router will refuse to register.
+
+With `--scope platform` it reports the models with an enabled `'platform'` block instead, as a platform router serves them: compiled status and fields from the block, and the tenant path platform writes keep consistent (see [Platform scope](platform.md)).
 
 It only reports, and exits 0 whatever it finds. The startup checks run in `manage.py check`, as above.
 
@@ -44,6 +47,7 @@ python manage.py turbodrf_explain Book
 python manage.py turbodrf_explain Book --role viewer
 python manage.py turbodrf_explain Book --fields "title,author.name"
 python manage.py turbodrf_explain Book --role viewer --sql
+python manage.py turbodrf_explain Job --scope platform --role support
 ```
 
 Shows:
@@ -52,3 +56,4 @@ Shows:
 - With `--fields`, what that `?fields=` selection renders, as the API does
 - Query complexity (JOINs, total queries)
 - With `--sql`, the generated SQL, before the per-request tenant and predicate filters
+- With `--scope platform`, the model's platform block: its compiled list, and `--role` names a role in `TURBODRF_PLATFORM_ROLES`

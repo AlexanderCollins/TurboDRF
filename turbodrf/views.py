@@ -19,6 +19,7 @@ from .permissions import (
     TurboDRFPermission,
     permissions_bypassed,
 )
+from .scope import PLATFORM, TENANT, use_scope
 from .serializers import TurboDRFSerializer
 from .tracking import get_viewset_base_classes
 
@@ -423,6 +424,13 @@ class TurboDRFViewSet(*_viewset_bases):
     _tenant_field = None
     _read_only = False  # Set by router for `read_only: True` resources
 
+    # The scope this viewset serves ("tenant" or "platform", see
+    # turbodrf.scope), and the router's gate: permission classes checked
+    # before every other permission on every route and action. Set by the
+    # router; a mixin can read them (e.g. to audit platform reads).
+    turbodrf_scope = TENANT
+    turbodrf_gate = ()
+
     # NOTE on @action routes: custom @action methods that call
     # self.get_object() or self.get_queryset() inherit scoping automatically.
     # If you bypass those (e.g. self.model.objects.get(...) directly), scoping
@@ -431,8 +439,57 @@ class TurboDRFViewSet(*_viewset_bases):
     def dispatch(self, request, *args, **kwargs):
         # Roles and permission snapshots are looked up once per request (see
         # backends._permission_memo), not once per field / filter / hop.
-        with _permission_memo():
-            return super().dispatch(request, *args, **kwargs)
+        # Everything runs in the viewset's scope; a platform response is also
+        # rendered in it (a renderer, such as the browsable API's forms, calls
+        # back into the viewset), not later by Django outside the scope.
+        with use_scope(self.turbodrf_scope), _permission_memo():
+            response = super().dispatch(request, *args, **kwargs)
+            if self.turbodrf_scope != TENANT:
+                render = getattr(response, "render", None)
+                if callable(render) and not getattr(response, "is_rendered", True):
+                    render()
+            return response
+
+    def check_permissions(self, request):
+        """The gate first, then the route's own permissions. The gate is
+        checked here rather than added to ``get_permissions()``, so it holds
+        on every route and action (OPTIONS and the browsable API's forms
+        included) however a subclass or an action's ``permission_classes``
+        builds that list."""
+        self._check_gate(request)
+        super().check_permissions(request)
+
+    def check_object_permissions(self, request, obj):
+        for permission in self._gate_permissions():
+            if not permission.has_object_permission(request, self, obj):
+                self.permission_denied(
+                    request,
+                    message=getattr(permission, "message", None),
+                    code=getattr(permission, "code", None),
+                )
+        super().check_object_permissions(request, obj)
+
+    def _gate_permissions(self):
+        return [permission() for permission in self.turbodrf_gate]
+
+    def _check_gate(self, request):
+        from django.core.exceptions import ImproperlyConfigured
+
+        if self.turbodrf_scope == PLATFORM and not self.turbodrf_gate:
+            # A platform viewset built outside TurboDRFRouter(scope="platform",
+            # gate=[...]): refuse rather than serve every tenant's rows.
+            raise ImproperlyConfigured(
+                f"{type(self).__name__} serves the platform scope without a "
+                f"gate. Set turbodrf_gate (TurboDRFRouter(scope='platform', "
+                f"gate=[...]) does)."
+            )
+        for permission in self._gate_permissions():
+            if not permission.has_permission(request, self):
+                self.permission_denied(
+                    request,
+                    message=getattr(permission, "message", None),
+                    code=getattr(permission, "code", None),
+                )
 
     def handle_exception(self, exc):
         from django.core.exceptions import RequestDataTooBig, TooManyFieldsSent
@@ -482,6 +539,9 @@ class TurboDRFViewSet(*_viewset_bases):
         declared = self.__dict__.get("permission_classes")
         if declared is not None:
             return [permission() for permission in declared]
+        if self.turbodrf_scope == PLATFORM:
+            # The bypass settings are the tenant scope's (permissions_bypassed).
+            return [TurboDRFPermission()]
         if getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
             return []
         if getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False):
@@ -622,23 +682,29 @@ class TurboDRFViewSet(*_viewset_bases):
             return False
         return True
 
-    def _compiled_field_gates(self, request, plan):
+    def _compiled_field_gates(self, request, plan, permissions=True):
         """What a compiled list may render for this caller and ``?fields=``:
         ``(readable base fields, FK annotation keys, {m2m: sub-fields})``,
         each ``None`` when permissions are bypassed and nothing is selected.
-        ``turbodrf_explain`` reports the same gates."""
+        ``turbodrf_explain`` reports the same gates (``permissions=False``:
+        the ``?fields=`` selection alone, before any permission rule)."""
         # Per-nested-field perm gates for the compiled path — both FK
         # and M2M sides. Filtering by BASE field alone would leak nested
         # fields the user shouldn't see. None: permissions are bypassed.
-        allowed_fk_keys = self._filter_compiled_fk_annotations(plan, request)
-        allowed_m2m = self._filter_compiled_m2m_subfields(plan, request)
+        if not permissions:
+            allowed_fk_keys = allowed_m2m = None
+        else:
+            allowed_fk_keys = self._filter_compiled_fk_annotations(plan, request)
+            allowed_m2m = self._filter_compiled_m2m_subfields(plan, request)
 
         # Get readable fields from permission snapshot. The snapshot only knows
         # concrete and M2M fields, so add the @property fields the caller may
         # read and the bases of readable nested paths (a reverse one-to-one is
         # no snapshot field) — gated exactly as on the serializer (detail)
         # path, so list and detail agree.
-        readable_fields = self._authorized_readable_fields(request)
+        readable_fields = (
+            self._authorized_readable_fields(request) if permissions else None
+        )
         if readable_fields is not None:
             readable_fields = set(readable_fields)
             if plan.property_fields:
@@ -1180,6 +1246,10 @@ class TurboDRFViewSet(*_viewset_bases):
 
         # The sensitive deny-list applies even with permissions bypassed.
         paths = [p for p in prefixes if not is_field_path_sensitive(p)]
+        if self.turbodrf_scope == PLATFORM:
+            # Only configured paths (the router refuses others at startup).
+            configured = self._configured_paths()
+            paths = [p for p in paths if p in configured]
         request = getattr(self, "request", None)
         if paths and not permissions_bypassed() and request is not None:
             paths = filter_readable_fields(
@@ -1319,7 +1389,9 @@ class TurboDRFViewSet(*_viewset_bases):
         """Base names of every field the model's ``turbodrf()`` config exposes
         (list and detail; ``"__all__"`` means every concrete and M2M field),
         plus the pk."""
-        config = self.model.turbodrf() if hasattr(self.model, "turbodrf") else {}
+        from .mixins import _model_config
+
+        config = _model_config(self.model) if hasattr(self.model, "turbodrf") else {}
         fields = config.get("fields", "__all__")
         if isinstance(fields, dict):
             groups = [fields.get("list", []), fields.get("detail", [])]
@@ -1333,6 +1405,12 @@ class TurboDRFViewSet(*_viewset_bases):
             else:
                 names.update(f.split("__")[0] for f in group)
         return names
+
+    def _configured_paths(self):
+        """Every configured field path (list and detail)."""
+        return set(self._configured_view_fields("list")) | set(
+            self._configured_view_fields("detail")
+        )
 
     @property
     def filterset_fields(self):
@@ -1390,6 +1468,10 @@ class TurboDRFViewSet(*_viewset_bases):
         """
         from .predicates import Owner, get_user_tenant
 
+        if self.turbodrf_scope == PLATFORM:
+            # Nothing is filled in from a staff member: a platform create
+            # names the row's tenant itself (serializers._apply_platform_writes).
+            return request.data
         if not request.user.is_authenticated:
             return request.data
 

@@ -823,6 +823,7 @@ class TestCompiledPathRuns(TestCase):
         "ParityCodePk",
         "ParityTarget",
         "ParityUuidPk",
+        "PlatformAccount",
         "RelatedModel",
         "SampleModel",
         "Valuation",

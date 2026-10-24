@@ -28,6 +28,7 @@ Dead simple Django REST Framework API generator with role-based permissions.
    :caption: Authorization & Tenancy:
 
    tenancy
+   platform
    security
    migration_to_predicates
 

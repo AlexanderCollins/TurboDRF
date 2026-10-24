@@ -20,12 +20,24 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db.models import Q
 
+from .scope import is_platform, platform_reachable
+
 
 def get_user_tenant(user):
     """Resolve the user's tenant value (FK object or PK).
 
-    Reads TURBODRF_TENANT_USER_FIELD from settings. None on missing/unset.
+    Reads TURBODRF_TENANT_USER_FIELD from settings. None on missing/unset, and
+    always None on the platform scope: a staff member's own tenant never
+    scopes or fills in anything there.
     """
+    if is_platform():
+        return None
+    return user_tenant_value(user)
+
+
+def user_tenant_value(user):
+    """``user``'s TURBODRF_TENANT_USER_FIELD value as a model instance or an
+    integer pk, else None, whatever the scope."""
     tenant_field = getattr(settings, "TURBODRF_TENANT_USER_FIELD", None)
     if not tenant_field:
         return None
@@ -612,11 +624,24 @@ _model_predicates = {}
 _model_tenant_fields = {}
 
 
+class _PlatformUnreachable(Predicate):
+    """The row rule of a model the platform scope can't reach (a TurboDRF
+    model without a platform block, see scope.platform_reachable): no row."""
+
+    def q(self, request, user_roles):
+        return _no_match_q()
+
+
 def register_predicates(model, predicates):
     _model_predicates[model] = list(predicates)
 
 
 def get_predicates(model):
+    """The within-tenant predicates of ``model`` on the current scope. On the
+    platform scope a reachable model has none, and any other model a rule
+    that matches no row."""
+    if is_platform():
+        return [] if platform_reachable(model) else [_PlatformUnreachable()]
     return _model_predicates.get(model, [])
 
 
@@ -629,7 +654,18 @@ def register_tenant_field(model, tenant_field):
 
 
 def get_tenant_field(model):
-    """Return the tenant_field setting for a model, or None."""
+    """Return the tenant_field setting for a model on the current scope, or
+    None. The platform scope has no tenant boundary: always None there (see
+    ``registered_tenant_field``)."""
+    if is_platform():
+        return None
+    return _model_tenant_fields.get(model)
+
+
+def registered_tenant_field(model):
+    """The model's registered tenant_field, whatever the scope: the platform
+    scope's write checks use it to keep a row and the rows it points at in
+    one tenant."""
     return _model_tenant_fields.get(model)
 
 
@@ -724,9 +760,11 @@ _MODEL_ACTIONS = {"read", "create", "update", "delete"}
 _FIELD_ACTIONS = {"read", "write"}
 
 
-def validate_permission_strings():
+def validate_permission_strings(roles=None, setting="TURBODRF_ROLES"):
     """Refuse to boot if ``TURBODRF_ROLES`` contains a permission string
-    that doesn't resolve to a real model + field + action.
+    that doesn't resolve to a real model + field + action. ``roles`` and
+    ``setting`` check another role map the same way
+    (``TURBODRF_PLATFORM_ROLES``).
 
     The footgun this protects against:
 
@@ -759,7 +797,8 @@ def validate_permission_strings():
     from django.core.exceptions import ImproperlyConfigured
 
     allow_unknown = getattr(dj_settings, "TURBODRF_ALLOW_UNKNOWN_PERMISSIONS", False)
-    roles = getattr(dj_settings, "TURBODRF_ROLES", None)
+    if roles is None:
+        roles = getattr(dj_settings, setting, None)
     if not roles:
         return
 
@@ -851,7 +890,7 @@ def validate_permission_strings():
         return
 
     message = (
-        f"TURBODRF_ROLES contains {len(errors)} invalid permission string(s).\n"
+        f"{setting} contains {len(errors)} invalid permission string(s).\n"
         f"Each permission must be 'app.model.action' or 'app.model.field.action' "
         f"and resolve to a real registered model.\n\n"
         + "\n".join(f"  • {e}" for e in errors)

@@ -29,7 +29,13 @@ Role selection:
     never sets that key, so it only applies if your app stores the caller's
     chosen role there. Either way the role can never widen the schema.
     Narrowing is supported in static permission mode; in database mode it is
-    ignored.
+    ignored (on the platform scope, which is always static, it works).
+
+Scopes:
+    ``RoleBasedSchemaGenerator`` documents the tenant scope's endpoints only,
+    ``PlatformSchemaGenerator`` the platform scope's only (each a separate
+    document; see ``TurboDRFRouter.get_schema_view``). Each generates in its
+    own scope, so roles, snapshots and fields are that scope's.
 """
 
 import hashlib
@@ -40,6 +46,9 @@ from drf_yasg import openapi
 from drf_yasg.generators import EndpointEnumerator, OpenAPISchemaGenerator
 from drf_yasg.inspectors import NotHandled, PaginatorInspector, SwaggerAutoSchema
 from drf_yasg.utils import no_body
+
+from .backends import RoleOnlyIdentity
+from .scope import PLATFORM, TENANT, current_scope, use_scope
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +73,7 @@ _SCHEMA_USER_ATTR = "_turbodrf_schema_user"
 _UNSET = object()
 
 
-class _RoleScopedUser:
+class _RoleScopedUser(RoleOnlyIdentity):
     """Permission-only identity carrying a subset of the caller's roles.
 
     Used to build the schema for ``?role=<r>``. It holds ONLY a role list:
@@ -73,13 +82,6 @@ class _RoleScopedUser:
     factory's field check — never to the ORM. The real request user still
     drives the endpoint permission check and FK queryset scoping.
     """
-
-    is_authenticated = True
-    is_anonymous = False
-    pk = None
-
-    def __init__(self, roles):
-        self.roles = list(roles)
 
 
 def _turbodrf_model(view):
@@ -117,8 +119,10 @@ def _snapshot_for(user, model):
 
 def _request_snapshot_key(model):
     # Same key backends.attach_snapshot_to_request uses for its per-request
-    # snapshot cache.
-    return f"{model._meta.app_label}.{model._meta.model_name}"
+    # snapshot cache (scope included).
+    from .backends import request_snapshot_key
+
+    return request_snapshot_key(model)
 
 
 def _configured_fields(model, kind):
@@ -215,16 +219,34 @@ class _NoSlashEndpointEnumerator(EndpointEnumerator):
     and generate every operation twice. The duplicates' URL names end in
     ``_no_slash``; only the URL name tells them apart, and drf-yasg passes it
     here (not to the generator's later hooks).
+
+    It also keeps the document to one scope: a view whose
+    ``turbodrf_scope`` differs from ``scope`` isn't enumerated, so it can't
+    even move the document's common path prefix. With ``view_classes`` (a
+    callable returning view classes: a router's registry, see
+    ``TurboDRFRouter.get_schema_view``) only those views are.
     """
+
+    scope = TENANT
+    view_classes = None
 
     def should_include_endpoint(
         self, path, callback, app_name="", namespace="", url_name=None
     ):
         if isinstance(url_name, str) and url_name.endswith(_NO_SLASH_SUFFIX):
             return False
+        view_class = getattr(callback, "cls", None)
+        if getattr(view_class, "turbodrf_scope", TENANT) != self.scope:
+            return False
+        if self.view_classes is not None and view_class not in self.view_classes():
+            return False
         return super().should_include_endpoint(
             path, callback, app_name, namespace, url_name
         )
+
+
+class _PlatformEndpointEnumerator(_NoSlashEndpointEnumerator):
+    scope = PLATFORM
 
 
 class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
@@ -243,6 +265,8 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
     """
 
     endpoint_enumerator_class = _NoSlashEndpointEnumerator
+    # The scope this generator documents (and generates in).
+    scope = TENANT
 
     def __init__(self, info, version="", url=None, patterns=None, urlconf=None):
         super().__init__(info, version, url, patterns, urlconf)
@@ -268,6 +292,10 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
             reads of ``public_access`` models, with the fields an anonymous
             caller can read.
         """
+        with use_scope(self.scope):
+            return self._scoped_schema(request, public)
+
+    def _scoped_schema(self, request, public):
         from .backends import get_permission_mode, get_user_roles
 
         self.current_role = None
@@ -283,7 +311,10 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
                 # adopted only when the caller already holds it, so it can
                 # only narrow the schema.
                 if requested in held:
-                    if get_permission_mode() == "database":
+                    if (
+                        current_scope() == TENANT
+                        and get_permission_mode() == "database"
+                    ):
                         logger.info(
                             "Ignoring ?role=%s for the schema: role narrowing "
                             "is not supported in database permission mode.",
@@ -352,6 +383,8 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
         if model is None:
             # Only TurboDRF endpoints are documented by this generator.
             return False
+        if getattr(view, "turbodrf_scope", TENANT) != self.scope:
+            return False  # another scope's document
 
         if not self._gen.has_view_permissions(path, method, view):
             return False
@@ -367,6 +400,15 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
         if action is None:
             return False
         return self._snapshot(view, model).can_perform_action(action)
+
+
+class PlatformSchemaGenerator(RoleBasedSchemaGenerator):
+    """``RoleBasedSchemaGenerator`` for the platform scope: documents only the
+    platform router's endpoints, with the caller's platform roles and
+    TURBODRF_PLATFORM_ROLES."""
+
+    endpoint_enumerator_class = _PlatformEndpointEnumerator
+    scope = PLATFORM
 
 
 def _swagger2_schema(node):
@@ -616,6 +658,8 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
         ref_name_value = (
             f"{model._meta.app_label}_{model._meta.model_name}_{digest}_write"
         )
+        if current_scope() != TENANT:
+            ref_name_value = f"{current_scope()}_{ref_name_value}"
 
         class WriteOperationSerializer(base_class):
             class Meta(base_meta):

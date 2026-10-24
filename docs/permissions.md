@@ -148,6 +148,11 @@ ignored. With the allauth or Keycloak integration on, TurboDRF installs a
   UI without redeploying, and take effect on the next request (see
   [Caching](#caching)).
 
+The mode applies to the tenant scope. A platform router (staff across
+tenants) has its own roles and map, `TURBODRF_PLATFORM_ROLE_GETTER` and
+`TURBODRF_PLATFORM_ROLES`, always static: see
+[Platform scope](platform.md#roles-and-permissions).
+
 ### Database-backed permissions
 
 For runtime changes without redeployment:

@@ -1,5 +1,99 @@
 # Changelog
 
+## 0.8.0 — Platform scope: a staff API across tenants
+
+TurboDRF could only serve tenant-scoped requests, so an operator's own staff
+console (jobs, webhook deliveries, audit logs, the tenants themselves) was
+hand-written views. 0.8.0 adds a second scope that serves it from the same
+models: opt-in per model, a gate on every route, and roles kept apart from the
+tenant ones. See [Platform scope](docs/platform.md).
+
+### Upgrading
+
+Nothing changes for a project that doesn't mount a platform router: the tenant
+router, its responses, OPTIONS, schema, cache keys and startup checks are as
+in 0.7.0. To note:
+
+- `"platform"` is now a known `turbodrf()` key, and both routers check every
+  platform block at startup (a broken one raises `ImproperlyConfigured`
+  whether or not a platform router is mounted).
+- The tenant schema (`get_turbodrf_schema_view()`, `turbodrf.urls`) leaves out
+  platform routes when a platform router is mounted in the same URLconf.
+- `TurboDRFRouter.include_root_view` is `None` on the class and resolves per
+  scope in `__init__` (on for the tenant scope, as before). A subclass that
+  sets it keeps its value.
+- `predicates.get_tenant_field()`, `get_predicates()` and `get_user_tenant()`
+  answer for the current scope; on the tenant scope they return what they
+  did. `registered_tenant_field()` returns the registered tenant field on
+  either scope.
+
+### Platform scope
+
+- **Config.** A `"platform": {...}` block in `turbodrf()` holds the model's
+  platform API: `endpoint`, `fields`, `searchable_fields`, `lookup_field`,
+  `read_only`, `http_methods`, `actions`, `compiled`, `enabled`, `full_clean`,
+  `property_relations`, `unscoped_properties`. Tenancy keys (`tenant_field`,
+  `owner_field`, `bypass_owner_roles`, `visibility`, `tenancy`,
+  `public_access`) raise inside it. Top-level `"enabled": False` doesn't
+  affect it; `"enabled": False` inside it gives no route but keeps the model
+  reachable from other platform models.
+- **Startup checks**, as strict as 0.7.0's for the top level: unknown keys,
+  fields, the lookup field, the property config; a field, search or
+  `property_relations` path into a model the platform scope can't reach; a
+  `searchable_fields` entry outside the block's `fields`; and a block that
+  allows creates on a tenant-scoped model but leaves the tenant FK out of its
+  `fields`.
+- **Router.** `TurboDRFRouter(scope="platform", gate=[...])`, or `scope` and
+  `gate` as class attributes of a subclass. It registers only models with a
+  platform block, with no tenant boundary and no predicates, and refuses to
+  build without a gate, without `TURBODRF_PLATFORM_ROLES` or with an invalid
+  permission string in it. No index view by default; route names start with
+  `platform-`. The tenant router takes an optional `gate` too.
+- **The gate** (permission classes) is checked before anything else on every
+  route and action, OPTIONS, the browsable API's forms and the router's
+  schema view, in `check_permissions()`, so an action's `permission_classes`
+  or a subclass's `get_permissions()` can't drop it.
+- **Roles.** Platform roles come from `TURBODRF_PLATFORM_ROLE_GETTER` (a
+  dotted path or callable; default `user.platform_roles`) and permissions from
+  `TURBODRF_PLATFORM_ROLES` (the shape of `TURBODRF_ROLES`), always static:
+  database permission mode applies to the tenant scope only. A tenant role
+  grants nothing on the platform router and a platform role nothing on the
+  tenant router. No anonymous access, and `TURBODRF_DISABLE_PERMISSIONS` /
+  `TURBODRF_USE_DEFAULT_PERMISSIONS` don't apply there.
+- **Same machinery.** Field rules (from the platform map), filters with 0.7.0's
+  rules, search, ordering, pagination, the compiled list, the `@property`
+  sandbox, actions, OPTIONS and the sensitive-field deny-list all run on the
+  platform config. Permission snapshots, their cache keys and compiled plans
+  are kept per scope.
+- **Relations** reach only models with a platform block, the tenant model, or
+  models that aren't TurboDRF models; any other model's rows read as none.
+- **Writes.** Nothing is filled in from the staff member: a create on a
+  tenant-scoped model names its tenant. FK and M2M values must be reachable
+  rows of the row's tenant (400 otherwise), and an update that moves a row to
+  another tenant checks the relations it keeps.
+- **Extension point.** Generated viewsets carry `turbodrf_scope` and
+  `turbodrf_gate`, and wrapping them in a mixin from a router subclass works on
+  the platform scope. `turbodrf.scope.current_scope()` returns the running
+  request's scope. A platform response is rendered inside its scope.
+- **Schema.** `router.get_schema_view()` documents that router's routes only,
+  behind its gate, with the caller's platform roles (`?role=` narrows to a
+  held platform role). The tenant and platform documents never mix.
+- **Commands.** `turbodrf_check --scope platform` and
+  `turbodrf_explain <Model> --scope platform [--role <platform role>]`.
+
+### Fixed
+
+- Tests: the router test helpers patched `apps.get_models` on Django's app
+  registry, so a relation tree rebuilt during a patch (after another test
+  re-registered a model) lost other models' reverse relations for the rest of
+  the run. They now patch `turbodrf.router.apps` only.
+
+### Docs
+
+- New [Platform scope](docs/platform.md) page with a worked example; the
+  settings reference, configuration, permissions, security and commands pages,
+  `AGENTS.md` and the README cover it.
+
 ## 0.7.0 — Full audit: write rules that hold, tighter filters, faster requests
 
 A second full review (every module, every test, the docs against the code)

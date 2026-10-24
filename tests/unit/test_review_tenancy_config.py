@@ -13,6 +13,7 @@ from django.db.models import Q
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.test.utils import isolate_apps
 
+from tests.fixtures import router_apps
 from tests.test_app.models import (
     BankAccount,
     Brokerage,
@@ -78,8 +79,8 @@ def _router(*models_and_configs):
     with _preserve_registries():
         patches = [
             mock.patch(
-                "turbodrf.router.apps.get_models",
-                return_value=[m for m, _ in models_and_configs],
+                "turbodrf.router.apps",
+                router_apps([m for m, _ in models_and_configs]),
             )
         ] + [
             mock.patch.object(m, "turbodrf", classmethod(lambda cls, c=c: dict(c)))

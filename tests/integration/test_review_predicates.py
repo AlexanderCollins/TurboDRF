@@ -19,6 +19,7 @@ from django.test import TestCase, override_settings
 from rest_framework.response import Response
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
+from tests.fixtures import router_apps
 from tests.test_app.apps import _test_user_brokerages, set_test_brokerage
 from tests.test_app.models import (
     Brokerage,
@@ -115,7 +116,7 @@ class _Fixture(TestCase):
         with (
             _preserve_registries(),
             mock.patch.object(model, "turbodrf", cfg),
-            mock.patch("turbodrf.router.apps.get_models", return_value=[model]),
+            mock.patch("turbodrf.router.apps", router_apps([model])),
         ):
             router = TurboDRFRouter()
             yield router.registry[0][1]
@@ -359,10 +360,7 @@ class TestTenancyRegisteredForEveryModel(_Fixture):
             mock.patch.object(
                 ScopeFolder, "turbodrf", classmethod(lambda cls: dict(disabled))
             ),
-            mock.patch(
-                "turbodrf.router.apps.get_models",
-                return_value=[ScopeFolder, ScopeItem],
-            ),
+            mock.patch("turbodrf.router.apps", router_apps([ScopeFolder, ScopeItem])),
         ):
             clear_predicates()
             TurboDRFRouter()

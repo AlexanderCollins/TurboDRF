@@ -124,6 +124,7 @@ Full docs: <https://turbodrf.com/docs/>
 - [Configuration](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/configuration.md) -- all `turbodrf()` options: field selection, nested & computed fields, custom endpoints (`actions`), read-only endpoints, method allow-lists, `full_clean` validation
 - [Permissions](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/permissions.md) -- role-based, field-level, and Django default permissions
 - [Tenancy & row-level access](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/tenancy.md) -- predicates, multi-tenancy, FK injection defense
+- [Platform scope](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/platform.md) -- an API for your own staff across tenants: opt-in per model, a gate on every route, separate roles
 - [Performance](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/performance.md) -- compiled read path, fast JSON rendering, benchmarking
 - [Filtering & Search](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/filtering.md) -- filtering, search, ordering, OR queries
 - [Integrations](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/integrations.md) -- allauth, Keycloak, drf-api-tracking, Sentry (all experimental)
@@ -222,6 +223,25 @@ Manager sees all ABC projects, but still can't see XYZ — the tenant boundary i
 ```
 
 See [Tenancy](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/tenancy.md) for the full predicate vocabulary, hard-fail-at-startup behavior, and 404-vs-403 semantics.
+
+### Staff across tenants
+
+An operator's own staff console reads and acts on every tenant's rows. Give a
+model a `'platform'` block and mount a second router with a gate:
+
+```python
+# Job.turbodrf(): no tenant endpoint, a read-only console endpoint
+{'enabled': False, 'tenant_field': 'workspace',
+ 'platform': {'endpoint': 'jobs', 'read_only': True,
+              'fields': ['id', 'kind', 'status', 'workspace__name'],
+              'actions': [retry]}}
+
+# console/urls.py
+console = TurboDRFRouter(scope='platform', gate=[IsPlatformStaff])
+```
+
+Platform roles (`TURBODRF_PLATFORM_ROLES`) are separate from tenant roles. See
+[Platform scope](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/platform.md).
 
 ## License
 

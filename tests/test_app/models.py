@@ -1332,3 +1332,215 @@ class RbacListOnly(TurboDRFMixin, models.Model):
     @classmethod
     def turbodrf(cls):
         return {"compiled": False, "fields": {"list": ["id", "title"]}}
+
+
+# ---------------------------------------------------------------------------
+# Platform scope (tests/integration/test_platform_*.py): a staff console's view
+# across tenants, served by TurboDRFRouter(scope="platform", gate=[...]) in
+# tests/platform_urls.py. Brokerage is the tenant; the tests set
+# TURBODRF_TENANT_MODEL to it.
+# ---------------------------------------------------------------------------
+
+
+@turbodrf_action(detail=True, methods=["post"], url_path="retry")
+def retry_job(self, request, pk=None):
+    """Re-queue a job. A POST action: needs the platform role's create."""
+    job = self.get_object()
+    job.status = "queued"
+    job.save(update_fields=["status"])
+    return Response({"id": job.pk, "status": job.status, "scope": self.turbodrf_scope})
+
+
+@turbodrf_action(detail=False, methods=["get"], url_path="failed")
+def failed_jobs(self, request):
+    """Failed jobs across every tenant the queryset holds."""
+    rows = self.get_queryset().filter(status="failed")
+    return Response({"brokerages": sorted({row.brokerage_id for row in rows})})
+
+
+@turbodrf_action(
+    detail=False, methods=["get"], url_path="ping", permission_classes=[AllowAny]
+)
+def platform_ping(self, request):
+    """Declares its own permission_classes: the router's gate still applies."""
+    return Response({"ok": True})
+
+
+class PlatformAccount(TurboDRFMixin, models.Model):
+    """Tenant-scoped, served by both routers with different fields: staff_notes
+    is on the platform API only."""
+
+    brokerage = models.ForeignKey(
+        Brokerage, on_delete=models.CASCADE, related_name="platform_accounts"
+    )
+    name = models.CharField(max_length=100)
+    plan = models.CharField(max_length=20, default="basic")
+    staff_notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "tenant_field": "brokerage",
+            "endpoint": "platform-accounts",
+            "fields": ["id", "name", "plan"],
+            "searchable_fields": ["name"],
+            "platform": {
+                "endpoint": "accounts",
+                "fields": [
+                    "id",
+                    "name",
+                    "plan",
+                    "staff_notes",
+                    "brokerage",
+                    "brokerage__name",
+                ],
+                "searchable_fields": ["name", "staff_notes"],
+            },
+        }
+
+
+class PlatformJob(TurboDRFMixin, models.Model):
+    """No tenant endpoint ('enabled': False); the platform router serves it
+    read-only, with actions. payload has a platform field rule."""
+
+    brokerage = models.ForeignKey(
+        Brokerage, on_delete=models.CASCADE, related_name="platform_jobs"
+    )
+    account = models.ForeignKey(
+        PlatformAccount,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="jobs",
+    )
+    kind = models.CharField(max_length=50)
+    status = models.CharField(max_length=20, default="queued")
+    attempts = models.PositiveIntegerField(default=0)
+    payload = models.JSONField(default=dict, blank=True)
+    last_error = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    @property
+    def summary(self):
+        return f"{self.kind}:{self.status}"
+
+    @property
+    def account_label(self):
+        """Reads a declared relation (property_relations)."""
+        return self.account.name.upper() if self.account else None
+
+    @property
+    def payload_keys(self):
+        """Reads payload, which has a platform field rule."""
+        return sorted(self.payload)
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "enabled": False,
+            "tenant_field": "brokerage",
+            "fields": ["id", "kind", "status"],
+            "platform": {
+                "endpoint": "jobs",
+                "read_only": True,
+                "fields": {
+                    "list": [
+                        "id",
+                        "kind",
+                        "status",
+                        "attempts",
+                        "brokerage",
+                        "brokerage__name",
+                        "account__name",
+                        "summary",
+                    ],
+                    "detail": [
+                        "id",
+                        "kind",
+                        "status",
+                        "attempts",
+                        "brokerage",
+                        "brokerage__name",
+                        "account",
+                        "account__name",
+                        "payload",
+                        "last_error",
+                        "summary",
+                        "account_label",
+                        "payload_keys",
+                    ],
+                },
+                "property_relations": {"account_label": ["account"]},
+                "searchable_fields": ["kind", "last_error"],
+                "actions": [retry_job, failed_jobs, platform_ping],
+            },
+        }
+
+
+class PlatformTicket(TurboDRFMixin, models.Model):
+    """Writable on both routers. On the platform router its writes name the
+    tenant themselves, and every FK / M2M value must be a reachable row of the
+    same tenant (deal points at a model without a platform block)."""
+
+    brokerage = models.ForeignKey(
+        Brokerage, on_delete=models.CASCADE, related_name="platform_tickets"
+    )
+    account = models.ForeignKey(
+        PlatformAccount,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tickets",
+    )
+    deal = models.ForeignKey(
+        Deal,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="platform_tickets",
+    )
+    assignee = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="platform_tickets",
+    )
+    linked_accounts = models.ManyToManyField(
+        PlatformAccount, blank=True, related_name="linked_tickets"
+    )
+    subject = models.CharField(max_length=200)
+    internal_note = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            "tenant_field": "brokerage",
+            "owner_field": "assignee",
+            "bypass_owner_roles": ["admin"],
+            "endpoint": "platform-tickets",
+            "compiled": False,
+            "fields": ["id", "subject", "account", "assignee"],
+            "platform": {
+                "endpoint": "tickets",
+                "compiled": False,
+                "fields": [
+                    "id",
+                    "subject",
+                    "brokerage",
+                    "account",
+                    "deal",
+                    "assignee",
+                    "linked_accounts",
+                    "internal_note",
+                ],
+            },
+        }

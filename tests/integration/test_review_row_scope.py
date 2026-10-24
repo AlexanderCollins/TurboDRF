@@ -21,6 +21,7 @@ from django.db.models import Q
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
+from tests.fixtures import router_apps
 from tests.test_app.apps import _test_user_brokerages, set_test_brokerage
 from tests.test_app.models import (
     Brokerage,
@@ -351,7 +352,7 @@ class TestTenancyGate(_Fixture):
             dict(compiler._compiled_plans),
         )
         self.addCleanup(self._restore, saved)
-        p1 = patch("turbodrf.router.apps.get_models", return_value=[ScopeLoose])
+        p1 = patch("turbodrf.router.apps", router_apps([ScopeLoose]))
         p2 = patch("turbodrf.validation.logger")  # quiet
         p3 = patch.object(ScopeLoose, "turbodrf", classmethod(lambda cls: cfg))
         for p in (p1, p2, p3):
