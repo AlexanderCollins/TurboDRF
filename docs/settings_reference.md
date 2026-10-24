@@ -16,6 +16,17 @@ that's not strictly required is gated and off by default.
 | `TURBODRF_PERMISSION_CACHE_TIMEOUT` | **`300`** | Permission snapshot cache TTL in seconds. Role changes already take effect on the next request; the TTL only bounds how long snapshots stay stale after a bulk `RolePermission` QuerySet `update()` / `delete()` (or call `invalidate_user_permissions()`). | [permissions.md](permissions.md#caching) |
 | `TURBODRF_PERMISSION_CACHE_PREFIX` | **`"turbodrf_perm"`** | Prefix for cache keys | — |
 
+## Platform scope
+
+| Setting | Default | Purpose | Details |
+|---|---|---|---|
+| `TURBODRF_PLATFORM_ROLES` | **`None`** | Platform role → permissions mapping, the same shape as `TURBODRF_ROLES` and separate from it. Required (a non-empty dict) by a `TurboDRFRouter(scope="platform")`, which validates its permission strings at startup. Always static: database permission mode applies to the tenant scope only. | [platform.md](platform.md#roles-and-permissions) |
+| `TURBODRF_PLATFORM_ROLE_GETTER` | **`None`** (`user.platform_roles`) | Where a user's platform roles come from: a dotted path or a callable `user -> list of role names`. Anonymous callers have none. | [platform.md](platform.md#roles-and-permissions) |
+
+`TURBODRF_DISABLE_PERMISSIONS` and `TURBODRF_USE_DEFAULT_PERMISSIONS` don't
+apply to the platform scope: every platform request is checked against
+`TURBODRF_PLATFORM_ROLES`.
+
 ## Field protection
 
 | Setting | Default | Purpose | Details |
@@ -108,6 +119,7 @@ completeness. The table lists every valid key: any other key raises
 | `'http_methods'` | all | Explicit HTTP method allow-list (e.g. `['get', 'post']`); disallowed verbs return `405`. `read_only` is the common shorthand. | [configuration.md](configuration.md#restricting-http-methods) |
 | `'full_clean'` | **`False`** | Run Django model validation (`clean()` / constraints) on write, so business-rule violations return `400` instead of `500`. | [configuration.md](configuration.md#model-validation-full_clean) |
 | `'actions'` | `[]` | Custom endpoints — a list of `@turbodrf_action`-decorated handlers attached to the generated viewset (inherit tenant + predicate scoping). | [configuration.md](configuration.md#custom-endpoints-actions) |
+| `'platform'` | — | The model's config on a platform router (staff across tenants): the keys above that shape an API, no tenancy keys. Without it the model isn't served there. | [platform.md](platform.md#the-platform-block) |
 | `'tenant_field'` | — | Path of forward FKs / one-to-ones to the tenant model (mandatory boundary) | [tenancy.md](tenancy.md) |
 | `'owner_field'` | — | FK path(s) to the owner User. A list is one `Owner` over all the columns. Doesn't satisfy `TURBODRF_REQUIRE_TENANCY` on its own. | [tenancy.md](tenancy.md) |
 | `'bypass_owner_roles'` | `[]` | Roles that ignore the owner check (still tenant-scoped) | [tenancy.md](tenancy.md) |

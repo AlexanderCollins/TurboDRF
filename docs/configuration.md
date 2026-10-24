@@ -26,6 +26,8 @@ def turbodrf(cls):
 
 Row-level access keys (`tenant_field`, `owner_field`, `bypass_owner_roles`,
 `visibility`, `tenancy`) are covered in [Tenancy & row-level access](tenancy.md).
+A `'platform'` key holds the model's config for a platform router (an
+operator's staff, across tenants): see [Platform scope](platform.md).
 
 - The default endpoint adds an `s` to the lowercase model name, without
   pluralizing: `Category` is served at `/api/categorys/`. Set `endpoint` for
@@ -44,6 +46,9 @@ The router checks each enabled model's config at startup and raises
   through relations, or one that ends on a reverse one-to-one (list a field
   of the related model instead, e.g. `'profile__bio'`);
 - a `lookup_field` that isn't a unique column of the model.
+
+It checks every model's `'platform'` block the same way, enabled or not (see
+[Platform scope](platform.md#startup-checks)).
 
 ## Fields
 
