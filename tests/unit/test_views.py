@@ -219,19 +219,3 @@ class TestTurboDRFViewSet(TestCase):
 
         serializer_class = viewset.get_serializer_class()
         self.assertEqual(serializer_class.Meta.fields, ["name", "description"])
-
-    def test_all_fields_configuration(self):
-        """Test viewset with '__all__' fields configuration."""
-
-        # Mock a model with '__all__' configuration
-        class MockModel:
-            @classmethod
-            def turbodrf(cls):
-                return {"fields": "__all__"}
-
-        viewset = TurboDRFViewSet()
-        viewset.model = MockModel
-        viewset.action = "list"
-
-        serializer_class = viewset.get_serializer_class()
-        self.assertEqual(serializer_class.Meta.fields, "__all__")

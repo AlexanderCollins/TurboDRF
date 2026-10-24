@@ -622,25 +622,11 @@ class TurboDRFViewSet(*_viewset_bases):
             return False
         return True
 
-    def _compiled_list(self, request):
-        from .compiler import get_compiled_plan
-        from .validation import build_traversal_scope_q, scoped_target_queryset
-
-        plan = get_compiled_plan(self.model)
-
-        # Base queryset (tenant + predicate scoping, custom managers). The
-        # compiled path renders nested values itself, so get_queryset skips
-        # the serializer path's select_related and visibility annotations.
-        self._compiled_read = True
-        try:
-            queryset = self.get_queryset()
-        finally:
-            self._compiled_read = False
-
-        # Apply filter backends (search, filtering, ordering, OR filters)
-        # Filters operate on the normal queryset before .values() is applied
-        queryset = self.filter_queryset(queryset)
-
+    def _compiled_field_gates(self, request, plan):
+        """What a compiled list may render for this caller and ``?fields=``:
+        ``(readable base fields, FK annotation keys, {m2m: sub-fields})``,
+        each ``None`` when permissions are bypassed and nothing is selected.
+        ``turbodrf_explain`` reports the same gates."""
         # Per-nested-field perm gates for the compiled path — both FK
         # and M2M sides. Filtering by BASE field alone would leak nested
         # fields the user shouldn't see. None: permissions are bypassed.
@@ -684,6 +670,30 @@ class TurboDRFViewSet(*_viewset_bases):
                 )
                 for base, subs in allowed_m2m.items()
             }
+        return readable_fields, allowed_fk_keys, allowed_m2m
+
+    def _compiled_list(self, request):
+        from .compiler import get_compiled_plan
+        from .validation import build_traversal_scope_q, scoped_target_queryset
+
+        plan = get_compiled_plan(self.model)
+
+        # Base queryset (tenant + predicate scoping, custom managers). The
+        # compiled path renders nested values itself, so get_queryset skips
+        # the serializer path's select_related and visibility annotations.
+        self._compiled_read = True
+        try:
+            queryset = self.get_queryset()
+        finally:
+            self._compiled_read = False
+
+        # Apply filter backends (search, filtering, ordering, OR filters)
+        # Filters operate on the normal queryset before .values() is applied
+        queryset = self.filter_queryset(queryset)
+
+        readable_fields, allowed_fk_keys, allowed_m2m = self._compiled_field_gates(
+            request, plan
+        )
 
         # F4: a nested value renders only where every JOIN target along its
         # path is visible to the caller through the target's own endpoint, and
@@ -1020,25 +1030,11 @@ class TurboDRFViewSet(*_viewset_bases):
 
     def _configured_view_fields(self, view_type):
         """The model's configured fields for ``view_type`` (``'list'`` or
-        ``'detail'``), as a list. A view type left out of a dict config uses
-        the other one — never ``"__all__"``, which exposed (and accepted writes
-        to) every column; ``"__all__"`` itself is every concrete and M2M field
-        (resolved here so the sensitive deny-list applies to it). The serializer
-        and OPTIONS share this resolution."""
-        fields = self.model.turbodrf().get("fields", "__all__")
-        if isinstance(fields, dict):
-            list_fields = fields.get("list", fields.get("detail", []))
-            if view_type == "list":
-                fields = list_fields
-            else:
-                fields = fields.get("detail", list_fields)
-        if fields == "__all__" and hasattr(self.model, "_meta"):
-            return [f.name for f in self.model._meta.fields] + [
-                f.name for f in self.model._meta.many_to_many
-            ]
-        if isinstance(fields, (list, tuple)):
-            return list(fields)
-        return fields
+        ``'detail'``), as a list (``mixins._resolve_configured_fields``, the
+        one resolution the serializer, OPTIONS, schema and commands share)."""
+        from .mixins import _resolve_configured_fields
+
+        return _resolve_configured_fields(self.model, view_type)
 
     def get_queryset(self):
         """Base queryset with `select_related` for FK fields referenced in
@@ -1087,13 +1083,12 @@ class TurboDRFViewSet(*_viewset_bases):
 
     def _configured_nested_paths(self):
         """Every ``__`` field path in the model's config (list and detail)."""
-        config = self.model.turbodrf()
-        fields = config.get("fields", [])
-        if isinstance(fields, dict):
-            fields = list(fields.get("list", [])) + list(fields.get("detail", []))
-        if not isinstance(fields, (list, tuple)):
-            return []
-        return [f for f in fields if isinstance(f, str) and "__" in f]
+        from .mixins import _resolve_configured_fields
+
+        fields = _resolve_configured_fields(
+            self.model, "list"
+        ) + _resolve_configured_fields(self.model, "detail")
+        return [f for f in dict.fromkeys(fields) if isinstance(f, str) and "__" in f]
 
     def _single_valued_prefix(self, path):
         """The longest prefix of ``path`` made of single-valued relations
