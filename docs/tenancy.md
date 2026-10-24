@@ -241,14 +241,15 @@ and listing close matches.
 
 ### Step 8: Boot the app and trust the gates
 
-The router checks the configuration when Django first imports your
-URLconf, and raises a directed `ImproperlyConfigured` error on a problem:
-tenancy declarations, compiled-path and search-field joins into
+TurboDRF checks the configuration at startup and raises a directed
+`ImproperlyConfigured` error on a problem: tenancy declarations, unknown
+`turbodrf()` keys, compiled-path and search-field joins into
 predicate-bearing targets, `Custom` without `write_validator`, permission
 string typos, and more (see [Hard-fail-at-startup](#hard-fail-at-startup)).
-Run `python manage.py check` in CI and before each deploy: it imports the
-URLconf, so it runs them all. (`get_wsgi_application()` doesn't, so without
-it a broken config deploys and fails on the first request.)
+Tenancy errors raise when Django starts; the rest when Django first imports
+your URLconf. Run `python manage.py check` in CI and before each deploy: it
+imports the URLconf, so it runs them all. (`get_wsgi_application()` doesn't,
+so without it a broken config deploys and fails on the first request.)
 
 If the app boots, the static checks have passed. Exercise the runtime
 behaviour against your own test suite to confirm it matches what you expect.
@@ -304,6 +305,11 @@ bypass-role users if Tenant were a peer predicate.
 'tenant_field': 'workspace'         # direct column
 'tenant_field': 'project__workspace'   # chained — two-hop traversal
 ```
+
+Every hop must be a forward `ForeignKey` or `OneToOneField`, named by the
+field (`workspace`, not `workspace_id`), and the last must point at
+`TURBODRF_TENANT_MODEL` (when it's set). A hop through an M2M or reverse
+relation is refused at startup.
 
 The framework auto-fills a direct `tenant_field` on create, rejects writes
 that try to set it to a different tenant (400), and AND's it onto every
@@ -420,12 +426,10 @@ to predicates — those *do* conflict with `visibility` (pick one or the
 other). Tenant inside `visibility` is supported but deprecated; use the
 `tenant_field` setting instead.
 
-⚠ **Spell the keys exactly.** `turbodrf()` ignores keys it doesn't know, so
-a typo such as `'owner_feild'` silently drops the owner rule and every
-member of the tenant sees every row. After changing a model's scoping, run
+A misspelt key such as `'owner_feild'` raises `ImproperlyConfigured` at
+startup. After changing a model's scoping, run
 `python manage.py turbodrf_check`: with `TURBODRF_TENANT_MODEL` set it
-prints each model's tenant field and within-tenant predicates, so a rule
-that didn't take effect is missing from its output.
+prints each model's tenant field and within-tenant predicates.
 
 ---
 
@@ -436,16 +440,18 @@ When `TURBODRF_TENANT_MODEL` is set and `TURBODRF_REQUIRE_TENANCY=True`
 (default), every model must declare *one of*:
 
 - `tenant_field=...`
-- a non-empty `visibility=[...]`
 - `'tenancy': 'shared'`
+- a `visibility=[...]` list with at least one predicate that restricts every
+  caller: an `Owner` without bypass roles, `Members`, `Group` or `Custom` (an
+  `Either` counts only if all its children do)
 
 (or have its tenant path auto-detected; see [Settings](#settings)).
 `owner_field` alone doesn't count: it scopes rows within a tenant, and its
 bypass roles would see every tenant's rows. For the same reason, a
-`visibility` list made only of `Owner` predicates with bypass roles and
-`Conditional` predicates doesn't count without a `tenant_field`. Models
-without a tenancy decision raise `ImproperlyConfigured` at boot. This closes
-the "developer forgot to scope this model" failure mode.
+`visibility` list whose predicates can all lift the restriction (an `Owner`
+with bypass roles, a `Conditional`) doesn't count without a `tenant_field`.
+Models without a tenancy decision raise `ImproperlyConfigured` at boot. This
+closes the "developer forgot to scope this model" failure mode.
 
 A model with `'enabled': False` gets no endpoint, but its tenancy is still
 registered: other models' FK checks and nested fields that reach it use its
@@ -453,16 +459,19 @@ registered: other models' FK checks and nested fields that reach it use its
 
 Run `python manage.py turbodrf_check` to see what each model resolves to.
 
-Other hard-fails the router catches:
+Other hard-fails:
 
-- A `tenant_field` that isn't a path of forward foreign keys / one-to-ones
-  ending at the tenant model (when `TURBODRF_TENANT_MODEL` is set), or any
-  `tenant_field` while `TURBODRF_TENANT_USER_FIELD` is unset
-- Invalid `owner_field` paths (with did-you-mean suggestions), and `fields`
-  or `lookup_field` names the model doesn't have
+- A `tenant_field` that breaks the hop rules in
+  [Two-layer model](#two-layer-model), or any `tenant_field` while
+  `TURBODRF_TENANT_USER_FIELD` is unset
+- An `Owner` / `owner_field` column that isn't a foreign key or one-to-one
+  to the user model (with did-you-mean suggestions for typos)
 - A `Group(user_via=...)` that doesn't lead to users
 - `bypass_owner_roles` listing roles not in `TURBODRF_ROLES` (typo guard)
 - A `Custom` predicate without a `write_validator`
+- An unknown `turbodrf()` key, a `fields` entry the model doesn't have (or
+  that ends on a reverse one-to-one), a `lookup_field` that isn't a unique
+  column, and two models routed to the same `endpoint`
 
 These raise whatever the tenancy settings:
 
@@ -488,8 +497,11 @@ This avoids leaking whether the row exists.
 foreign key or many-to-many values, each target must be visible under the
 related model's tenant boundary and predicate stack, as through its own
 endpoint. This runs on every model, shared ones included, and an anonymous
-writer can't reference a tenant-scoped target. The message is the same
-whether the target is hidden or doesn't exist.
+writer can't reference a tenant-scoped target. On a model scoped by a
+`tenant_field` or predicates, a target that is the tenant model must also be
+the caller's tenant, and a target with a `TURBODRF_TENANT_USER_FIELD`
+attribute (typically a user) must be in the caller's tenant. The message is
+the same whether the target is hidden or doesn't exist.
 
 ```
 POST /api/comments/ {"document": <foreign>, "amount": 100}
@@ -505,7 +517,8 @@ gets the union — more roles never restrict access.
 **`@action` routes inherit scoping** if they call `self.get_object()` or
 `self.get_queryset()`. Custom actions that go around the standard flow (e.g.
 `Model.objects.get(...)` directly) bypass scoping — apply predicates
-manually if you do this. `self.get_serializer()` in an action returns the
+manually if you do this. Generated viewsets have no `queryset` attribute
+(`self.queryset` is `None`). `self.get_serializer()` in an action returns the
 same permission-filtered serializer the CRUD routes use.
 
 ---
@@ -513,9 +526,9 @@ same permission-filtered serializer the CRUD routes use.
 ## Exposing the tenant model and the user model
 
 The tenant model and the user model don't reach the tenant through a
-foreign key of their own, so they need their own rule. Don't give the tenant
-model `'tenant_field': 'id'`: the tenant boundary compares a foreign key
-with the caller's tenant, and doesn't work on the tenant's own primary key.
+foreign key of their own, so they need their own rule. A `tenant_field` must
+be a foreign key path, so `'tenant_field': 'id'` on the tenant model is
+refused at startup.
 
 **The tenant model.** Scope it to the caller's own tenant with a `Custom`
 predicate:

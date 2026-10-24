@@ -33,14 +33,17 @@ Row-level access keys (`tenant_field`, `owner_field`, `bypass_owner_roles`,
 - `enabled: False` removes the endpoint. The model's tenancy is still
   registered, so declare it as for any other model (see
   [Tenancy](tenancy.md#hard-fail-at-startup)).
-- A `fields` entry or `lookup_field` that names nothing on the model (a
-  typo) stops the router at startup.
 
-> ⚠ **Unknown keys are ignored.** `turbodrf()` doesn't reject keys it doesn't
-> know, so a misspelling such as `'owner_feild'` or `'read_onyl'` silently
-> drops that setting, which for a scoping key means rows go unscoped. Copy key
-> names from this page or [the settings reference](settings_reference.md#per-model-configuration-in-turbodrf-classmethod),
-> and check `python manage.py turbodrf_check` after changing them.
+The router checks each enabled model's config at startup and raises
+`ImproperlyConfigured` on:
+
+- an unknown key, such as a misspelt `'owner_feild'` (the error lists the
+  valid keys; `sensitive_fields` is a class attribute on the model, not a
+  key);
+- a `fields` entry that isn't a model field, a `@property` or a `__` path
+  through relations, or one that ends on a reverse one-to-one (list a field
+  of the related model instead, e.g. `'profile__bio'`);
+- a `lookup_field` that isn't a unique column of the model.
 
 ## Fields
 
@@ -63,6 +66,8 @@ later. Three formats:
 ```
 
 A dict with only `list` or only `detail` uses that list for both views. In every format, names on the sensitive deny-list are dropped (see [Security](security.md#sensitive-fields)), and each caller gets only the fields they can read. The primary key renders only if it's listed.
+
+A create that leaves out a required column the caller can't set (one missing from `fields`, or one their role can't write) is a 400 naming that field.
 
 ### Nested fields
 
@@ -88,7 +93,7 @@ FK fields are flattened in responses (`author__name` becomes `author_name`), and
 }
 ```
 
-An M2M listed on its own (`'tags'`) renders a list of target pks. Nested and M2M values are formatted by the same DRF field a top-level field of that type uses (a Decimal renders as a string by default, `DATETIME_FORMAT` applies, files render as absolute URLs). A path ending on an FK renders the value the parent stores: the related pk, or the `to_field` value.
+An M2M listed on its own (`'tags'`) renders the pks of the targets the caller can see. A reverse relation (`'items'`, `'items__label'`) renders like an M2M, scoped the same way, and is read-only. Nested and M2M values are formatted by the same DRF field a top-level field of that type uses (a Decimal renders as a string by default, `DATETIME_FORMAT` applies, files render as absolute URLs). A path ending on an FK renders the value the parent stores: the related pk, or the `to_field` value.
 
 A nested value renders only when the caller can see the related row through that model's own endpoint; otherwise it's `null`, and M2M targets they can't see are left out. See [Security](security.md#nested-fields-across-scoped-relations).
 
@@ -134,9 +139,10 @@ Both paths render the same property keys: a property is readable by any role tha
 
 A property is computed on a **sandbox** copy of the row, the same way on both paths:
 
-- Only the columns the caller may read are loaded. Reading any other column (a field a role has no read rule for, a `sensitive_fields` entry, `password`) would need a query, so it fails.
-- Related objects are available only if the model declares them in `property_relations`. Each hop is loaded within the caller's scope (the target's own `tenant_field` and predicates, as for `author__name`) and with only the columns the caller may read on that model. A FK whose target is out of scope reads as `None`; out-of-scope rows are missing from a reverse or M2M relation.
+- Only the columns the caller may read are loaded. Reading any other column (a field a role has no read rule for, a `sensitive_fields` entry, `password`) would need a query, so it fails. A column a model hook loads while the row is built (a `post_init` handler, `__init__`) is dropped again before the property runs.
+- Related objects are available only if the model declares them in `property_relations`. Each hop is loaded within the caller's scope (the target's own `tenant_field` and predicates, as for `author__name`) and with only the columns the caller may read on that model. A FK whose target is out of scope reads as `None`; out-of-scope rows are missing from a reverse or M2M relation. A hop is loaded only if the caller can read the relation, has model-level read on its target model, and can read the column it joins on; otherwise a property that follows it fails.
 - The property can't query the database. `Book.objects.count()`, `self.tags.filter(...)` and `self.tags.values_list(...)` all fail; `self.tags.all()` on a declared relation works.
+- The result becomes plain data (dicts, lists, scalars) before the sandbox closes. A property that returns a model instance, a manager or a queryset fails: return the values instead (`[t.name for t in self.tags.all()]`).
 
 A property that fails is left out of the response and logged (a warning the first time, then at debug level). The page's rows are loaded in one query, plus one per declared relation hop.
 
@@ -178,7 +184,7 @@ A nested property path (`author__display_name`) isn't compiled: a model that lis
 
 ## Searchable fields
 
-List the fields available for `?search=` either in the config dict (preferred) or as a `searchable_fields` class attribute:
+List the fields available for `?search=` either in the config dict (preferred) or as a `searchable_fields` class attribute. The config key wins whenever it's present, even as an empty list:
 
 ```python
 class Book(models.Model, TurboDRFMixin):
@@ -194,7 +200,7 @@ class Book(models.Model, TurboDRFMixin):
 GET /api/books/?search=django
 ```
 
-Entries may be plain field names or `__`-paths. Search is gated by field-level read permissions -- a caller who cannot read a field cannot search by it -- and the list is validated at startup. See [Filtering & Search](filtering.md#search) for details.
+Entries may be plain field names or `__`-paths ending on a column, optionally with a `^`, `=` or `@` prefix. Search is gated by field-level read permissions -- a caller who cannot read a field cannot search by it. See [Filtering & Search](filtering.md#search) for details.
 
 ## Read-only endpoints
 
@@ -269,9 +275,10 @@ turbodrf_action(detail=False, methods=None, url_path=None, url_name=None, **kwar
 ```
 
 - `detail=True` → operates on a single object (`/api/<endpoint>/{pk}/<url_path>/`)
-- `detail=False` → operates on the collection (`/api/<endpoint>/<url_path>/`)
+- `detail=False` (the default) → operates on the collection (`/api/<endpoint>/<url_path>/`)
 - `methods` defaults to `["get"]`
 - `url_path` / `url_name` default to the handler's function name
+- Other keyword arguments are DRF's per-action view attributes (`permission_classes`, `throttle_classes`, ...). `serializer_class`, `queryset` and any other argument TurboDRF would ignore raise `TypeError`: TurboDRF builds the action's serializer and queryset from the model's config.
 
 ```python
 from rest_framework.response import Response
@@ -306,7 +313,7 @@ def pending(self, request):
     return Response(data)
 ```
 
-> **Note:** the scoping is inherited only because the handler goes through `self.get_object()` / `self.get_queryset()`. If you query the model directly (`self.model.objects.get(...)`), you bypass tenant and predicate filtering and must apply it yourself.
+> **Note:** the scoping is inherited only because the handler goes through `self.get_object()` / `self.get_queryset()`. If you query the model directly (`self.model.objects.get(...)`), you bypass tenant and predicate filtering and must apply it yourself. Generated viewsets have no `queryset` attribute: `self.queryset` is `None`.
 
 `self.get_serializer()` in an action returns the same permission-filtered serializer the CRUD routes use: it renders only the configured detail fields the caller can read and accepts only the ones they can write.
 
@@ -322,3 +329,5 @@ def reprocess(self, request, pk=None):
 ```
 
 The declared classes are the action's whole permission check: they apply even with `TURBODRF_DISABLE_PERMISSIONS`, and the role check doesn't run. Row scoping is unaffected -- `get_object()` / `get_queryset()` still apply the tenant boundary and predicates.
+
+A hand-written `TurboDRFViewSet` subclass gets its `model`'s tenant boundary and predicates from the model's registration, as a generated viewset does, and serves no rows if they can't be resolved.
