@@ -5,12 +5,53 @@ This module provides high-performance permission checking by building
 policy snapshots once per request and caching them for reuse.
 """
 
+import contextvars
 import hashlib
+import secrets
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Optional, Set
 
 from django.conf import settings
 from django.core.cache import cache
+from django.core.exceptions import ImproperlyConfigured
+
+# Per-request memo of roles, cache-key parts and snapshots (see
+# _permission_memo). None outside a request: every lookup then goes to the
+# cache / database, as before.
+_request_memo = contextvars.ContextVar("turbodrf_permission_memo", default=None)
+
+
+@contextmanager
+def _permission_memo():
+    """Memoise permission lookups for the duration of one request.
+
+    A request checks the same user's roles and snapshots many times (once per
+    field, filter hop, search field...). Inside this context each is computed
+    once: in database mode that's one role query instead of one per check, and
+    a snapshot is one cache read instead of a key hash plus two round trips per
+    check. TurboDRFViewSet.dispatch opens it, so a role or permission change
+    still takes effect on the next request."""
+    token = _request_memo.set({})
+    try:
+        yield
+    finally:
+        _request_memo.reset(token)
+
+
+def _memoised(key, owner, compute):
+    """``compute()``, memoised under ``key`` for the current request. ``owner``
+    (a user, or None) is held with the value: an id() in ``key`` can't be
+    reused by another object while the memo lives."""
+    memo = _request_memo.get()
+    if memo is None:
+        return compute()
+    entry = memo.get(key)
+    if entry is not None and entry[0] is owner:
+        return entry[1]
+    value = compute()
+    memo[key] = (owner, value)
+    return value
 
 
 @dataclass
@@ -91,6 +132,11 @@ def get_user_roles(user) -> list:
     Returns:
         list: List of role names for the user
     """
+    roles = _memoised(("roles", id(user)), user, lambda: _resolve_user_roles(user))
+    return list(roles)
+
+
+def _resolve_user_roles(user) -> list:
     # Handle unauthenticated users
     if not user or not user.is_authenticated:
         # Check if guest role is configured
@@ -121,16 +167,45 @@ def get_user_roles(user) -> list:
         )
         return role_names
     elif hasattr(user, "roles"):
-        # `user.roles` may be None (custom user models that haven't set
-        # it), a list, or any iterable. Coerce defensively — downstream
-        # set ops and serialization assume a list.
-        roles = user.roles or []
-        return roles if isinstance(roles, list) else list(roles)
+        return _role_names(user.roles)
     elif hasattr(user, "_test_roles"):
-        roles = user._test_roles or []
-        return roles if isinstance(roles, list) else list(roles)
+        return _role_names(user._test_roles)
     else:
         return []
+
+
+def _role_names(roles) -> list:
+    """``user.roles`` as a list of role names.
+
+    It may be None (a custom user model that hasn't set it), a list or any
+    iterable of names, or a single name. A related manager / queryset of role
+    objects gives their ``name`` field. Anything else is a configuration error:
+    raise rather than guess (a string iterated as characters would grant every
+    single-letter role)."""
+    from django.db.models import Manager, QuerySet
+
+    if isinstance(roles, (Manager, QuerySet)):
+        try:
+            roles.model._meta.get_field("name")
+        except Exception:
+            raise ImproperlyConfigured(
+                f"user.roles is a manager of {roles.model.__name__}, which has "
+                f"no 'name' field. Expose the role names as a list, e.g. a "
+                f"property returning list(...values_list('<field>', flat=True))."
+            ) from None
+        return list(roles.values_list("name", flat=True))
+    if not roles:
+        return []
+    if isinstance(roles, str):
+        return [roles]
+    if isinstance(roles, list):
+        return roles
+    try:
+        return list(roles)
+    except TypeError:
+        raise ImproperlyConfigured(
+            f"user.roles must be a list of role names, not {type(roles).__name__}."
+        ) from None
 
 
 def _grants_public_read(user, model) -> bool:
@@ -396,36 +471,17 @@ def get_cache_key(user, model) -> Optional[str]:
     # role->permission map.
     user_roles = get_user_roles(user)
 
-    mode = get_permission_mode()
-    if mode == "database":
-        from .models import TurboDRFRole
-
-        if user_roles:
-            # (name, version) of EVERY role, not only the user's: a field rule
-            # added to any role restricts that field for all roles, so it must
-            # invalidate every cached snapshot. Role identity is included so
-            # two roles that share a version number don't produce the same key.
-            sig = tuple(sorted(TurboDRFRole.objects.values_list("name", "version")))
-        else:
-            sig = ()
-    else:
-        # Static mode: fold in TURBODRF_ROLES so the key changes when the role
-        # configuration changes — including override_settings(TURBODRF_ROLES=...)
-        # in tests. Without this a snapshot built under restricted roles in one
-        # test pollutes the cache for later tests reusing the same user.pk.
-        roles = getattr(settings, "TURBODRF_ROLES", {})
-        try:
-            sig = tuple(
-                sorted((role, tuple(sorted(perms))) for role, perms in roles.items())
-            )
-        except (TypeError, AttributeError):
-            sig = ("__unhashable__",)
-
-    # Bumped by invalidate_user_permissions(): a new generation is a new key.
-    generations = cache.get_many(
-        [_generation_key(cache_prefix, None), _generation_key(cache_prefix, user_id)]
+    # The role configuration; bumped by invalidate_user_permissions(): a new
+    # generation is a new key.
+    sig = (
+        _memoised(("roles_signature",), None, _roles_signature),
+        _memoised(
+            ("generations", user_id),
+            None,
+            lambda: _generation_tokens(cache_prefix, user_id),
+        ),
+        _model_signature(model),
     )
-    sig = (sig, tuple(sorted(generations.items())))
 
     # hashlib (not builtin hash()) so the key is stable across processes.
     # Builtin hash() is PYTHONHASHSEED-randomized per worker, which fragments a
@@ -438,31 +494,91 @@ def get_cache_key(user, model) -> Optional[str]:
     return f"{cache_prefix}:{user_id}:{app_label}:{model_name}:{version_hash}"
 
 
+def _roles_signature():
+    """The role configuration every snapshot depends on."""
+    if get_permission_mode() == "database":
+        from .models import TurboDRFRole
+
+        # (name, version) of EVERY role, not only the user's, and for anonymous
+        # callers too: a field rule added to any role restricts that field for
+        # all roles (and for anonymous callers on a public_access model), so it
+        # must invalidate every cached snapshot. Role identity is included so
+        # two roles that share a version number don't produce the same key.
+        return tuple(sorted(TurboDRFRole.objects.values_list("name", "version")))
+    # Static mode: fold in TURBODRF_ROLES so the key changes when the role
+    # configuration changes — including override_settings(TURBODRF_ROLES=...)
+    # in tests. Without this a snapshot built under restricted roles in one
+    # test pollutes the cache for later tests reusing the same user.pk.
+    roles = getattr(settings, "TURBODRF_ROLES", {})
+    try:
+        return tuple(
+            sorted((role, tuple(sorted(perms))) for role, perms in roles.items())
+        )
+    except (TypeError, AttributeError):
+        return ("__unhashable__",)
+
+
+def _model_signature(model):
+    """The model's own declarations a snapshot depends on, so a deploy that
+    changes them (with a cache shared across the rolling deploy) can't serve a
+    snapshot built under the old ones."""
+    try:
+        config = model.turbodrf()
+    except Exception:
+        config = None
+    public = isinstance(config, dict) and bool(config.get("public_access"))
+    return (tuple(sorted(_model_restricted_fields(model))), public)
+
+
 def _generation_key(cache_prefix, user_id):
     scope = "all" if user_id is None else user_id
     return f"{cache_prefix}:generation:{scope}"
 
 
+def _generation_tokens(cache_prefix, user_id):
+    """The current global and per-user generation tokens. A missing token is
+    seeded with a fresh random one: a token evicted from the cache must not
+    revert keys to their pre-invalidation form (and so to stale snapshots
+    still cached under it)."""
+    keys = [_generation_key(cache_prefix, None), _generation_key(cache_prefix, user_id)]
+    found = cache.get_many(keys)
+    tokens = []
+    for key in keys:
+        token = found.get(key)
+        if token is None:
+            token = secrets.token_hex(8)
+            if not cache.add(key, token, None):
+                # Another process seeded it first.
+                token = cache.get(key, token)
+        tokens.append(token)
+    return tuple(tokens)
+
+
 def invalidate_user_permissions(user=None):
-    """Drop cached permission snapshots: one user's, or everyone's when
-    ``user`` is None. Snapshots already pick up role changes on their own (the
-    cache key covers the user's roles and, in database mode, every role's
-    version); use this after changing permissions some other way — a bulk
-    ``RolePermission`` QuerySet ``update()`` / ``delete()``, say."""
+    """Drop cached permission snapshots: one user's (an anonymous user means
+    every anonymous caller), or everyone's when ``user`` is None. Snapshots
+    already pick up role changes on their own (the cache key covers the user's
+    roles and every role's configuration); use this after changing permissions
+    some other way — a bulk ``RolePermission`` QuerySet ``update()`` /
+    ``delete()``, say."""
     cache_prefix = getattr(
         settings, "TURBODRF_PERMISSION_CACHE_PREFIX", "turbodrf_perm"
     )
     if user is None:
         key = _generation_key(cache_prefix, None)
+    elif not getattr(user, "is_authenticated", False):
+        key = _generation_key(cache_prefix, "anonymous")
     else:
         user_id = getattr(user, "pk", None)
         if user_id is None:
             return  # never cached (see get_cache_key)
         key = _generation_key(cache_prefix, user_id)
-    try:
-        cache.incr(key)
-    except ValueError:
-        cache.set(key, 1, None)
+    # A fresh token, never a counter: an evicted counter restarted from the
+    # same value would bring back keys of stale snapshots.
+    cache.set(key, secrets.token_hex(8), None)
+    memo = _request_memo.get()
+    if memo is not None:
+        memo.clear()
 
 
 def get_cached_snapshot(user, model) -> Optional[PermissionSnapshot]:
@@ -524,25 +640,35 @@ def build_permission_snapshot(user, model, use_cache=True) -> PermissionSnapshot
             # User can read articles
             pass
     """
-    # Try cache first
-    if use_cache:
-        cached = get_cached_snapshot(user, model)
+    if not use_cache:
+        return _build_snapshot(user, model)
+    return _memoised(
+        ("snapshot", id(user), model), user, lambda: _cached_snapshot(user, model)
+    )
+
+
+def _build_snapshot(user, model):
+    if get_permission_mode() == "database":
+        return build_permission_snapshot_database(user, model)
+    # static mode (or fallback)
+    return build_permission_snapshot_static(user, model)
+
+
+def _cached_snapshot(user, model):
+    """The snapshot from the cache, or built and cached (the key computed
+    once)."""
+    cache_key = get_cache_key(user, model)
+    if cache_key is not None:
+        cached = cache.get(cache_key)
         if cached is not None:
             return cached
-
-    # Build snapshot based on permission mode
-    mode = get_permission_mode()
-
-    if mode == "database":
-        snapshot = build_permission_snapshot_database(user, model)
-    else:
-        # static mode (or fallback)
-        snapshot = build_permission_snapshot_static(user, model)
-
-    # Cache the result
-    if use_cache:
-        set_cached_snapshot(user, model, snapshot)
-
+    snapshot = _build_snapshot(user, model)
+    if cache_key is not None:
+        cache.set(
+            cache_key,
+            snapshot,
+            getattr(settings, "TURBODRF_PERMISSION_CACHE_TIMEOUT", 300),
+        )
     return snapshot
 
 
