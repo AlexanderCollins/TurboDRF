@@ -1,0 +1,47 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { docNav } from '../../lib/docs';
+import { INSTALL } from '../../lib/site';
+
+const nav = await docNav();
+const icons: Record<string, string> = {
+  'Getting started': 'icon-[lucide--rocket]',
+  Guide: 'icon-[lucide--book-open]',
+  'Authorization & tenancy': 'icon-[lucide--shield-check]',
+  Reference: 'icon-[lucide--list-tree]',
+  More: 'icon-[lucide--files]',
+};
+---
+<Layout title="Docs" description="The TurboDRF documentation: installation, configuration, permissions, tenancy, security and every setting." card="docs">
+  <section class="carbon grain">
+    <div class="wrap pt-32 pb-16 relative z-[1]">
+      <p class="eyebrow" data-reveal>Documentation</p>
+      <h1 class="font-display text-4xl sm:text-5xl mt-4 leading-[1.08]" data-reveal>Everything TurboDRF does,<br /><span class="text-turbo">and how to configure it.</span></h1>
+      <div class="mt-8 flex flex-wrap gap-3" data-reveal>
+        <a href="/docs/quickstart/" class="btn btn-primary rounded-full px-6">Quickstart <span class="icon-[lucide--arrow-right] size-4"></span></a>
+        <button type="button" class="btn rounded-full px-5 font-normal ink-2 border-[var(--line)] bg-[var(--bg-2)]/70 gap-2" data-search-open><span class="icon-[lucide--search] size-4"></span>Search the docs<kbd class="kbd kbd-xs">⌘K</kbd></button>
+        <button type="button" class="btn rounded-full px-5 font-mono font-normal border-[var(--line)] bg-[var(--bg-2)]/70" data-copy={INSTALL}><span class="mint">$</span> {INSTALL}<span class="icon-[lucide--copy] size-4 ink-3"></span><span class="sr-only" data-copy-label>Copy</span></button>
+      </div>
+    </div>
+  </section>
+  <section class="wrap py-16 space-y-14">
+    {nav.map((g) => (
+      <div>
+        <h2 class="flex items-center gap-3 font-display text-xl" data-reveal><span class={`${icons[g.title] ?? 'icon-[lucide--file-text]'} size-5 mint`}></span>{g.title}</h2>
+        <div class="mt-5 grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {g.pages.map((p, i) => (
+            <a href={`/docs/${p.slug}/`} class="panel p-6 doc-card" data-reveal style={`--d:${(i % 3) * 0.05}s`}>
+              <span class="font-display text-[1.05rem] flex items-center justify-between gap-3">{p.title}<span class="icon-[lucide--arrow-up-right] size-4 ink-3"></span></span>
+              {p.summary && <p class="mt-2 ink-2 text-sm leading-relaxed line-clamp-3">{p.summary}</p>}
+            </a>
+          ))}
+        </div>
+      </div>
+    ))}
+  </section>
+</Layout>
+
+<style>
+  .doc-card { transition: transform .35s cubic-bezier(.16,1,.3,1), border-color .3s; }
+  .doc-card:hover { transform: translateY(-2px); border-color: color-mix(in oklab, var(--mint) 38%, transparent); }
+</style>

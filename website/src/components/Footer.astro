@@ -1,0 +1,53 @@
+---
+import Logo from './Logo.astro';
+import { IOCORP_URL, PYPI_URL, REPO_URL } from '../lib/site';
+const columns = [
+  {
+    title: 'Docs',
+    links: [
+      { href: '/docs/quickstart/', label: 'Quickstart' },
+      { href: '/docs/configuration/', label: 'Configuration' },
+      { href: '/docs/permissions/', label: 'Permissions' },
+      { href: '/docs/tenancy/', label: 'Tenancy' },
+      { href: '/docs/security/', label: 'Security model' },
+    ],
+  },
+  {
+    title: 'Project',
+    links: [
+      { href: REPO_URL, label: 'GitHub', external: true },
+      { href: PYPI_URL, label: 'PyPI', external: true },
+      { href: '/changelog/', label: 'Changelog' },
+      { href: `${REPO_URL}/blob/main/SECURITY.md`, label: 'Report a vulnerability', external: true },
+      { href: '/docs/agents/', label: 'AGENTS.md' },
+    ],
+  },
+];
+---
+<footer class="border-t line mt-24">
+  <div class="wrap py-14 grid gap-10 sm:grid-cols-2 lg:grid-cols-[1.6fr_1fr_1fr_1.2fr] text-sm">
+    <div class="space-y-4">
+      <Logo />
+      <p class="ink-2 max-w-xs leading-relaxed">Secure REST APIs from your Django models. Open source under the MIT license.</p>
+    </div>
+    {columns.map((c) => (
+      <div class="space-y-3">
+        <div class="eyebrow">{c.title}</div>
+        {c.links.map((l) => (
+          <a class="block ink-2 hover:text-[var(--mint)] transition-colors" href={l.href} {...(l.external ? { target: '_blank', rel: 'noopener' } : {})}>{l.label}</a>
+        ))}
+      </div>
+    ))}
+    <div class="space-y-3">
+      <div class="eyebrow">Built by</div>
+      <a href={IOCORP_URL} target="_blank" rel="noopener" class="group inline-flex flex-col gap-1">
+        <span class="font-display text-lg group-hover:text-[var(--mint)] transition-colors">IO Corp</span>
+        <span class="ink-3 text-xs">iocorp.com.au</span>
+      </a>
+    </div>
+  </div>
+  <div class="wrap py-6 border-t line flex flex-col sm:flex-row gap-2 justify-between text-xs ink-3">
+    <span>MIT licensed · <a class="hover:text-[var(--mint)]" href={IOCORP_URL} target="_blank" rel="noopener">Built by IO Corp</a></span>
+    <span>TurboDRF is not affiliated with the Django Software Foundation or Encode.</span>
+  </div>
+</footer>

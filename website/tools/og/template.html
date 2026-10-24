@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: Manrope; font-weight: 200 800; src: url("../../public/fonts/manrope-latin.woff2") format("woff2"); }
+  @font-face { font-family: "JetBrains Mono"; font-weight: 100 800; src: url("../../public/fonts/jetbrains-mono-latin.woff2") format("woff2"); }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    font-family: Manrope, sans-serif; color: #e3ebe7; position: relative;
+    background:
+      radial-gradient(60% 80% at 85% -10%, rgba(62, 230, 160, .22) 0%, transparent 60%),
+      radial-gradient(50% 70% at -5% 110%, rgba(56, 214, 240, .14) 0%, transparent 60%),
+      linear-gradient(175deg, #10161a 0%, #090b0c 70%);
+  }
+  body::before { content: ""; position: absolute; inset: 0;
+    background-image: linear-gradient(to right, rgba(227,235,231,.05) 1px, transparent 1px), linear-gradient(to bottom, rgba(227,235,231,.05) 1px, transparent 1px);
+    background-size: 48px 48px; mask-image: radial-gradient(80% 80% at 50% 0%, #000 0%, transparent 80%); }
+  .wrap { position: relative; padding: 64px 72px; height: 100%; display: flex; flex-direction: column; }
+  .brand { display: flex; align-items: center; gap: 16px; font-size: 30px; font-weight: 650; letter-spacing: -.02em; }
+  .brand b { color: #3ee6a0; font-weight: 650; }
+  h1 { margin-top: 56px; font-size: 68px; line-height: 1.04; font-weight: 700; letter-spacing: -.035em; max-width: 920px; }
+  h1 span { background: linear-gradient(100deg, #3ee6a0 0%, #b9fbe0 45%, #38d6f0 100%); -webkit-background-clip: text; color: transparent; }
+  p { margin-top: 26px; font-size: 27px; color: rgba(227,235,231,.66); max-width: 860px; line-height: 1.4; }
+  .foot { margin-top: auto; display: flex; justify-content: space-between; align-items: center; font-family: "JetBrains Mono", monospace; font-size: 22px; color: rgba(227,235,231,.55); }
+  .pill { border: 1px solid rgba(62,230,160,.35); background: rgba(14,19,20,.7); border-radius: 999px; padding: 10px 22px; color: #e3ebe7; }
+  .pill i { color: #3ee6a0; font-style: normal; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><img src="../../public/brand/icon.svg" width="52" height="52" alt=""><span>Turbo<b>DRF</b></span></div>
+  <h1 id="title"></h1>
+  <p id="sub"></p>
+  <div class="foot"><span class="pill"><i>$</i> pip install turbodrf</span><span>turbodrf.com</span></div>
+</div>
+<script>
+  const cards = {
+    home: ['Your Django models,<br><span>served as a secure API.</span>', 'Generated viewsets, serializers, routes and OpenAPI, with field-level roles and row-level tenancy on every request.'],
+    docs: ['TurboDRF <span>documentation</span>', 'Installation, configuration, permissions, tenancy, security and every setting.'],
+  };
+  const [t, s] = cards[new URLSearchParams(location.search).get('card') || 'home'];
+  document.getElementById('title').innerHTML = t;
+  document.getElementById('sub').textContent = s;
+</script>
+</body>
+</html>

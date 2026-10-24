@@ -1,0 +1,90 @@
+---
+import type { MarkdownHeading } from 'astro';
+import Layout from './Layout.astro';
+import { REPO_URL } from '../lib/docs-meta.mjs';
+import { docNav } from '../lib/docs';
+
+interface Props { title: string; description?: string; slug: string; headings: MarkdownHeading[]; source?: string }
+const { title, description, slug, headings, source } = Astro.props;
+const nav = await docNav();
+const flat = nav.flatMap((g) => g.pages);
+const index = flat.findIndex((p) => p.slug === slug);
+const prev = index > 0 ? flat[index - 1] : null;
+const next = index >= 0 && index < flat.length - 1 ? flat[index + 1] : null;
+const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
+---
+<Layout title={title} description={description} card="docs">
+  <div class="docs-page drawer lg:drawer-open wrap pt-16">
+    <input id="docs-nav" type="checkbox" class="drawer-toggle" />
+    <div class="drawer-content min-w-0 lg:pl-10 xl:grid xl:grid-cols-[minmax(0,1fr)_14rem] xl:gap-10">
+      <div class="min-w-0 py-10">
+        <label for="docs-nav" class="btn btn-sm btn-ghost ink-2 gap-2 mb-6 lg:hidden px-2"><span class="icon-[lucide--panel-left] size-4"></span>Docs menu</label>
+        <article class="prose prose-invert prose-turbo" data-pagefind-body>
+          <slot />
+        </article>
+        <div class="mt-14 max-w-[46rem] flex flex-col sm:flex-row gap-3 justify-between">
+          {prev ? <a href={`/docs/${prev.slug}/`} class="panel px-5 py-4 hover:border-[color-mix(in_oklab,var(--mint)_40%,transparent)] transition-colors flex-1"><span class="ink-3 text-xs">Previous</span><span class="block font-display mt-1">{prev.title}</span></a> : <span class="flex-1"></span>}
+          {next && <a href={`/docs/${next.slug}/`} class="panel px-5 py-4 text-right hover:border-[color-mix(in_oklab,var(--mint)_40%,transparent)] transition-colors flex-1"><span class="ink-3 text-xs">Next</span><span class="block font-display mt-1">{next.title}</span></a>}
+        </div>
+        {source && (
+          <a href={`${REPO_URL}/blob/main/${source}`} target="_blank" rel="noopener" class="inline-flex items-center gap-2 mt-8 text-sm ink-3 hover:text-[var(--mint)]">
+            <span class="icon-[lucide--pencil] size-4"></span>Edit this page on GitHub
+          </a>
+        )}
+      </div>
+      {toc.length > 0 && (
+        <aside class="hidden xl:block">
+          <nav class="sticky top-24 py-10 text-sm max-h-[calc(100vh-6rem)] overflow-y-auto" aria-label="On this page">
+            <div class="eyebrow !text-[.62rem] mb-3">On this page</div>
+            <ul class="space-y-2 border-l border-[var(--line)]">
+              {toc.map((h) => (
+                <li><a href={`#${h.slug}`} class:list={['block ink-2 hover:text-[var(--mint)] -ml-px border-l border-transparent hover:border-[var(--mint)] leading-snug', h.depth === 3 ? 'pl-6 text-[.82rem]' : 'pl-3']} data-toc={h.slug}>{h.text}</a></li>
+              ))}
+            </ul>
+          </nav>
+        </aside>
+      )}
+    </div>
+    <div class="drawer-side z-40 lg:z-auto lg:!overflow-visible">
+      <label for="docs-nav" aria-label="Close the docs menu" class="drawer-overlay"></label>
+      <nav class="bg-base-100 lg:bg-transparent min-h-full w-72 lg:w-60 p-4 lg:p-0 lg:py-10 lg:sticky lg:top-16 lg:h-[calc(100vh-4rem)] lg:overflow-y-auto" aria-label="Docs">
+        <button type="button" class="btn btn-sm w-full justify-start gap-2 ink-3 font-normal border-[var(--line)] bg-[var(--bg-2)] mb-6" data-search-open>
+          <span class="icon-[lucide--search] size-4"></span>Search<kbd class="kbd kbd-xs ml-auto">⌘K</kbd>
+        </button>
+        {nav.map((g) => (
+          <div class="mb-6">
+            <div class="eyebrow !text-[.62rem] mb-2 px-3">{g.title}</div>
+            <ul class="menu menu-sm w-full p-0 gap-0.5">
+              {g.pages.map((p) => (
+                <li><a href={`/docs/${p.slug}/`} class:list={['rounded-lg', p.slug === slug ? 'menu-active !bg-[color-mix(in_oklab,var(--mint)_12%,transparent)] !text-[var(--mint)]' : 'ink-2']}>{p.title}</a></li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </nav>
+    </div>
+  </div>
+</Layout>
+
+<script>
+  // Highlight the section in view in "On this page".
+  const links = new Map(
+    [...document.querySelectorAll<HTMLAnchorElement>('[data-toc]')].map((a) => [a.dataset.toc!, a]),
+  );
+  if (links.size) {
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          links.forEach((a) => a.classList.remove('!text-[var(--mint)]', '!border-[var(--mint)]'));
+          links.get(e.target.id)?.classList.add('!text-[var(--mint)]', '!border-[var(--mint)]');
+        }
+      },
+      { rootMargin: '-15% 0px -75% 0px' },
+    );
+    links.forEach((_, id) => {
+      const el = document.getElementById(id);
+      if (el) io.observe(el);
+    });
+  }
+</script>
