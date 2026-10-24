@@ -210,14 +210,14 @@ class TestPropertyQueriesBlocked(_SandboxFixture):
             Holding,
             self.holding_a,
             {
-                "all": lambda s: s.events.all(),
+                "all": lambda s: (e.status for e in s.events.all()),
                 "lazy": lambda s: s.events.values_list("status", flat=True),
                 "everything": lambda s: HoldingEvent.objects.all(),
             },
             self.analyst,
             property_relations={"all": ["events"], "lazy": ["events"]},
         )
-        self.assertEqual([e.status for e in values["all"]], ["matched"])
+        self.assertEqual(values["all"], ["matched"])
         self.assertNotIn("lazy", values)
         self.assertNotIn("everything", values)
 

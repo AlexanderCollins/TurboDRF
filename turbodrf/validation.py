@@ -237,45 +237,13 @@ def validate_searchable_fields_safety(model):
         raise ImproperlyConfigured(message)
 
 
-def path_traverses_predicate_target(parent_model, field_path):
-    """True if the JOIN chain for ``field_path`` passes through a model
-    with registered predicates or tenant-drift relative to the parent.
-
-    Used at REQUEST time by :func:`build_traversal_scope_q` to decide
-    whether a ``__``-path filter / ordering needs the target-scoping
-    AND clause. Same bug class as the compiled M2M / search-fields
-    startup gates, applied at request time because URL-driven JOINs
-    aren't statically enumerable.
-
-    Returns False on unresolvable paths so normal validation can
-    surface the error.
-    """
-    from .predicates import get_predicates, get_tenant_field
-
-    parent_tenant = get_tenant_field(parent_model)
-    try:
-        _final_model, chain = get_nested_field_model(parent_model, field_path)
-    except FieldDoesNotExist:
-        return False
-
-    for step_idx, (step_model, _field, _name) in enumerate(chain):
-        if step_idx == 0:
-            continue
-        if get_predicates(step_model):
-            return True
-        target_tenant = get_tenant_field(step_model)
-        if target_tenant is not None and parent_tenant is None:
-            return True
-    return False
-
-
 def build_traversal_scope_q(parent_model, field_path, request):
     """Build a Q that scopes every JOIN target along ``field_path`` to
     the rows the request's user can see via that target's own endpoint.
 
     For each model in the JOIN chain that has registered predicates or
     a ``tenant_field``, this AND's
-    ``<prefix>__pk__in=<TargetModel._base_manager.filter(<target_q>)>``
+    ``<prefix>__in=<TargetModel._base_manager.filter(<target_q>).values("pk")>``
     onto the parent queryset, where ``target_q`` mirrors the target view's
     tenant_q + predicate_q construction (see
     :meth:`turbodrf.views.TurboDRFViewSet._get_tenant_q` and
@@ -405,6 +373,11 @@ def scoped_target_queryset(target_model, request, base_manager=False):
     related field read through), or on its base manager with
     ``base_manager=True`` — for a hop of a nested path, which Django follows
     without the default manager.
+
+    Each visible row appears once: the predicates are applied as a ``pk__in``
+    subquery, as ``views.Authorization.scope`` does for one that crosses an
+    M2M or reverse relation (``Members``, or an ``Either`` ORing one in) — a
+    JOIN would return a row once per matching related row.
     """
     from django.db.models import Q
 
@@ -441,7 +414,8 @@ def scoped_target_queryset(target_model, request, base_manager=False):
         target_q = Q()
         for pred in predicates:
             target_q &= pred.q(request, roles)
-        qs = qs.filter(target_q)
+        if target_q:
+            return manager.filter(pk__in=qs.filter(target_q).values("pk"))
 
     return qs
 
@@ -471,24 +445,24 @@ def check_nested_field_permissions(model, field_path, user, use_cache=True):
     """
     from .backends import build_permission_snapshot
 
-    # Simple field (no nesting) - check on base model
-    if "__" not in field_path:
-        snapshot = build_permission_snapshot(user, model, use_cache=use_cache)
-        base_field = field_path
-        if snapshot.has_read_rule(base_field):
-            return snapshot.can_read_field(base_field)
-        else:
-            return snapshot.can_perform_action("read")
+    return _path_readable(
+        model,
+        field_path,
+        lambda current: build_permission_snapshot(user, current, use_cache=use_cache),
+    )
 
-    # Nested field - traverse and check permissions at each level
+
+def _path_readable(model, field_path, snapshot_for):
+    """``check_nested_field_permissions`` with the snapshot of each model on
+    the path from ``snapshot_for(model)``, so a caller checking many paths can
+    reuse them. Each segment is checked by its field name: Django also
+    resolves an FK's attname (``author_id``), which no rule names."""
+    field_path = _normalised_path(model, field_path)
     parts = field_path.split("__")
     current_model = model
 
     for i, part in enumerate(parts):
-        # Build snapshot for current model
-        current_snapshot = build_permission_snapshot(
-            user, current_model, use_cache=use_cache
-        )
+        current_snapshot = snapshot_for(current_model)
 
         # Check permission for this field
         if current_snapshot.has_read_rule(part):
@@ -567,9 +541,10 @@ def is_field_visible_to_user(model, field_path, user, use_cache=True):
       2. Nested-path permission walk via check_nested_field_permissions.
 
     Pass user=None for anonymous (the snapshot system handles 'guest' role
-    if configured).
+    if configured). An FK's attname (``token_id``) is checked as the field
+    (``token``).
     """
-    if is_field_path_sensitive(field_path):
+    if is_field_path_sensitive(_normalised_path(model, field_path)):
         return False
     return check_nested_field_permissions(model, field_path, user, use_cache=use_cache)
 
@@ -627,9 +602,9 @@ def validate_filter_field(model, filter_param):
         # JSON key transforms: the keys are part of the path (and fail the
         # nested permission walk unless permissions are bypassed).
         if rest[-1] in _FILTER_LOOKUPS:
-            field_path, lookup = "__".join(parts[:-1]), parts[-1]
+            field_path, lookup = "__".join(field_parts + rest[:-1]), rest[-1]
         else:
-            field_path, lookup = filter_param, "exact"
+            field_path, lookup = "__".join(field_parts + rest), "exact"
     else:
         raise ValidationError(
             f"'{filter_param}' is not a field path with a supported lookup."
@@ -674,8 +649,10 @@ _FILTER_LOOKUPS = {
 
 
 def _resolve_field_parts(model, parts):
-    """The longest prefix of ``parts`` that resolves as a field path on
-    ``model`` (following relations)."""
+    """The field names of the longest prefix of ``parts`` that resolves as a
+    field path on ``model`` (following relations). An FK's attname
+    (``author_id``) resolves to the field's name (``author``): permission
+    rules and the sensitive deny-list name fields, not columns."""
     resolved = []
     current = model
     for part in parts:
@@ -685,9 +662,17 @@ def _resolve_field_parts(model, parts):
             field = current._meta.get_field(part)
         except FieldDoesNotExist:
             break
-        resolved.append(part)
+        resolved.append(field.name)
         current = field.related_model if field.is_relation else None
     return resolved
+
+
+def _normalised_path(model, field_path):
+    """``field_path`` with each segment that resolves on ``model`` named by
+    its field name (``deal__assigned_broker_id`` -> ``deal__assigned_broker``)."""
+    parts = field_path.split("__")
+    resolved = _resolve_field_parts(model, parts)
+    return "__".join(resolved + parts[len(resolved) :])
 
 
 def _is_json_field(model, field_parts):
