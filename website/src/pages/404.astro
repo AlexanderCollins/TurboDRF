@@ -1,0 +1,16 @@
+---
+import Layout from '../layouts/Layout.astro';
+---
+<Layout title="Not found" description="This page doesn't exist.">
+  <section class="carbon grain min-h-[70vh] grid place-items-center">
+    <div class="wrap text-center relative z-[1] py-32">
+      <p class="font-mono text-sm"><span class="http http-4">404 Not Found</span></p>
+      <h1 class="font-display text-4xl sm:text-5xl mt-6">Not found.</h1>
+      <p class="mt-4 ink-2 text-lg">Like a row in another tenant: it isn't here, or you can't see it.</p>
+      <div class="mt-9 flex flex-wrap justify-center gap-3">
+        <a href="/" class="btn btn-primary rounded-full px-6">Home</a>
+        <a href="/docs/" class="btn rounded-full px-6 border-[var(--line)] bg-[var(--bg-2)]/70">Docs</a>
+      </div>
+    </div>
+  </section>
+</Layout>

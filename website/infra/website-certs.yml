@@ -1,0 +1,40 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  ACM certificate for turbodrf.com (apex + www). The only website resource in
+  us-east-1: CloudFront accepts certificates from that region alone. Everything
+  else is in website.yml.
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,30}[a-z0-9]$"
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+  WebsiteDomain:
+    Type: String
+    AllowedPattern: "^[a-z0-9.-]+\\.[a-z]{2,}$"
+  WebsiteAltDomain:
+    Type: String
+    AllowedPattern: "^[a-z0-9.-]+\\.[a-z]{2,}$"
+
+Resources:
+  WebsiteCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref WebsiteDomain
+      SubjectAlternativeNames: [!Ref WebsiteAltDomain]
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref WebsiteDomain
+          HostedZoneId: !Ref HostedZoneId
+        - DomainName: !Ref WebsiteAltDomain
+          HostedZoneId: !Ref HostedZoneId
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-website-cert"
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  CertificateArn:
+    Value: !Ref WebsiteCertificate

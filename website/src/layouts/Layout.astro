@@ -1,0 +1,55 @@
+---
+import '../styles/global.css';
+import Navbar from '../components/Navbar.astro';
+import Footer from '../components/Footer.astro';
+import SearchDialog from '../components/SearchDialog.astro';
+
+interface Props { title: string; description?: string; card?: string }
+const {
+  title,
+  description = 'TurboDRF turns Django models into a REST API with a mixin and one method, and checks every request against field-level roles and row-level tenancy.',
+  card = 'home',
+} = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site);
+const fullTitle = title === 'TurboDRF' ? 'TurboDRF: secure REST APIs from your Django models' : `${title} · TurboDRF`;
+const ogImage = new URL(`/og/${card}.jpg`, Astro.site);
+---
+<!doctype html>
+<html lang="en" data-theme="turbo">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <meta name="theme-color" content="#0a0d0e" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="icon" type="image/svg+xml" href="/brand/icon.svg" />
+    <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <link rel="preload" href="/fonts/manrope-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="TurboDRF" />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:type" content="image/jpeg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={fullTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+    <slot name="head" />
+  </head>
+  <body>
+    <Navbar />
+    <main><slot /></main>
+    <Footer />
+    <SearchDialog />
+    <script src="../scripts/motion.ts"></script>
+  </body>
+</html>

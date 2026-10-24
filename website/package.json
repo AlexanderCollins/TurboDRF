@@ -1,0 +1,35 @@
+{
+  "name": "turbodrf.com",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build && pagefind --site dist --output-subdir _pagefind",
+    "preview": "astro preview",
+    "check": "astro check",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "@astrojs/react": "4.4.2",
+    "@astrojs/sitemap": "3.7.4",
+    "astro": "5.18.2",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@astrojs/check": "0.9.12",
+    "@fontsource-variable/jetbrains-mono": "5.3.0",
+    "@fontsource-variable/manrope": "5.3.0",
+    "@iconify-json/lucide": "1.2.147",
+    "@iconify/tailwind4": "1.2.3",
+    "@tailwindcss/typography": "0.5.20",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "daisyui": "5.7.50",
+    "pagefind": "1.5.2",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3"
+  }
+}

@@ -1,0 +1,61 @@
+---
+// What happens to one list request, stage by stage. The rail fills and each
+// stage lights in turn when the diagram scrolls into view (data-draw).
+const stages = [
+  { icon: 'icon-[lucide--key-round]', title: 'Authenticated', body: 'Anonymous callers get nothing unless the model is public_access.' },
+  { icon: 'icon-[lucide--badge-check]', title: 'Role allows it', body: 'demo.project.read, from TURBODRF_ROLES or the database.' },
+  { icon: 'icon-[lucide--building-2]', title: 'Rows in scope', body: "The caller's tenant, then owner and predicate rules." },
+  { icon: 'icon-[lucide--columns-3]', title: 'Fields they can read', body: 'Sensitive fields need an explicit .read grant.' },
+  { icon: 'icon-[lucide--zap]', title: 'Compiled query', body: '.values() with joins: no model instances to build.' },
+  { icon: 'icon-[lucide--braces]', title: 'JSON', body: 'Rendered by msgspec or orjson when installed.' },
+];
+---
+<ol class="flow" data-draw>
+  {stages.map((s, i) => (
+    <li style={`--i:${i}`}>
+      <span class="dot"><span class={`${s.icon} size-[1.15rem]`}></span></span>
+      <div>
+        <div class="font-display text-[1.02rem]">{s.title}</div>
+        <p class="ink-2 text-sm mt-1 leading-snug">{s.body}</p>
+      </div>
+    </li>
+  ))}
+</ol>
+
+<style>
+  .flow { list-style: none; margin: 0; padding: 0; display: grid; gap: 1.6rem; position: relative; }
+  .flow li { display: grid; grid-template-columns: 2.75rem 1fr; gap: 1rem; align-items: start; position: relative; }
+  .dot {
+    position: relative; z-index: 1;
+    display: grid; place-items: center; width: 2.75rem; height: 2.75rem; border-radius: .9rem;
+    background: var(--bg-2); border: 1px solid var(--line); color: var(--ink-3);
+    transition: color .5s, border-color .5s, box-shadow .5s, background-color .5s;
+    transition-delay: calc(var(--i) * .22s + .1s);
+  }
+  /* The rail between dots: vertical on phones, horizontal from md. */
+  .flow li:not(:last-child)::after {
+    content: ""; position: absolute; left: 1.375rem; top: 2.75rem; width: 1px; height: calc(100% - 1.15rem);
+    background: linear-gradient(var(--mint), var(--cyan)); transform-origin: top; transform: scaleY(0);
+    transition: transform .4s ease-out; transition-delay: calc(var(--i) * .22s + .25s);
+  }
+  .flow li:not(:last-child)::before {
+    content: ""; position: absolute; left: 1.375rem; top: 2.75rem; width: 1px; height: calc(100% - 1.15rem); background: var(--line);
+  }
+  @media (min-width: 900px) {
+    .flow { grid-template-columns: repeat(6, 1fr); gap: 1.25rem; }
+    .flow li { grid-template-columns: 1fr; gap: 1rem; }
+    .flow li:not(:last-child)::before, .flow li:not(:last-child)::after {
+      left: 2.75rem; top: 1.375rem; height: 1px; width: calc(100% - 2.75rem + 1.25rem);
+    }
+    .flow li:not(:last-child)::after { background: linear-gradient(90deg, var(--mint), var(--cyan)); transform: scaleX(0); transform-origin: left; }
+  }
+  .flow:global(.is-in) .dot, :global(html:not(.js)) .flow .dot {
+    color: var(--mint); border-color: color-mix(in oklab, var(--mint) 45%, transparent);
+    background: color-mix(in oklab, var(--mint) 9%, var(--bg-2));
+    box-shadow: 0 0 30px -8px color-mix(in oklab, var(--mint) 60%, transparent);
+  }
+  .flow:global(.is-in) li::after, :global(html:not(.js)) .flow li::after { transform: none !important; }
+  @media (prefers-reduced-motion: reduce) {
+    .dot, .flow li::after { transition: none !important; }
+  }
+</style>

@@ -1,0 +1,13 @@
+---
+// The docs search modal. motion.ts loads Pagefind's UI into #search-ui on first open.
+---
+<dialog id="search" class="modal modal-top sm:modal-middle">
+  <div class="modal-box max-w-2xl bg-base-200 border border-[var(--line)] min-h-[16rem]">
+    <div class="flex items-center justify-between mb-4">
+      <span class="eyebrow">Search the docs</span>
+      <form method="dialog"><button class="btn btn-ghost btn-sm" aria-label="Close"><kbd class="kbd kbd-xs">esc</kbd></button></form>
+    </div>
+    <div id="search-ui"></div>
+  </div>
+  <form method="dialog" class="modal-backdrop"><button aria-label="Close search">close</button></form>
+</dialog>

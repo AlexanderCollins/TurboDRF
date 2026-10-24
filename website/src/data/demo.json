@@ -1,0 +1,1332 @@
+{
+  "turbodrf_version": "0.7.0",
+  "users": {
+    "alice": {
+      "role": "admin",
+      "workspace": "Acme"
+    },
+    "maya": {
+      "role": "manager",
+      "workspace": "Acme"
+    },
+    "victor": {
+      "role": "viewer",
+      "workspace": "Acme"
+    },
+    "bob": {
+      "role": "admin",
+      "workspace": "Globex"
+    }
+  },
+  "routes": [
+    {
+      "route": "/api/clients/",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    {
+      "route": "/api/clients/(?P<pk>[^/.]+)/",
+      "methods": [
+        "GET",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ]
+    },
+    {
+      "route": "/api/projects/",
+      "methods": [
+        "GET",
+        "POST",
+        "HEAD"
+      ]
+    },
+    {
+      "route": "/api/projects/(?P<pk>[^/.]+)/",
+      "methods": [
+        "GET",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "HEAD"
+      ]
+    },
+    {
+      "route": "/api/clients",
+      "methods": [
+        "GET",
+        "POST"
+      ]
+    },
+    {
+      "route": "/api/clients/(?P<pk>[^/.]+)",
+      "methods": [
+        "GET",
+        "PUT",
+        "PATCH",
+        "DELETE"
+      ]
+    },
+    {
+      "route": "/api/projects",
+      "methods": [
+        "GET",
+        "POST",
+        "HEAD"
+      ]
+    },
+    {
+      "route": "/api/projects/(?P<pk>[^/.]+)",
+      "methods": [
+        "GET",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "HEAD"
+      ]
+    }
+  ],
+  "matrix": {
+    "callers": [
+      "alice",
+      "maya",
+      "victor",
+      "bob",
+      "anonymous"
+    ],
+    "rows": [
+      {
+        "id": 1,
+        "title": "Website relaunch",
+        "workspace": "Acme",
+        "owner": "victor",
+        "budget": "48000.00"
+      },
+      {
+        "id": 2,
+        "title": "Mobile app",
+        "workspace": "Acme",
+        "owner": "maya",
+        "budget": "125000.00"
+      },
+      {
+        "id": 3,
+        "title": "Data warehouse",
+        "workspace": "Acme",
+        "owner": "alice",
+        "budget": "310000.00"
+      },
+      {
+        "id": 4,
+        "title": "Payments API",
+        "workspace": "Globex",
+        "owner": "bob",
+        "budget": "90000.00"
+      },
+      {
+        "id": 5,
+        "title": "Old prototype",
+        "workspace": "Acme",
+        "owner": "alice",
+        "budget": "5000.00"
+      }
+    ],
+    "actions": {
+      "list": {
+        "alice": {
+          "user": "alice",
+          "role": "admin",
+          "workspace": "Acme",
+          "method": "GET",
+          "url": "/api/projects/",
+          "body": null,
+          "status": 200,
+          "response": {
+            "pagination": {
+              "next": null,
+              "previous": null,
+              "current_page": 1,
+              "total_pages": 1,
+              "total_items": 4
+            },
+            "data": [
+              {
+                "id": 1,
+                "title": "Website relaunch",
+                "status": "active",
+                "client": 1,
+                "owner": 3,
+                "budget": "48000.00",
+                "client_name": "Northwind",
+                "owner_username": "victor"
+              },
+              {
+                "id": 2,
+                "title": "Mobile app",
+                "status": "active",
+                "client": 2,
+                "owner": 2,
+                "budget": "125000.00",
+                "client_name": "Initech",
+                "owner_username": "maya"
+              },
+              {
+                "id": 3,
+                "title": "Data warehouse",
+                "status": "active",
+                "client": 1,
+                "owner": 1,
+                "budget": "310000.00",
+                "client_name": "Northwind",
+                "owner_username": "alice"
+              },
+              {
+                "id": 5,
+                "title": "Old prototype",
+                "status": "active",
+                "client": 1,
+                "owner": 1,
+                "budget": "5000.00",
+                "client_name": "Northwind",
+                "owner_username": "alice"
+              }
+            ]
+          },
+          "queries": 2
+        },
+        "maya": {
+          "user": "maya",
+          "role": "manager",
+          "workspace": "Acme",
+          "method": "GET",
+          "url": "/api/projects/",
+          "body": null,
+          "status": 200,
+          "response": {
+            "pagination": {
+              "next": null,
+              "previous": null,
+              "current_page": 1,
+              "total_pages": 1,
+              "total_items": 4
+            },
+            "data": [
+              {
+                "id": 1,
+                "title": "Website relaunch",
+                "status": "active",
+                "client": 1,
+                "owner": 3,
+                "budget": "48000.00",
+                "client_name": "Northwind",
+                "owner_username": "victor"
+              },
+              {
+                "id": 2,
+                "title": "Mobile app",
+                "status": "active",
+                "client": 2,
+                "owner": 2,
+                "budget": "125000.00",
+                "client_name": "Initech",
+                "owner_username": "maya"
+              },
+              {
+                "id": 3,
+                "title": "Data warehouse",
+                "status": "active",
+                "client": 1,
+                "owner": 1,
+                "budget": "310000.00",
+                "client_name": "Northwind",
+                "owner_username": "alice"
+              },
+              {
+                "id": 5,
+                "title": "Old prototype",
+                "status": "active",
+                "client": 1,
+                "owner": 1,
+                "budget": "5000.00",
+                "client_name": "Northwind",
+                "owner_username": "alice"
+              }
+            ]
+          },
+          "queries": 2
+        },
+        "victor": {
+          "user": "victor",
+          "role": "viewer",
+          "workspace": "Acme",
+          "method": "GET",
+          "url": "/api/projects/",
+          "body": null,
+          "status": 200,
+          "response": {
+            "pagination": {
+              "next": null,
+              "previous": null,
+              "current_page": 1,
+              "total_pages": 1,
+              "total_items": 1
+            },
+            "data": [
+              {
+                "id": 1,
+                "title": "Website relaunch",
+                "status": "active",
+                "client": 1,
+                "owner": 3,
+                "client_name": "Northwind",
+                "owner_username": "victor"
+              }
+            ]
+          },
+          "queries": 2
+        },
+        "bob": {
+          "user": "bob",
+          "role": "admin",
+          "workspace": "Globex",
+          "method": "GET",
+          "url": "/api/projects/",
+          "body": null,
+          "status": 200,
+          "response": {
+            "pagination": {
+              "next": null,
+              "previous": null,
+              "current_page": 1,
+              "total_pages": 1,
+              "total_items": 1
+            },
+            "data": [
+              {
+                "id": 4,
+                "title": "Payments API",
+                "status": "active",
+                "client": 3,
+                "owner": 4,
+                "budget": "90000.00",
+                "client_name": "Umbrella",
+                "owner_username": "bob"
+              }
+            ]
+          },
+          "queries": 2
+        },
+        "anonymous": {
+          "user": null,
+          "role": null,
+          "workspace": null,
+          "method": "GET",
+          "url": "/api/projects/",
+          "body": null,
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          }
+        }
+      },
+      "read_p1": {
+        "alice": {
+          "user": "alice",
+          "role": "admin",
+          "workspace": "Acme",
+          "method": "GET",
+          "url": "/api/projects/1/",
+          "body": null,
+          "status": 200,
+          "response": {
+            "id": 1,
+            "title": "Website relaunch",
+            "status": "active",
+            "client": 1,
+            "budget": "48000.00",
+            "owner": 3,
+            "client_name": "Northwind",
+            "owner_username": "victor"
+          },
+          "queries": 1
+        },
+        "maya": {
+          "user": "maya",
+          "role": "manager",
+          "workspace": "Acme",
+          "method": "GET",
+          "url": "/api/projects/1/",
+          "body": null,
+          "status": 200,
+          "response": {
+            "id": 1,
+            "title": "Website relaunch",
+            "status": "active",
+            "client": 1,
+            "budget": "48000.00",
+            "owner": 3,
+            "client_name": "Northwind",
+            "owner_username": "victor"
+          },
+          "queries": 1
+        },
+        "victor": {
+          "user": "victor",
+          "role": "viewer",
+          "workspace": "Acme",
+          "method": "GET",
+          "url": "/api/projects/1/",
+          "body": null,
+          "status": 200,
+          "response": {
+            "id": 1,
+            "title": "Website relaunch",
+            "status": "active",
+            "client": 1,
+            "owner": 3,
+            "client_name": "Northwind",
+            "owner_username": "victor"
+          },
+          "queries": 1
+        },
+        "bob": {
+          "user": "bob",
+          "role": "admin",
+          "workspace": "Globex",
+          "method": "GET",
+          "url": "/api/projects/1/",
+          "body": null,
+          "status": 404,
+          "response": {
+            "detail": "Not found."
+          },
+          "queries": 1
+        },
+        "anonymous": {
+          "user": null,
+          "role": null,
+          "workspace": null,
+          "method": "GET",
+          "url": "/api/projects/1/",
+          "body": null,
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          }
+        }
+      },
+      "read_p2": {
+        "alice": {
+          "user": "alice",
+          "role": "admin",
+          "workspace": "Acme",
+          "method": "GET",
+          "url": "/api/projects/2/",
+          "body": null,
+          "status": 200,
+          "response": {
+            "id": 2,
+            "title": "Mobile app",
+            "status": "active",
+            "client": 2,
+            "budget": "125000.00",
+            "owner": 2,
+            "client_name": "Initech",
+            "owner_username": "maya"
+          },
+          "queries": 1
+        },
+        "maya": {
+          "user": "maya",
+          "role": "manager",
+          "workspace": "Acme",
+          "method": "GET",
+          "url": "/api/projects/2/",
+          "body": null,
+          "status": 200,
+          "response": {
+            "id": 2,
+            "title": "Mobile app",
+            "status": "active",
+            "client": 2,
+            "budget": "125000.00",
+            "owner": 2,
+            "client_name": "Initech",
+            "owner_username": "maya"
+          },
+          "queries": 1
+        },
+        "victor": {
+          "user": "victor",
+          "role": "viewer",
+          "workspace": "Acme",
+          "method": "GET",
+          "url": "/api/projects/2/",
+          "body": null,
+          "status": 404,
+          "response": {
+            "detail": "Not found."
+          },
+          "queries": 1
+        },
+        "bob": {
+          "user": "bob",
+          "role": "admin",
+          "workspace": "Globex",
+          "method": "GET",
+          "url": "/api/projects/2/",
+          "body": null,
+          "status": 404,
+          "response": {
+            "detail": "Not found."
+          },
+          "queries": 1
+        },
+        "anonymous": {
+          "user": null,
+          "role": null,
+          "workspace": null,
+          "method": "GET",
+          "url": "/api/projects/2/",
+          "body": null,
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          }
+        }
+      },
+      "edit_status": {
+        "maya": {
+          "user": "maya",
+          "role": "manager",
+          "workspace": "Acme",
+          "method": "PATCH",
+          "url": "/api/projects/1/",
+          "body": {
+            "status": "review"
+          },
+          "status": 200,
+          "response": {
+            "id": 1,
+            "title": "Website relaunch",
+            "status": "review",
+            "client": 1,
+            "budget": "48000.00",
+            "owner": 3,
+            "client_name": "Northwind",
+            "owner_username": "victor"
+          },
+          "queries": 5
+        },
+        "victor": {
+          "user": "victor",
+          "role": "viewer",
+          "workspace": "Acme",
+          "method": "PATCH",
+          "url": "/api/projects/1/",
+          "body": {
+            "status": "review"
+          },
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          },
+          "queries": 0
+        },
+        "bob": {
+          "user": "bob",
+          "role": "admin",
+          "workspace": "Globex",
+          "method": "PATCH",
+          "url": "/api/projects/1/",
+          "body": {
+            "status": "review"
+          },
+          "status": 404,
+          "response": {
+            "detail": "Not found."
+          },
+          "queries": 1
+        },
+        "anonymous": {
+          "user": null,
+          "role": null,
+          "workspace": null,
+          "method": "PATCH",
+          "url": "/api/projects/1/",
+          "body": {
+            "status": "review"
+          },
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          }
+        },
+        "alice": {
+          "user": "alice",
+          "role": "admin",
+          "workspace": "Acme",
+          "method": "PATCH",
+          "url": "/api/projects/1/",
+          "body": {
+            "status": "review"
+          },
+          "status": 200,
+          "response": {
+            "id": 1,
+            "title": "Website relaunch",
+            "status": "review",
+            "client": 1,
+            "budget": "48000.00",
+            "owner": 3,
+            "client_name": "Northwind",
+            "owner_username": "victor"
+          },
+          "queries": 5
+        }
+      },
+      "edit_budget": {
+        "maya": {
+          "user": "maya",
+          "role": "manager",
+          "workspace": "Acme",
+          "method": "PATCH",
+          "url": "/api/projects/1/",
+          "body": {
+            "budget": "99.00"
+          },
+          "status": 200,
+          "response": {
+            "id": 1,
+            "title": "Website relaunch",
+            "status": "review",
+            "client": 1,
+            "budget": "48000.00",
+            "owner": 3,
+            "client_name": "Northwind",
+            "owner_username": "victor"
+          },
+          "queries": 5
+        },
+        "victor": {
+          "user": "victor",
+          "role": "viewer",
+          "workspace": "Acme",
+          "method": "PATCH",
+          "url": "/api/projects/1/",
+          "body": {
+            "budget": "99.00"
+          },
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          },
+          "queries": 0
+        },
+        "bob": {
+          "user": "bob",
+          "role": "admin",
+          "workspace": "Globex",
+          "method": "PATCH",
+          "url": "/api/projects/1/",
+          "body": {
+            "budget": "99.00"
+          },
+          "status": 404,
+          "response": {
+            "detail": "Not found."
+          },
+          "queries": 1
+        },
+        "anonymous": {
+          "user": null,
+          "role": null,
+          "workspace": null,
+          "method": "PATCH",
+          "url": "/api/projects/1/",
+          "body": {
+            "budget": "99.00"
+          },
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          }
+        },
+        "alice": {
+          "user": "alice",
+          "role": "admin",
+          "workspace": "Acme",
+          "method": "PATCH",
+          "url": "/api/projects/1/",
+          "body": {
+            "budget": "99.00"
+          },
+          "status": 200,
+          "response": {
+            "id": 1,
+            "title": "Website relaunch",
+            "status": "review",
+            "client": 1,
+            "budget": "99.00",
+            "owner": 3,
+            "client_name": "Northwind",
+            "owner_username": "victor"
+          },
+          "queries": 5
+        }
+      },
+      "create_foreign": {
+        "maya": {
+          "user": "maya",
+          "role": "manager",
+          "workspace": "Acme",
+          "method": "POST",
+          "url": "/api/projects/",
+          "body": {
+            "title": "Sneaky",
+            "client": 3,
+            "budget": "1.00"
+          },
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          },
+          "queries": 0
+        },
+        "victor": {
+          "user": "victor",
+          "role": "viewer",
+          "workspace": "Acme",
+          "method": "POST",
+          "url": "/api/projects/",
+          "body": {
+            "title": "Sneaky",
+            "client": 3,
+            "budget": "1.00"
+          },
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          },
+          "queries": 0
+        },
+        "bob": {
+          "user": "bob",
+          "role": "admin",
+          "workspace": "Globex",
+          "method": "POST",
+          "url": "/api/projects/",
+          "body": {
+            "title": "Sneaky",
+            "client": 1,
+            "budget": "1.00"
+          },
+          "status": 400,
+          "response": {
+            "client": [
+              "Invalid client: not found or not accessible."
+            ]
+          },
+          "queries": 2
+        },
+        "anonymous": {
+          "user": null,
+          "role": null,
+          "workspace": null,
+          "method": "POST",
+          "url": "/api/projects/",
+          "body": {
+            "title": "Sneaky",
+            "client": 3,
+            "budget": "1.00"
+          },
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          }
+        },
+        "alice": {
+          "user": "alice",
+          "role": "admin",
+          "workspace": "Acme",
+          "method": "POST",
+          "url": "/api/projects/",
+          "body": {
+            "title": "Sneaky",
+            "client": 3,
+            "budget": "1.00"
+          },
+          "status": 400,
+          "response": {
+            "client": [
+              "Invalid client: not found or not accessible."
+            ]
+          },
+          "queries": 2
+        }
+      },
+      "delete": {
+        "maya": {
+          "user": "maya",
+          "role": "manager",
+          "workspace": "Acme",
+          "method": "DELETE",
+          "url": "/api/projects/5/",
+          "body": null,
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          },
+          "queries": 0
+        },
+        "victor": {
+          "user": "victor",
+          "role": "viewer",
+          "workspace": "Acme",
+          "method": "DELETE",
+          "url": "/api/projects/5/",
+          "body": null,
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          },
+          "queries": 0
+        },
+        "bob": {
+          "user": "bob",
+          "role": "admin",
+          "workspace": "Globex",
+          "method": "DELETE",
+          "url": "/api/projects/5/",
+          "body": null,
+          "status": 404,
+          "response": {
+            "detail": "Not found."
+          },
+          "queries": 1
+        },
+        "anonymous": {
+          "user": null,
+          "role": null,
+          "workspace": null,
+          "method": "DELETE",
+          "url": "/api/projects/5/",
+          "body": null,
+          "status": 403,
+          "response": {
+            "detail": "You do not have permission to perform this action."
+          }
+        },
+        "alice": {
+          "user": "alice",
+          "role": "admin",
+          "workspace": "Acme",
+          "method": "DELETE",
+          "url": "/api/projects/5/",
+          "body": null,
+          "status": 204,
+          "response": null,
+          "queries": 2
+        }
+      }
+    },
+    "spare_pk": 5
+  },
+  "check": "\ndemo.Client [compiled] OK\n  Fields: 1 DB, 0 FK, 0 M2M, 0 property\n  Public access: False\n  Tenant model: demo.Workspace\n  Tenant field: workspace\n\ndemo.Project [compiled] OK\n  Fields: 5 DB, 2 FK, 0 M2M, 0 property\n  Public access: False\n  Tenant model: demo.Workspace\n  Tenant field: workspace\n  Within-tenant predicates: Owner('owner', bypass=['admin', 'manager'])",
+  "explain": "\ndemo.Project\n  Compiled: True\n  Public access: False\n\n  Simple fields:\n    id\n    title\n    status\n    client\n    owner\n    budget (\u2192 str)\n\n  FK annotations:\n    client_name \u2190 client__name\n    owner_username \u2190 owner__username\n\n  Complexity:\n    Total fields: 8\n    JOINs: 2\n    M2M queries: 0\n    Total queries: 2",
+  "startup_error": "Invoice.turbodrf() declares no tenant boundary. Add 'tenant_field': '<path to demo.Workspace>', or 'tenancy': 'shared' for reference data. An 'owner_field' alone scopes rows within a tenant, not across tenants; so does a 'visibility' list without a 'tenant_field' unless one of its predicates restricts every caller (an Owner without bypass roles, Members, Group or Custom). Set TURBODRF_REQUIRE_TENANCY=False to disable this check.",
+  "calls": {
+    "list_admin": {
+      "user": "alice",
+      "role": "admin",
+      "workspace": "Acme",
+      "method": "GET",
+      "url": "/api/projects/",
+      "body": null,
+      "status": 200,
+      "response": {
+        "pagination": {
+          "next": null,
+          "previous": null,
+          "current_page": 1,
+          "total_pages": 1,
+          "total_items": 3
+        },
+        "data": [
+          {
+            "id": 1,
+            "title": "Website relaunch",
+            "status": "active",
+            "client": 1,
+            "owner": 3,
+            "budget": "48000.00",
+            "client_name": "Northwind",
+            "owner_username": "victor"
+          },
+          {
+            "id": 2,
+            "title": "Mobile app",
+            "status": "active",
+            "client": 2,
+            "owner": 2,
+            "budget": "125000.00",
+            "client_name": "Initech",
+            "owner_username": "maya"
+          },
+          {
+            "id": 3,
+            "title": "Data warehouse",
+            "status": "active",
+            "client": 1,
+            "owner": 1,
+            "budget": "310000.00",
+            "client_name": "Northwind",
+            "owner_username": "alice"
+          }
+        ]
+      },
+      "queries": 2
+    },
+    "list_manager": {
+      "user": "maya",
+      "role": "manager",
+      "workspace": "Acme",
+      "method": "GET",
+      "url": "/api/projects/",
+      "body": null,
+      "status": 200,
+      "response": {
+        "pagination": {
+          "next": null,
+          "previous": null,
+          "current_page": 1,
+          "total_pages": 1,
+          "total_items": 3
+        },
+        "data": [
+          {
+            "id": 1,
+            "title": "Website relaunch",
+            "status": "active",
+            "client": 1,
+            "owner": 3,
+            "budget": "48000.00",
+            "client_name": "Northwind",
+            "owner_username": "victor"
+          },
+          {
+            "id": 2,
+            "title": "Mobile app",
+            "status": "active",
+            "client": 2,
+            "owner": 2,
+            "budget": "125000.00",
+            "client_name": "Initech",
+            "owner_username": "maya"
+          },
+          {
+            "id": 3,
+            "title": "Data warehouse",
+            "status": "active",
+            "client": 1,
+            "owner": 1,
+            "budget": "310000.00",
+            "client_name": "Northwind",
+            "owner_username": "alice"
+          }
+        ]
+      },
+      "queries": 2
+    },
+    "list_viewer": {
+      "user": "victor",
+      "role": "viewer",
+      "workspace": "Acme",
+      "method": "GET",
+      "url": "/api/projects/",
+      "body": null,
+      "status": 200,
+      "response": {
+        "pagination": {
+          "next": null,
+          "previous": null,
+          "current_page": 1,
+          "total_pages": 1,
+          "total_items": 1
+        },
+        "data": [
+          {
+            "id": 1,
+            "title": "Website relaunch",
+            "status": "active",
+            "client": 1,
+            "owner": 3,
+            "client_name": "Northwind",
+            "owner_username": "victor"
+          }
+        ]
+      },
+      "queries": 2
+    },
+    "list_other_tenant": {
+      "user": "bob",
+      "role": "admin",
+      "workspace": "Globex",
+      "method": "GET",
+      "url": "/api/projects/",
+      "body": null,
+      "status": 200,
+      "response": {
+        "pagination": {
+          "next": null,
+          "previous": null,
+          "current_page": 1,
+          "total_pages": 1,
+          "total_items": 1
+        },
+        "data": [
+          {
+            "id": 4,
+            "title": "Payments API",
+            "status": "active",
+            "client": 3,
+            "owner": 4,
+            "budget": "90000.00",
+            "client_name": "Umbrella",
+            "owner_username": "bob"
+          }
+        ]
+      },
+      "queries": 2
+    },
+    "detail_admin": {
+      "user": "alice",
+      "role": "admin",
+      "workspace": "Acme",
+      "method": "GET",
+      "url": "/api/projects/1/",
+      "body": null,
+      "status": 200,
+      "response": {
+        "id": 1,
+        "title": "Website relaunch",
+        "status": "active",
+        "client": 1,
+        "budget": "48000.00",
+        "owner": 3,
+        "client_name": "Northwind",
+        "owner_username": "victor"
+      },
+      "queries": 1
+    },
+    "detail_manager": {
+      "user": "maya",
+      "role": "manager",
+      "workspace": "Acme",
+      "method": "GET",
+      "url": "/api/projects/1/",
+      "body": null,
+      "status": 200,
+      "response": {
+        "id": 1,
+        "title": "Website relaunch",
+        "status": "active",
+        "client": 1,
+        "budget": "48000.00",
+        "owner": 3,
+        "client_name": "Northwind",
+        "owner_username": "victor"
+      },
+      "queries": 1
+    },
+    "detail_viewer": {
+      "user": "victor",
+      "role": "viewer",
+      "workspace": "Acme",
+      "method": "GET",
+      "url": "/api/projects/1/",
+      "body": null,
+      "status": 200,
+      "response": {
+        "id": 1,
+        "title": "Website relaunch",
+        "status": "active",
+        "client": 1,
+        "owner": 3,
+        "client_name": "Northwind",
+        "owner_username": "victor"
+      },
+      "queries": 1
+    },
+    "list_admin_page1": {
+      "user": "alice",
+      "role": "admin",
+      "workspace": "Acme",
+      "method": "GET",
+      "url": "/api/projects/?page_size=1",
+      "body": null,
+      "status": 200,
+      "response": {
+        "pagination": {
+          "next": "http://localhost:8000/api/projects/?page=2&page_size=1",
+          "previous": null,
+          "current_page": 1,
+          "total_pages": 3,
+          "total_items": 3
+        },
+        "data": [
+          {
+            "id": 1,
+            "title": "Website relaunch",
+            "status": "active",
+            "client": 1,
+            "owner": 3,
+            "budget": "48000.00",
+            "client_name": "Northwind",
+            "owner_username": "victor"
+          }
+        ]
+      },
+      "queries": 2
+    },
+    "detail_other_tenant": {
+      "user": "bob",
+      "role": "admin",
+      "workspace": "Globex",
+      "method": "GET",
+      "url": "/api/projects/1/",
+      "body": null,
+      "status": 404,
+      "response": {
+        "detail": "Not found."
+      },
+      "queries": 1
+    },
+    "fields_viewer": {
+      "user": "victor",
+      "role": "viewer",
+      "workspace": "Acme",
+      "method": "GET",
+      "url": "/api/projects/?fields=title,budget",
+      "body": null,
+      "status": 200,
+      "response": {
+        "pagination": {
+          "next": null,
+          "previous": null,
+          "current_page": 1,
+          "total_pages": 1,
+          "total_items": 1
+        },
+        "data": [
+          {
+            "title": "Website relaunch"
+          }
+        ]
+      },
+      "queries": 2
+    },
+    "search_admin": {
+      "user": "alice",
+      "role": "admin",
+      "workspace": "Acme",
+      "method": "GET",
+      "url": "/api/projects/?search=app",
+      "body": null,
+      "status": 200,
+      "response": {
+        "pagination": {
+          "next": null,
+          "previous": null,
+          "current_page": 1,
+          "total_pages": 1,
+          "total_items": 1
+        },
+        "data": [
+          {
+            "id": 2,
+            "title": "Mobile app",
+            "status": "active",
+            "client": 2,
+            "owner": 2,
+            "budget": "125000.00",
+            "client_name": "Initech",
+            "owner_username": "maya"
+          }
+        ]
+      },
+      "queries": 2
+    },
+    "filter_admin": {
+      "user": "alice",
+      "role": "admin",
+      "workspace": "Acme",
+      "method": "GET",
+      "url": "/api/projects/?budget__gte=100000&ordering=-budget",
+      "body": null,
+      "status": 200,
+      "response": {
+        "pagination": {
+          "next": null,
+          "previous": null,
+          "current_page": 1,
+          "total_pages": 1,
+          "total_items": 2
+        },
+        "data": [
+          {
+            "id": 3,
+            "title": "Data warehouse",
+            "status": "active",
+            "client": 1,
+            "owner": 1,
+            "budget": "310000.00",
+            "client_name": "Northwind",
+            "owner_username": "alice"
+          },
+          {
+            "id": 2,
+            "title": "Mobile app",
+            "status": "active",
+            "client": 2,
+            "owner": 2,
+            "budget": "125000.00",
+            "client_name": "Initech",
+            "owner_username": "maya"
+          }
+        ]
+      },
+      "queries": 2
+    },
+    "patch_viewer": {
+      "user": "victor",
+      "role": "viewer",
+      "workspace": "Acme",
+      "method": "PATCH",
+      "url": "/api/projects/1/",
+      "body": {
+        "title": "Mine now"
+      },
+      "status": 403,
+      "response": {
+        "detail": "You do not have permission to perform this action."
+      },
+      "queries": 0
+    },
+    "patch_manager_budget": {
+      "user": "maya",
+      "role": "manager",
+      "workspace": "Acme",
+      "method": "PATCH",
+      "url": "/api/projects/2/",
+      "body": {
+        "budget": "1.00"
+      },
+      "status": 200,
+      "response": {
+        "id": 2,
+        "title": "Mobile app",
+        "status": "active",
+        "client": 2,
+        "budget": "125000.00",
+        "owner": 2,
+        "client_name": "Initech",
+        "owner_username": "maya"
+      },
+      "queries": 5
+    },
+    "patch_manager_status": {
+      "user": "maya",
+      "role": "manager",
+      "workspace": "Acme",
+      "method": "PATCH",
+      "url": "/api/projects/2/",
+      "body": {
+        "status": "paused"
+      },
+      "status": 200,
+      "response": {
+        "id": 2,
+        "title": "Mobile app",
+        "status": "paused",
+        "client": 2,
+        "budget": "125000.00",
+        "owner": 2,
+        "client_name": "Initech",
+        "owner_username": "maya"
+      },
+      "queries": 5
+    },
+    "create_admin": {
+      "user": "alice",
+      "role": "admin",
+      "workspace": "Acme",
+      "method": "POST",
+      "url": "/api/projects/",
+      "body": {
+        "title": "Partner portal",
+        "client": 1,
+        "budget": "64000.00"
+      },
+      "status": 201,
+      "response": {
+        "id": 5,
+        "title": "Partner portal",
+        "status": "active",
+        "client": 1,
+        "budget": "64000.00",
+        "owner": 1,
+        "client_name": "Northwind",
+        "owner_username": "alice"
+      },
+      "queries": 9
+    },
+    "create_cross_tenant_fk": {
+      "user": "alice",
+      "role": "admin",
+      "workspace": "Acme",
+      "method": "POST",
+      "url": "/api/projects/",
+      "body": {
+        "title": "Sneaky",
+        "client": 3,
+        "budget": "1.00"
+      },
+      "status": 400,
+      "response": {
+        "client": [
+          "Invalid client: not found or not accessible."
+        ]
+      },
+      "queries": 2
+    },
+    "delete_manager": {
+      "user": "maya",
+      "role": "manager",
+      "workspace": "Acme",
+      "method": "DELETE",
+      "url": "/api/projects/2/",
+      "body": null,
+      "status": 403,
+      "response": {
+        "detail": "You do not have permission to perform this action."
+      },
+      "queries": 0
+    }
+  },
+  "benchmark": {
+    "rows_in_table": 504,
+    "page_size": 50,
+    "runs": 300,
+    "compiled_ms": 1.92,
+    "compiled_median_ms": 1.77,
+    "compiled_queries": 2,
+    "serializer_ms": 3.63,
+    "serializer_median_ms": 3.31,
+    "serializer_queries": 2,
+    "speedup": 1.9,
+    "machine": "arm64 \u00b7 Python 3.11.14 \u00b7 Django 5.2.14 \u00b7 SQLite"
+  }
+}

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://turbodrf.com/sitemap-index.xml

@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  turbodrf.com: a private S3 bucket behind CloudFront, with a routing function
+  (www moves to the apex; one address per page; index.html rewrite) and alias
+  records for the apex and www. Applied by infra/deploy.sh.
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,30}[a-z0-9]$"
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+  WebsiteDomain:
+    Type: String
+    AllowedPattern: "^[a-z0-9.-]+\\.[a-z]{2,}$"
+  WebsiteAltDomain:
+    Type: String
+    AllowedPattern: "^[a-z0-9.-]+\\.[a-z]{2,}$"
+  CertificateArn:
+    Type: String
+    AllowedPattern: "^arn:aws:acm:us-east-1:[0-9]{12}:certificate/.+$"
+
+Resources:
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-website-${AWS::Region}-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-old-versions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${WebsiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}"
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${ProjectName}-website-oac"
+        Description: !Sub "${ProjectName} website OAC"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  RoutingFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${ProjectName}-website-routing"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: www and other hosts move to the apex; one address per page; index.html rewrite
+        Runtime: cloudfront-js-2.0
+      FunctionCode: !Sub |
+        var HOST = '${WebsiteDomain}';
+        function query(qs) {
+          var parts = [];
+          Object.keys(qs).forEach(function (k) {
+            (qs[k].multiValue || [qs[k]]).forEach(function (v) { parts.push(v.value === '' ? k : k + '=' + v.value); });
+          });
+          return parts.length ? '?' + parts.join('&') : '';
+        }
+        function moved(location) {
+          return { statusCode: 301, statusDescription: 'Moved Permanently', headers: { location: { value: location } } };
+        }
+        function handler(event) {
+          var request = event.request;
+          var host = ((request.headers.host || {}).value || '').toLowerCase();
+          var uri = request.uri;
+          var page = uri;
+          if (uri.endsWith('/index.html')) {
+            page = uri.slice(0, -'index.html'.length);
+          } else if (!uri.endsWith('/') && !uri.split('/').pop().includes('.')) {
+            page = uri + '/';
+          }
+          if (host !== HOST) {
+            return moved('https://' + HOST + page + query(request.querystring));
+          }
+          if (page !== uri) {
+            return moved(page + query(request.querystring));
+          }
+          if (uri.endsWith('/')) {
+            request.uri = uri + 'index.html';
+          }
+          return request;
+        }
+
+  WebsiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases: [!Ref WebsiteDomain, !Ref WebsiteAltDomain]
+        Comment: !Sub "${ProjectName} website"
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_All
+        Origins:
+          - Id: WebsiteS3Origin
+            DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: WebsiteS3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6  # CachingOptimized
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03  # SecurityHeadersPolicy
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt RoutingFunction.FunctionMetadata.FunctionARN
+        CustomErrorResponses:
+          - ErrorCode: 404
+            ResponseCode: 404
+            ResponsePagePath: /404.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 403
+            ResponseCode: 404
+            ResponsePagePath: /404.html
+            ErrorCachingMinTTL: 0
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-website"
+
+  ApexRecordA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${WebsiteDomain}."
+      Type: A
+      AliasTarget: { DNSName: !GetAtt WebsiteDistribution.DomainName, HostedZoneId: Z2FDTNDATAQYW2 }
+  ApexRecordAAAA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${WebsiteDomain}."
+      Type: AAAA
+      AliasTarget: { DNSName: !GetAtt WebsiteDistribution.DomainName, HostedZoneId: Z2FDTNDATAQYW2 }
+  AltRecordA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${WebsiteAltDomain}."
+      Type: A
+      AliasTarget: { DNSName: !GetAtt WebsiteDistribution.DomainName, HostedZoneId: Z2FDTNDATAQYW2 }
+  AltRecordAAAA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub "${WebsiteAltDomain}."
+      Type: AAAA
+      AliasTarget: { DNSName: !GetAtt WebsiteDistribution.DomainName, HostedZoneId: Z2FDTNDATAQYW2 }
+
+Outputs:
+  WebsiteBucketName:
+    Value: !Ref WebsiteBucket
+  WebsiteDistributionId:
+    Value: !Ref WebsiteDistribution
+  WebsiteDistributionDomain:
+    Value: !GetAtt WebsiteDistribution.DomainName
