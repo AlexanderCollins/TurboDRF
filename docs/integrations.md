@@ -61,6 +61,15 @@ where unmapped groups become roles under their own names.
 With no mapping configured, every group name is used as a role name
 directly.
 
+### Role helpers
+
+`turbodrf.integrations` has helpers that work with roles through groups:
+`assign_roles_to_user`, `get_users_with_role`, `get_or_create_role_group`,
+`create_role_groups` and `sync_groups_to_roles`. They follow
+`TURBODRF_ALLAUTH_ROLE_MAPPING` and strict mode as role resolution does, so
+a role maps to the group that gives it. A role no group can give (strict
+mode, not a mapping value) raises `ValueError`.
+
 ---
 
 ## Keycloak / OpenID Connect
@@ -116,7 +125,9 @@ That means:
   `auth_time` (written by social-auth at login) is older than that, the user
   gets no Keycloak roles until they log in again. If `auth_time` is missing
   the roles are dropped too. Leave it `None` (default) to keep roles for the
-  whole session.
+  whole session. social-auth's `UserSocialAuth.refresh_token()` resets
+  `auth_time` but keeps the stored role claims, so if your app refreshes
+  tokens that way, this limit doesn't bound how old the roles are.
 
 Make sure the claim you point `TURBODRF_KEYCLOAK_ROLE_CLAIM` at is actually
 saved in `extra_data` by your social-auth pipeline / `EXTRA_DATA` settings.
@@ -179,13 +190,14 @@ project depends on your `sentry_sdk.init(...)` configuration.
 
 When enabled, the framework:
 
-1. **Tags each request's Sentry scope** with the user's `tenant_id` and
-   `user_roles`, and sets the Sentry user to `{"id": <pk>}`. Only the id is
-   sent: no username, email or other PII, regardless of
-   `send_default_pii`. Makes Sentry events for that request searchable /
-   filterable by tenant. The middleware runs each request in its own Sentry
-   scope, so one request's user and tags never carry over to the next, and
-   anonymous requests carry no user or tags.
+1. **Describes the user on each event.** An event captured during an
+   authenticated request gets its Sentry user replaced with `{"id": <pk>}`
+   (no username, email or IP address) and the tags `tenant_id` and
+   `user_roles`, so you can filter events by tenant. Events from anonymous
+   requests, and the request data sentry-sdk attaches (headers, cookies,
+   body), follow your `send_default_pii` setting. Each request runs in its
+   own Sentry scope, and the user, roles and tenant are looked up only when
+   an event is captured.
 2. **Records security-relevant events as breadcrumbs** — FK injection
    blocked, predicate write rejection, tenant reassignment rejected. If a
    user later triggers an unrelated error, the breadcrumbs show what
@@ -209,11 +221,9 @@ MIDDLEWARE = [
 ]
 ```
 
-The middleware runs before DRF authentication, so for token/JWT requests
-the user is still anonymous when it runs. DRF writes the authenticated user
-back to the Django request, and TurboDRF reads it again when Sentry captures
-an event during the request, so those events still get the user id and
-tags. Breadcrumbs don't depend on the user.
+Because the user is read when an event is captured, token and JWT requests,
+which DRF authenticates after the middleware runs, get the user id and tags
+too. Breadcrumbs don't depend on the user.
 
 Programmatic API for app-specific events:
 
@@ -265,11 +275,13 @@ TURBODRF_ENABLE_TRACKING = True              # default: False
 TURBODRF_TRACKING_ANONYMOUS = False          # default: False
 ```
 
-When `TURBODRF_ENABLE_TRACKING=True` and `rest_framework_tracking` is
-installed, the framework's viewset base classes pick up the `LoggingMixin`
-automatically. View logs in Django admin under **API Request Logs**.
+When `TURBODRF_ENABLE_TRACKING=True` and `'rest_framework_tracking'` is in
+`INSTALLED_APPS`, the framework's viewset base classes pick up the
+`LoggingMixin` automatically. Without the app in `INSTALLED_APPS`, TurboDRF
+logs a warning and nothing is tracked. View logs in Django admin under
+**API Request Logs**.
 
-TurboDRF's version of the mixin differs from the stock one in two ways:
+TurboDRF's version of the mixin differs from the stock one in three ways:
 
 - **Anonymous requests aren't logged** unless
   `TURBODRF_TRACKING_ANONYMOUS = True`. Only requests whose user is
@@ -280,6 +292,10 @@ TurboDRF's version of the mixin differs from the stock one in two ways:
   `secret_key`, `api_key`, `access_token`, `refresh_token`, `session_key`,
   plus your own additions) to the mixin's `sensitive_fields`, so those
   values are masked wherever drf-api-tracking masks its own list.
+- **Bodies logged before parsing are masked too.** drf-api-tracking logs the
+  raw body of a request rejected before DRF parses it (401, 403, throttled,
+  malformed JSON). TurboDRF masks a JSON body as above, and replaces any
+  other body that mentions a sensitive name.
 
 `TURBODRF_ENABLE_TRACKING` is read once, when `turbodrf.views` is imported,
 so changing it needs a restart.

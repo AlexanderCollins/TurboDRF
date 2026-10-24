@@ -35,12 +35,10 @@ TURBODRF_SENSITIVE_FIELDS = [
 Setting `TURBODRF_SENSITIVE_FIELDS` adds your names to this list. It can't
 remove the defaults.
 
-The deny-list applies in every permission mode to list and detail responses
-on both read paths (including `fields: "__all__"`), filters, OPTIONS metadata
-and the OpenAPI schema. With role-based permissions it also applies to search
-and ordering. With `TURBODRF_DISABLE_PERMISSIONS` or
-`TURBODRF_USE_DEFAULT_PERMISSIONS`, search uses `searchable_fields` as written
-and ordering accepts any concrete model field, deny-listed ones included.
+The deny-list applies in every permission mode, `TURBODRF_DISABLE_PERMISSIONS`
+and `TURBODRF_USE_DEFAULT_PERMISSIONS` included: to list and detail responses
+on both read paths (including `fields: "__all__"`), filters, search, ordering,
+OPTIONS metadata and the OpenAPI schema.
 
 ### Per-model `sensitive_fields`
 
@@ -62,22 +60,31 @@ Authenticated users with no assigned roles get 403 on all endpoints. This preven
 
 ## Filter security
 
-With role-based permissions, callers can filter and order only on fields the
-model's `fields` config exposes (plus the primary key) that they can read. A
-filter on a hidden column would let an attacker infer its value by binary
-search (e.g. `?salary__gte=100000`). Filters on other fields are ignored and
-logged.
+Callers can filter and order only on fields the model's `fields` config
+exposes (plus the primary key), and, with role-based permissions, only on
+those they can read. A filter on a hidden column would let an attacker infer
+its value by binary search (e.g. `?salary__gte=100000`). Filters on other
+fields are ignored and logged.
 
-- Nested filters (`?author__name=...`) are permission-checked at every hop,
-  and their JOIN only matches targets the caller can see (see
-  [URL-driven JOIN scoping](#url-driven-join-scoping)). A related field named
-  like a lookup (`folder__date`, where `date` is a field of the folder) is
-  treated as that field, so it's checked and scoped too.
+- A nested filter (`?author__name=...`) needs that path in `fields`, is
+  permission-checked at every hop, and its JOIN only matches targets the
+  caller can see (see [URL-driven JOIN scoping](#url-driven-join-scoping)). A
+  related field named like a lookup (`folder__date`, where `date` is a field
+  of the folder) is treated as that field, so it's checked and scoped too.
+- An M2M filters only by `exact` (`?tags=3`), matched against the targets the
+  caller can see. Its other lookups and `_or` are ignored.
 - An FK or M2M filter naming a row the caller can't see returns an empty 200,
   the same as a pk that doesn't exist.
 - `__regex` / `__iregex` lookups aren't accepted.
-- `?ordering=<fk>` orders by the stored FK column, not by the target's
-  `Meta.ordering`.
+- `?ordering=` takes concrete, single-valued columns only, and `<fk>` orders
+  by the stored FK column, not by the target's `Meta.ordering`.
+
+## OPTIONS metadata
+
+`OPTIONS` describes only what the caller can use: the fields they can read,
+the actions the endpoint routes that they may perform, and their search,
+ordering and filter fields. It says nothing about the model's tenancy or
+predicates.
 
 ## Error responses
 
@@ -97,6 +104,12 @@ REST_FRAMEWORK = {
         "message": "You do not have permission to perform this action."
     }
 }
+```
+
+A 404 never names the model:
+
+```json
+{"error": {"status": 404, "code": "not_found", "message": "Not found."}}
 ```
 
 ## Fail-closed design
@@ -131,11 +144,12 @@ class Order(models.Model, TurboDRFMixin):
 
 When `TURBODRF_TENANT_MODEL` is set in settings and `TURBODRF_REQUIRE_TENANCY=True`
 (default), the router refuses to register any model that declares neither a
-`tenant_field`, a non-empty `visibility`, nor `'tenancy': 'shared'` — closing
+`tenant_field`, a `visibility` list, nor `'tenancy': 'shared'` — closing
 the "developer forgot to scope this" class of bugs at boot. An `owner_field`
 alone doesn't count: it scopes rows within a tenant, and its bypass roles
-would see every tenant's rows. Nor does a `visibility` list made only of
-`Owner` predicates with bypass roles and `Conditional` predicates.
+would see every tenant's rows. For the same reason, a `visibility` list
+without a `tenant_field` counts only if one of its predicates restricts every
+caller (see [Hard-fail at startup](tenancy.md#hard-fail-at-startup)).
 
 See [Tenancy](tenancy.md) for the full predicate vocabulary, sugar form,
 and configuration reference.
@@ -154,8 +168,14 @@ and configuration reference.
 - **FK injection defense** — every FK and M2M value in the request body must
   resolve to a row visible under the related model's tenant boundary and
   predicates. This runs on every model, shared ones included, and an
-  anonymous writer can't reference a tenant-scoped target. Rejected targets
-  return 400 with the same message whether they're hidden or don't exist.
+  anonymous writer can't reference a tenant-scoped target. On a model scoped
+  by a `tenant_field` or predicates, a target that is the tenant model must be
+  the caller's tenant, and a target with a `TURBODRF_TENANT_USER_FIELD`
+  attribute (typically a user) must be in the caller's tenant. Rejected
+  targets return 400 with the same message whether they're hidden or don't
+  exist.
+- **M2M writes** — a write replaces only the links the caller can see; links
+  to rows they can't reference are kept.
 - **Tenant reassignment rejection** — PATCH cannot change a row's tenant FK to
   a different tenant.
 - **Owner write check** — non-bypass roles cannot set an owner column to
@@ -421,7 +441,7 @@ filter with a target-scoping subquery built by
 `validation.build_traversal_scope_q()`. For each model along the JOIN
 chain that has registered predicates or a `tenant_field`, an AND
 clause of the form
-`<prefix>__pk__in=<TargetModel>._base_manager.filter(<target_q>)` is
+`<prefix>__in=<TargetModel>._base_manager.filter(<target_q>).values("pk")` is
 added to the queryset. The `target_q` mirrors the target view's tenant_q +
 predicate_q construction (see
 `views.py:_get_tenant_q` / `_get_predicate_q`), so the JOIN can never
@@ -438,7 +458,7 @@ the scope is a no-op `Q()` — no extra subquery cost.
 
 A parent row with an **empty** relation at a scoped step (a NULL FK, or
 no rows across a reverse / M2M relation, at that hop or an earlier one)
-is kept: each step is `<prefix>__isnull=True OR <prefix>__pk__in=...`
+is kept: each step is `<prefix>__isnull=True OR <prefix>__in=...`
 when the relation can be empty. An empty relation joins nothing, so it
 can't reveal a target row; a relation pointing at an out-of-scope
 target is still excluded. The same scope decides whether a nested FK
@@ -447,9 +467,9 @@ fails; the row stays), and is applied inside search over `__`-path
 `searchable_fields`.
 
 `?ordering=fk__field` is handled separately: `ordering_fields` is a flat
-list of field names (with role-based permissions, the configured fields
-the caller can read), and DRF's `OrderingFilter` silently drops any URL
-value that isn't in it. The traversal form is therefore unreachable.
+list of concrete, single-valued columns from the configured fields (with
+role-based permissions, those the caller can read), and DRF's
+`OrderingFilter` silently drops any URL value that isn't in it. The traversal form is therefore unreachable.
 `?ordering=<fk>` orders by the stored FK column; ordering by the field
 itself would sort by the target's `Meta.ordering` through an unscoped JOIN.
 The primary key is appended as a tie-breaker.
@@ -480,23 +500,21 @@ The primary key is appended as a tie-breaker.
   a `write_validator`, when writes must be restricted.
 - **Custom code that queries the model directly bypasses scoping.** Custom
   actions are scoped only through `self.get_object()` /
-  `self.get_queryset()`.
+  `self.get_queryset()`. (Generated viewsets have no `queryset` attribute:
+  `self.queryset` is `None`.)
 - **Bulk permission edits stay cached.** A bulk `RolePermission` QuerySet
   `update()` / `delete()` doesn't invalidate cached permission snapshots;
   call `turbodrf.backends.invalidate_user_permissions()` (see
   [permissions.md](permissions.md#caching)).
 - **Bypassed permission modes** (`TURBODRF_DISABLE_PERMISSIONS`,
   `TURBODRF_USE_DEFAULT_PERMISSIONS`) have no field rules, so per-model
-  `sensitive_fields` don't apply, and search and ordering don't apply the
-  sensitive deny-list.
+  `sensitive_fields` don't apply.
 - **Keycloak roles are captured at login.** See
   [integrations.md](integrations.md#where-the-roles-come-from).
-- **Unknown `turbodrf()` keys are ignored.** A misspelled key
-  (`'owner_feild'`, `'tenant_feild'`) is dropped without an error, along
-  with the scoping it meant to add. Check each model's resolved scoping with
-  `python manage.py turbodrf_check`.
-- **Startup checks run when the URLconf is imported.** A process that never
-  imports it (`get_wsgi_application()` before the first request) starts with
+- **Most startup checks run when the URLconf is imported.** Tenancy errors
+  raise when Django starts (`AppConfig.ready()`), but the router's other
+  checks run only when the URLconf is first imported. A process that doesn't
+  import it (`get_wsgi_application()` before the first request) starts with
   a broken config and fails on the first request. Run
   `python manage.py check`, which imports the URLconf, in CI and before each
   deploy.

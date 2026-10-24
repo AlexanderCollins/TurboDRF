@@ -38,10 +38,11 @@ urlpatterns = [path('api/', include('turbodrf.urls'))]
 Users need roles: see [Roles](#roles) below. Without one, every request is
 a 403.
 
-**Run `python manage.py check` in CI and before every deploy.** The router
-validates the configuration when Django first imports the URLconf, which
-`check` does and `get_wsgi_application()` doesn't; without it a broken
-config deploys and fails on the first request.
+**Run `python manage.py check` in CI and before every deploy.** Tenancy
+errors raise when Django starts, but the router validates the rest of the
+configuration when Django first imports the URLconf, which `check` does and
+`get_wsgi_application()` doesn't; without it a broken config deploys and
+fails on the first request.
 
 ---
 
@@ -79,11 +80,12 @@ file needed.
 Always set `fields` to an explicit list (or a `{'list': [...], 'detail':
 [...]}` dict). It isn't required, but it defaults to `'__all__'`, which
 exposes every column, including ones added later. The primary key renders
-only if listed. A name that doesn't exist on the model raises at startup.
+only if listed. A name that doesn't exist on the model, or one ending on a
+reverse one-to-one, raises at startup.
 
-**Spell every key exactly.** `turbodrf()` ignores keys it doesn't know: a
-typo like `'owner_feild'` silently drops the owner rule and the whole tenant
-sees every row. Check the result with `python manage.py turbodrf_check`.
+An unknown `turbodrf()` key (a typo like `'owner_feild'`) raises
+`ImproperlyConfigured` at startup, listing the valid keys. `sensitive_fields`
+is a class attribute on the model, not a key.
 
 ### Tenancy keys (pick exactly one approach per model)
 
@@ -94,12 +96,15 @@ sees every row. Check the result with `python manage.py turbodrf_check`.
 | `'tenancy': 'shared'` | Reference data: currencies, country codes |
 | `'visibility': [<predicate>, ...]` | Need OR logic / non-tenant scoping (see Predicates below) |
 
-`tenant_field` must be a chain of forward foreign keys / one-to-ones that
-ends at `TURBODRF_TENANT_MODEL`. `owner_field` alone doesn't count as a
-tenancy decision, nor does a `visibility` made only of `Owner`-with-bypass
-and `Conditional` predicates. `'tenancy'` accepts only `'shared'`, which
-can't be combined with `tenant_field`, `owner_field` or `visibility`. An
-empty `visibility` needs a `tenant_field`.
+`tenant_field` must be a chain of forward foreign keys / one-to-ones, named
+by field (`workspace`, not `workspace_id`), that ends at
+`TURBODRF_TENANT_MODEL`. `owner_field` alone doesn't count as a tenancy
+decision. Nor does a `visibility` list without a `tenant_field`, unless one
+of its predicates restricts every caller: an `Owner` without bypass roles,
+`Members`, `Group` or `Custom` (an `Either` only if all its children do).
+`'tenancy'` accepts only `'shared'`, which can't be combined with
+`tenant_field`, `owner_field` or `visibility`. An empty `visibility` needs a
+`tenant_field`.
 
 The tenant model itself and the user model have their own recipe:
 `docs/tenancy.md`, "Exposing the tenant model and the user model".
@@ -134,6 +139,8 @@ def archive(self, request, pk=None):
 
 A POST action needs the role's `create` permission (GET → `read`, PUT/PATCH →
 `update`, DELETE → `delete`), unless it declares `permission_classes`.
+`@turbodrf_action` raises `TypeError` for `serializer_class=`, `queryset=` and
+other arguments TurboDRF would ignore.
 
 ---
 
@@ -256,7 +263,8 @@ the `tenant_field` setting instead.
 1. **Don't add endpoints that call `Model.objects.all()`.** They bypass the
    predicate stack and tenant filter. Use `@turbodrf_action` and
    `self.get_queryset()` / `self.get_object()` (the framework's filtered
-   queryset).
+   queryset). Generated viewsets have no `queryset` attribute:
+   `self.queryset` is `None`.
 
 2. **Don't override `get_queryset()`** in TurboDRF viewsets. The
    framework's implementation applies the tenant boundary and predicate
@@ -296,11 +304,12 @@ the `tenant_field` setting instead.
 ## Permission cache
 
 Permission snapshots are cached for 5 minutes per `(user, model)` pair. The
-cache key covers the user's roles and the role configuration (in database
-mode, every role's version), so granting or revoking a role, editing
-`TURBODRF_ROLES`, or saving / deleting a `RolePermission` takes effect on the
-next request. A bulk `RolePermission` QuerySet `update()` / `delete()`
-doesn't bump role versions and stays stale until the TTL. After one:
+cache key covers the user's roles, the role configuration (in database
+mode, every role's version) and the model's `sensitive_fields` and
+`public_access`, so granting or revoking a role, editing `TURBODRF_ROLES`, or
+saving / deleting a `RolePermission` takes effect on the next request. A bulk
+`RolePermission` QuerySet `update()` / `delete()` doesn't bump role versions
+and stays stale until the TTL. After one:
 
 ```python
 from turbodrf.backends import invalidate_user_permissions

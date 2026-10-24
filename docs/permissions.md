@@ -23,8 +23,9 @@ TURBODRF_USE_DEFAULT_PERMISSIONS = True
 ```
 
 Neither mode has field-level rules (a model's `sensitive_fields` included).
-The `TURBODRF_SENSITIVE_FIELDS` deny-list still applies to responses,
-filters and OPTIONS, but not to search or ordering (see
+Filters and ordering still take only the configured fields, and the
+`TURBODRF_SENSITIVE_FIELDS` deny-list still applies everywhere: responses,
+filters, search, ordering and OPTIONS (see
 [Security](security.md#sensitive-fields)).
 
 ## 3. Role-based permissions (default)
@@ -82,10 +83,10 @@ each row is validated when it's saved instead (see
 
 A field a role can't write is left out of that role's requests. So if a
 required field (no default, not nullable) has a `.write` rule, every role
-with `.create` on the model needs that `.write` too, or its POSTs fail
-because the row can't be saved without the field. For example, an `editor`
-with `books.book.create` needs `books.book.price.write` once any role has a
-`price.write` rule.
+with `.create` on the model needs that `.write` too, or its POSTs get a 400
+naming the field ("This field is required, but you can't set it through this
+API."). For example, an `editor` with `books.book.create` needs
+`books.book.price.write` once any role has a `price.write` rule.
 
 ### Anonymous callers and the `guest` role
 
@@ -104,6 +105,12 @@ public visitors should see.
 
 Anonymous callers can't write through the generated CRUD routes, whatever
 `guest` grants.
+
+`public_access` is for anonymous callers only. A signed-in user still needs a
+role with the model's read: without one, they get a 403 where an anonymous
+caller can read. That's intended. A signed-in user's rows are scoped by their
+tenant and the model's predicates, so they may see rows an anonymous caller
+can't, and only a role grants that.
 
 ### Assigning roles to users
 
@@ -174,21 +181,25 @@ cache for `TURBODRF_PERMISSION_CACHE_TIMEOUT` seconds (default 300), under
 the key prefix `TURBODRF_PERMISSION_CACHE_PREFIX` (default
 `"turbodrf_perm"`).
 
-The cache key covers the user's current roles and the role configuration
+The cache key covers the user's current roles, the role configuration
 (`TURBODRF_ROLES` in static mode; every role's name and version in
-database mode), so these take effect on the next request: assigning or
-removing a user's role, changing `TURBODRF_ROLES`, and saving or deleting a
-`RolePermission` (which bumps its role's version).
+database mode, for anonymous callers too), and the model's `sensitive_fields`
+and `public_access`. So these take effect on the next request: assigning or
+removing a user's role, changing `TURBODRF_ROLES`, saving or deleting a
+`RolePermission` (which bumps its role's version), and a deploy that changes
+a model's `sensitive_fields` or `public_access`.
 
 A bulk `RolePermission` QuerySet `update()` or `delete()` skips the model's
 `save()` / `delete()`, so it doesn't bump versions, and snapshots stay stale
 until the TTL. Invalidate them after one:
 
 ```python
+from django.contrib.auth.models import AnonymousUser
 from turbodrf.backends import invalidate_user_permissions
 
-invalidate_user_permissions(user)   # one user's snapshots
-invalidate_user_permissions()       # everyone's
+invalidate_user_permissions(user)             # one user's snapshots
+invalidate_user_permissions(AnonymousUser())  # anonymous callers'
+invalidate_user_permissions()                 # everyone's
 ```
 
 ### Nested field permissions
@@ -203,4 +214,4 @@ If any level fails, the field is excluded.
 
 ### Filter permissions
 
-Users can only filter and order on configured fields (plus the primary key) they have read permission for. Filters on other fields are silently ignored -- this prevents information leakage through binary search attacks. See [Filtering & Search](filtering.md#filtering).
+Users can only filter and order on configured fields (plus the primary key) they have read permission for; a nested filter needs its own path configured. Filters on other fields are silently ignored -- this prevents information leakage through binary search attacks. See [Filtering & Search](filtering.md#filtering).

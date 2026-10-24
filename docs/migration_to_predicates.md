@@ -62,7 +62,7 @@ pytest                                    # run your tests
   `tenant_field` (or `'tenancy': 'shared'`).
 - A `tenant_field` must be a path of forward foreign keys ending at the
   tenant model, and `TURBODRF_TENANT_USER_FIELD` must be set; otherwise the
-  router refuses to start.
+  router refuses to start. So does an unknown `turbodrf()` key.
 - PATCHes that try to reassign the tenant FK now return **400**.
 - Detail/PATCH/DELETE return **404** (not 403) when a row is outside scope.
 - List endpoints return only scoped rows.
@@ -70,6 +70,7 @@ pytest                                    # run your tests
   setup.
 - Custom `@action` routes that call `Model.objects.get(...)` directly bypass
   scoping — switch to `self.get_object()` or apply predicates manually.
+  `self.queryset` is `None` on generated viewsets; use `self.get_queryset()`.
 
 ## Roll out gradually
 

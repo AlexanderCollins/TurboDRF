@@ -2,7 +2,8 @@
 
 Run Django's `python manage.py check` in CI and before each deploy. It
 imports your URLconf, which creates `TurboDRFRouter()` and runs all of
-TurboDRF's startup checks; `get_wsgi_application()` alone doesn't, so a
+TurboDRF's startup checks. Tenancy errors raise on any `manage.py` command,
+but `get_wsgi_application()` doesn't run the router's other checks, so a
 broken config would otherwise deploy and fail on the first request.
 
 ## turbodrf_check
@@ -25,14 +26,14 @@ It only reports, and exits 0 whatever it finds. The startup checks run in `manag
 
 ## turbodrf_benchmark
 
-Compare compiled vs DRF serializer performance:
+Time a model's list endpoint on the compiled and the DRF serializer path:
 
 ```bash
-python manage.py turbodrf_benchmark Book
-python manage.py turbodrf_benchmark Book --requests 500 --page-size 50 --warmup 20
+python manage.py turbodrf_benchmark Book --user alice
+python manage.py turbodrf_benchmark Book --user alice --requests 500 --page-size 50 --warmup 20
 ```
 
-`--requests` (default 100) timed requests per path, `--page-size` (default 20) rows per request, `--warmup` (default 10) untimed requests first. Requires data in the database to benchmark against.
+Each timed call is a real list request, sent as `--user` (required, a username) through the model's registered viewset: permissions, row scoping, filters, pagination and rendering included. `--requests` (default 100) timed requests per path, `--page-size` (default 20) rows per request, `--warmup` (default 10) untimed requests first. The user must see some rows. A model the router doesn't compile is timed on the serializer path only.
 
 ## turbodrf_explain
 
@@ -41,11 +42,13 @@ Show the compiled query plan for a model:
 ```bash
 python manage.py turbodrf_explain Book
 python manage.py turbodrf_explain Book --role viewer
+python manage.py turbodrf_explain Book --fields "title,author.name"
 python manage.py turbodrf_explain Book --role viewer --sql
 ```
 
 Shows:
 - Simple fields, FK annotations, M2M fields, property fields
-- Permission pruning per role
+- With `--role`, the actions and fields a caller with only that role gets (static permission mode only)
+- With `--fields`, what that `?fields=` selection renders, as the API does
 - Query complexity (JOINs, total queries)
-- Generated SQL
+- With `--sql`, the generated SQL, before the per-request tenant and predicate filters
