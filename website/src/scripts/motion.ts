@@ -5,7 +5,6 @@
  *   data-draw              gets .is-in when on screen, for a component's own CSS
  *   data-copy="text"       copies the text, then shows "Copied" on the button
  *   data-search-open       opens the docs search (Pagefind, loaded on first use)
- *   video[data-autoplay]   plays muted while on screen, pauses off screen
  * The body gets .scrolled once the page leaves the top (the navbar's glass).
  */
 const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -43,19 +42,6 @@ function countUp(el: HTMLElement) {
   };
   requestAnimationFrame(tick);
 }
-
-// Videos play only while visible (and never with reduced motion: the poster shows instead).
-const videos = new IntersectionObserver(
-  (entries) => {
-    for (const e of entries) {
-      const v = e.target as HTMLVideoElement;
-      if (e.isIntersecting) v.play().catch(() => {});
-      else v.pause();
-    }
-  },
-  { threshold: 0.25 },
-);
-if (!reduce) document.querySelectorAll<HTMLVideoElement>('video[data-autoplay]').forEach((v) => videos.observe(v));
 
 document.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach((b) =>
   b.addEventListener('click', async () => {

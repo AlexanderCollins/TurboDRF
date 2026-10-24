@@ -1,6 +1,5 @@
 ---
 import Layout from '../layouts/Layout.astro';
-import VideoFrame from '../components/VideoFrame.astro';
 import RequestFlow from '../components/RequestFlow.astro';
 import Anatomy from '../components/Anatomy';
 import PermissionMatrix from '../components/PermissionMatrix';
@@ -28,12 +27,6 @@ const gates = [
   'A misspelled turbodrf() key, field or lookup_field',
   'A permission string with a typo in the app, model or field',
   'A Tenant() inside Either(...)',
-];
-
-const clips = [
-  { name: 'model-to-api', title: 'Creating the API from a model', label: 'The Project model is written, the router added, and a request returns JSON.' },
-  { name: 'roles', title: 'The same request from four users', label: 'An admin, a manager and a viewer in one workspace and an admin in another request the same project.' },
-  { name: 'guardrails', title: 'Six requests the API refused or trimmed', label: 'Six requests the demo API refused or trimmed, with the real responses.' },
 ];
 ---
 <Layout title="TurboDRF">
@@ -158,22 +151,6 @@ const clips = [
       <h2 class="font-display text-3xl sm:text-[2.6rem] leading-[1.1]" data-reveal>Instructions for AI coding agents</h2>
       <p class="mt-4 ink-2 text-lg leading-relaxed" data-reveal>TurboDRF includes an AGENTS.md file that tells coding agents how to add a model, which tenancy option to choose, and which mistakes to avoid. Run <code class="font-mono text-[.9em]">turbodrf_check</code> to see each model's tenancy settings, as shown here.</p>
       <a href="/docs/agents/" class="btn btn-ghost rounded-full mt-6 px-0 hover:bg-transparent mint" data-reveal>Read AGENTS.md <span class="icon-[lucide--arrow-right] size-4"></span></a>
-    </div>
-  </section>
-
-  <!-- Watch -->
-  <section class="border-t line">
-    <div class="wrap py-20 sm:py-24">
-      <h2 class="font-display text-3xl sm:text-[2.6rem] leading-[1.1]" data-reveal>Videos of the demo project</h2>
-      <p class="mt-4 ink-2 text-lg leading-relaxed max-w-2xl" data-reveal>Three short clips, about 15 seconds each, made from the demo project's code and its real responses.</p>
-      <div class="mt-10 grid md:grid-cols-3 gap-5">
-        {clips.map((c, i) => (
-          <figure data-reveal style={`--d:${i * 0.06}s`}>
-            <VideoFrame name={c.name} title={c.title} label={c.label} />
-            <figcaption class="mt-3 text-sm ink-2">{c.title}</figcaption>
-          </figure>
-        ))}
-      </div>
     </div>
   </section>
 
