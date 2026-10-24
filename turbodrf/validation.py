@@ -160,7 +160,13 @@ def validate_searchable_fields_safety(model):
     parent_tenant = get_tenant_field(model)
 
     for path in searchable:
-        if not isinstance(path, str) or "__" not in path:
+        if not isinstance(path, str):
+            continue
+        # A search prefix (^ starts-with, = exact, @ full-text) isn't part of
+        # the path; with it attached the lookup failed and the entry was
+        # skipped.
+        path = path.lstrip("^=@")
+        if "__" not in path:
             continue
         try:
             _final_model, chain = get_nested_field_model(model, path)

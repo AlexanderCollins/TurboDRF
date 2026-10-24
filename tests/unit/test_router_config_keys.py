@@ -20,6 +20,10 @@ class TestUnknownConfigKeys(SimpleTestCase):
         with self.assertRaisesMessage(ImproperlyConfigured, "class attribute"):
             _router((ScopeLoose, {**self.BASE, "sensitive_fields": ["title"]}))
 
+    def test_disabled_model_is_checked_too(self):
+        with self.assertRaisesMessage(ImproperlyConfigured, "owner_feild"):
+            _router((ScopeLoose, {**self.BASE, "enabled": False, "owner_feild": "o"}))
+
     def test_known_keys_boot(self):
         _router((ScopeLoose, {**self.BASE, "owner_field": "owner", "read_only": True}))
 

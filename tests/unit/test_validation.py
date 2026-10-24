@@ -95,6 +95,26 @@ class ValidateSearchableFieldsSafetyTests(TestCase):
             else:
                 CompiledArticle.searchable_fields = original
 
+    def test_prefixed_traversal_to_predicate_bearing_target_raises(self):
+        """A ^ / = / @ prefix isn't part of the path: with it attached the
+        lookup failed and the unsafe entry was skipped."""
+        original = getattr(CompiledArticle, "searchable_fields", None)
+        try:
+            for entry in ("^author__name", "=author__name", "@author__name"):
+                CompiledArticle.searchable_fields = [entry]
+                with self.subTest(entry=entry), _RegistrySnapshot():
+                    register_predicates(
+                        RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))]
+                    )
+                    with self.assertRaises(ImproperlyConfigured):
+                        validate_searchable_fields_safety(CompiledArticle)
+        finally:
+            if original is None:
+                if hasattr(CompiledArticle, "searchable_fields"):
+                    delattr(CompiledArticle, "searchable_fields")
+            else:
+                CompiledArticle.searchable_fields = original
+
     def test_traversal_to_predicate_bearing_target_raises(self):
         """RelatedModel with predicates → SearchFilter would join unscoped."""
         original = getattr(CompiledArticle, "searchable_fields", None)
