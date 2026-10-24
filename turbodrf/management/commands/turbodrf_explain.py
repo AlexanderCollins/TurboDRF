@@ -8,6 +8,7 @@ Usage:
     python manage.py turbodrf_explain ModelName
     python manage.py turbodrf_explain ModelName --role viewer
     python manage.py turbodrf_explain ModelName --fields "title,author.name"
+    python manage.py turbodrf_explain ModelName --scope platform --role support
 """
 
 from contextlib import contextmanager
@@ -15,18 +16,25 @@ from contextlib import contextmanager
 from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError
 
+from turbodrf.backends import RoleOnlyIdentity
 from turbodrf.compiler import compile_model
-from turbodrf.mixins import TurboDRFMixin
+from turbodrf.mixins import TurboDRFMixin, _model_config
+from turbodrf.scope import PLATFORM, SCOPES, TENANT, is_platform, use_scope
 
 _MISSING = object()
 
 
 @contextmanager
 def _compiled_config(model):
-    """Temporarily make ``model.turbodrf()`` opt in to the compiled path, so
-    a model that opts out can still be explained. Always restored."""
+    """Temporarily make ``model.turbodrf()`` opt in to the compiled path (in
+    its platform block, on the platform scope), so a model that opts out can
+    still be explained. Always restored."""
     original = model.__dict__.get("turbodrf", _MISSING)
-    config = dict(model.turbodrf(), compiled=True)
+    config = dict(model.turbodrf())
+    if is_platform():
+        config["platform"] = dict(config.get("platform") or {}, compiled=True)
+    else:
+        config["compiled"] = True
     model.turbodrf = classmethod(lambda cls: config)
     try:
         yield
@@ -37,15 +45,12 @@ def _compiled_config(model):
             model.turbodrf = original
 
 
-class _RoleUser:
-    """A caller holding only ``role`` (static permission mode)."""
-
-    is_authenticated = True
-    is_anonymous = False
-    pk = None  # never cached
+class _RoleUser(RoleOnlyIdentity):
+    """A caller holding only ``role`` (static permission mode, or the
+    platform scope). Never cached: no pk."""
 
     def __init__(self, role):
-        self.roles = [role]
+        super().__init__([role])
 
 
 class Command(BaseCommand):
@@ -70,8 +75,20 @@ class Command(BaseCommand):
             action="store_true",
             help="Show the generated SQL query",
         )
+        parser.add_argument(
+            "--scope",
+            choices=SCOPES,
+            default=TENANT,
+            help="Explain the tenant API's list (default) or the platform "
+            "API's (the model's platform block; --role is a platform role)",
+        )
 
     def handle(self, *args, **options):
+        scope = options.get("scope") or TENANT
+        with use_scope(scope):
+            return self._explain(**options)
+
+    def _explain(self, **options):
         model_name = options["model_name"]
         role = options.get("role")
         fields = options.get("fields")
@@ -86,10 +103,15 @@ class Command(BaseCommand):
 
         if model is None:
             raise CommandError(f"No TurboDRF model named '{model_name}' found.")
+        if is_platform() and "platform" not in model.turbodrf():
+            raise CommandError(
+                f"{model_name} has no platform block: the platform API doesn't "
+                f"serve it."
+            )
 
         # Compiled exactly when the router compiles it: opted in (the
-        # default) and compilable.
-        config = model.turbodrf()
+        # default) and compilable. The current scope's config.
+        config = _model_config(model)
         plan = compile_model(model) if config.get("compiled", True) else None
         compiled = plan is not None
         if plan is None:
@@ -101,6 +123,8 @@ class Command(BaseCommand):
             raise CommandError(f"Could not compile {model_name}.")
 
         name = f"{model._meta.app_label}.{model.__name__}"
+        if is_platform():
+            name += " (platform scope)"
         self.stdout.write(f"\n{self.style.SUCCESS(name)}")
         if compiled:
             self.stdout.write("  Compiled: True")
@@ -108,7 +132,12 @@ class Command(BaseCommand):
             self.stdout.write("  Compiled: False (opted out with 'compiled': False)")
         else:
             self.stdout.write("  Compiled: False")
-        self.stdout.write(f"  Public access: {config.get('public_access', False)}")
+        if is_platform():
+            self.stdout.write(
+                "  Rows: every tenant (no tenant boundary, no predicates)"
+            )
+        else:
+            self.stdout.write(f"  Public access: {config.get('public_access', False)}")
 
         # Field tree
         self.stdout.write(f"\n  {self.style.NOTICE('Simple fields:')}")
@@ -172,7 +201,10 @@ class Command(BaseCommand):
         if show_sql:
             self.stdout.write(f"\n  {self.style.NOTICE('SQL:')}")
             self.stdout.write(f"    {compiled_qs.query}")
-            self.stdout.write("    (before the per-request tenant / predicate filters)")
+            if not is_platform():
+                self.stdout.write(
+                    "    (before the per-request tenant / predicate filters)"
+                )
 
     def _select(self, model, plan, role, fields):
         """The (queryset, active plan) the compiled list uses for a caller
@@ -180,11 +212,10 @@ class Command(BaseCommand):
         field gates (TurboDRFViewSet._compiled_field_gates). None when the
         role can't be explained."""
         from django.conf import settings
-        from django.test import override_settings
         from rest_framework.request import Request
         from rest_framework.test import APIRequestFactory
 
-        from turbodrf.backends import get_permission_mode
+        from turbodrf.backends import get_permission_mode, platform_roles_config
         from turbodrf.settings import TURBODRF_ROLES as default_roles
         from turbodrf.views import TurboDRFViewSet
 
@@ -195,9 +226,16 @@ class Command(BaseCommand):
         view.request = request
         view.format_kwarg = None
         view.action = "list"
+        if is_platform():
+            view.turbodrf_scope = PLATFORM
 
         if role:
-            if get_permission_mode() != "static":
+            if is_platform():
+                roles_config, setting = (
+                    platform_roles_config(),
+                    "TURBODRF_PLATFORM_ROLES",
+                )
+            elif get_permission_mode() != "static":
                 self.stdout.write(
                     self.style.ERROR(
                         "\n  --role is supported in static permission mode only "
@@ -205,10 +243,12 @@ class Command(BaseCommand):
                     )
                 )
                 return None
-            roles_config = getattr(settings, "TURBODRF_ROLES", default_roles)
+            else:
+                roles_config = getattr(settings, "TURBODRF_ROLES", default_roles)
+                setting = "TURBODRF_ROLES"
             if role not in roles_config:
                 self.stdout.write(
-                    self.style.ERROR(f"\n  Role '{role}' not found in TURBODRF_ROLES")
+                    self.style.ERROR(f"\n  Role '{role}' not found in {setting}")
                 )
                 return None
             request.user = _RoleUser(role)
@@ -225,10 +265,9 @@ class Command(BaseCommand):
             header = f"Field selection (?fields={fields}):"
             self.stdout.write(f"\n  {self.style.NOTICE(header)}")
             # No role: show the fields themselves, before any permission rule.
-            with override_settings(TURBODRF_DISABLE_PERMISSIONS=True):
-                readable, allowed_fk, allowed_m2m = view._compiled_field_gates(
-                    request, plan
-                )
+            readable, allowed_fk, allowed_m2m = view._compiled_field_gates(
+                request, plan, permissions=False
+            )
 
         manager = model._default_manager
         everything = _rendered_keys(plan, plan.apply_to_queryset(manager.none())[1])

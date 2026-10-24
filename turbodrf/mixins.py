@@ -7,10 +7,18 @@ configuration the same way everywhere (the API, the OpenAPI schema, OPTIONS
 and the management commands).
 """
 
+from .scope import is_platform, platform_config
+
 
 def _model_config(model):
+    """``model``'s ``turbodrf()`` config as the current scope serves it: the
+    whole dict on the tenant scope, its ``"platform"`` block on the platform
+    scope (see turbodrf.scope)."""
     config = model.turbodrf() if hasattr(model, "turbodrf") else None
-    return config if isinstance(config, dict) else {}
+    config = config if isinstance(config, dict) else {}
+    if is_platform():
+        return platform_config(config)
+    return config
 
 
 def get_searchable_fields(model):
@@ -24,11 +32,14 @@ def get_searchable_fields(model):
 
     A key present in the config wins even when it's empty:
     ``'searchable_fields': []`` turns search off for the model, whatever the
-    class attribute says.
+    class attribute says. On the platform scope only the platform block's own
+    ``searchable_fields`` count: the class attribute is the tenant API's.
     """
     from_config = _model_config(model).get("searchable_fields")
     if from_config is not None:
         return list(from_config)
+    if is_platform():
+        return []
     return list(getattr(model, "searchable_fields", None) or [])
 
 
@@ -159,6 +170,11 @@ class TurboDRFMixin:
                   ``turbodrf``). Each is attached to the generated viewset and
                   inherits get_object()/get_queryset() tenant + predicate
                   scoping, so custom verbs don't re-implement access control.
+                - 'platform' (dict): The model's config on a platform router
+                  (``TurboDRFRouter(scope="platform", gate=[...])``, staff
+                  across tenants): the keys above that shape an API, none of
+                  the tenancy keys. Without it the model isn't served there.
+                  See docs/platform.md.
 
         Example:
             >>> @classmethod

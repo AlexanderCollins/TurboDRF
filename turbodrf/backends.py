@@ -16,6 +16,8 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 
+from .scope import TENANT, current_scope, is_platform
+
 # Per-request memo of roles, cache-key parts and snapshots (see
 # _permission_memo). None outside a request: every lookup then goes to the
 # cache / database, as before.
@@ -122,9 +124,28 @@ def get_permission_mode() -> str:
     return getattr(settings, "TURBODRF_PERMISSION_MODE", "static")
 
 
+class RoleOnlyIdentity:
+    """A permission-only caller holding just a list of role names: the
+    schema's ``?role=`` narrowing and ``turbodrf_explain --role``. No primary
+    key, so its snapshots are never cached. It holds the same roles on both
+    scopes: ``roles`` on the tenant scope (static mode) and ``platform_roles``
+    on the platform scope, whatever TURBODRF_PLATFORM_ROLE_GETTER reads for a
+    real user."""
+
+    is_authenticated = True
+    is_anonymous = False
+    pk = None
+
+    def __init__(self, roles):
+        self.roles = list(roles)
+        self.platform_roles = list(roles)
+
+
 def get_user_roles(user) -> list:
     """
-    Get roles for a user based on the current permission mode.
+    Get roles for a user on the current scope: on the tenant scope by the
+    permission mode, on the platform scope from
+    TURBODRF_PLATFORM_ROLE_GETTER. A role from one never applies on the other.
 
     Args:
         user: Django user object
@@ -132,8 +153,66 @@ def get_user_roles(user) -> list:
     Returns:
         list: List of role names for the user
     """
-    roles = _memoised(("roles", id(user)), user, lambda: _resolve_user_roles(user))
+    resolve = _resolve_platform_roles if is_platform() else _resolve_user_roles
+    roles = _memoised(("roles", current_scope(), id(user)), user, lambda: resolve(user))
     return list(roles)
+
+
+def _default_platform_roles(user):
+    """The default TURBODRF_PLATFORM_ROLE_GETTER: ``user.platform_roles``."""
+    return getattr(user, "platform_roles", None)
+
+
+_role_getters = {}
+
+
+def platform_role_getter():
+    """The callable TURBODRF_PLATFORM_ROLE_GETTER names (a dotted path or a
+    callable ``user -> list[str]``); ``user.platform_roles`` by default."""
+    from django.utils.module_loading import import_string
+
+    setting = getattr(settings, "TURBODRF_PLATFORM_ROLE_GETTER", None)
+    if setting is None:
+        return _default_platform_roles
+    if callable(setting):
+        return setting
+    if not isinstance(setting, str):
+        raise ImproperlyConfigured(
+            f"TURBODRF_PLATFORM_ROLE_GETTER must be a dotted path or a callable "
+            f"(user -> list of role names); got {type(setting).__name__}."
+        )
+    getter = _role_getters.get(setting)
+    if getter is None:
+        try:
+            getter = import_string(setting)
+        except ImportError as exc:
+            raise ImproperlyConfigured(
+                f"TURBODRF_PLATFORM_ROLE_GETTER={setting!r} can't be imported: {exc}"
+            ) from exc
+        if not callable(getter):
+            raise ImproperlyConfigured(
+                f"TURBODRF_PLATFORM_ROLE_GETTER={setting!r} isn't callable."
+            )
+        _role_getters[setting] = getter
+    return getter
+
+
+def platform_roles_config():
+    """TURBODRF_PLATFORM_ROLES (role -> permission strings), or ``{}``."""
+    roles = getattr(settings, "TURBODRF_PLATFORM_ROLES", None)
+    return roles if isinstance(roles, dict) else {}
+
+
+def _resolve_platform_roles(user) -> list:
+    """Platform roles: none for an anonymous caller (there is no platform
+    guest role), else whatever TURBODRF_PLATFORM_ROLE_GETTER returns."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return []
+    if isinstance(user, RoleOnlyIdentity):
+        return list(user.platform_roles)
+    return _role_names(
+        platform_role_getter()(user), what="TURBODRF_PLATFORM_ROLE_GETTER"
+    )
 
 
 def _resolve_user_roles(user) -> list:
@@ -174,8 +253,8 @@ def _resolve_user_roles(user) -> list:
         return []
 
 
-def _role_names(roles) -> list:
-    """``user.roles`` as a list of role names.
+def _role_names(roles, what="user.roles") -> list:
+    """``user.roles`` (or ``what``) as a list of role names.
 
     It may be None (a custom user model that hasn't set it), a list or any
     iterable of names, or a single name. A related manager / queryset of role
@@ -189,7 +268,7 @@ def _role_names(roles) -> list:
             roles.model._meta.get_field("name")
         except Exception:
             raise ImproperlyConfigured(
-                f"user.roles is a manager of {roles.model.__name__}, which has "
+                f"{what} is a manager of {roles.model.__name__}, which has "
                 f"no 'name' field. Expose the role names as a list, e.g. a "
                 f"property returning list(...values_list('<field>', flat=True))."
             ) from None
@@ -204,7 +283,7 @@ def _role_names(roles) -> list:
         return list(roles)
     except TypeError:
         raise ImproperlyConfigured(
-            f"user.roles must be a list of role names, not {type(roles).__name__}."
+            f"{what} must be a list of role names, not {type(roles).__name__}."
         ) from None
 
 
@@ -213,6 +292,8 @@ def _grants_public_read(user, model) -> bool:
     still apply (a field with a read rule needs that grant — from the guest
     role, if one exists), so anonymous callers see what any role with only
     model-level read sees."""
+    if is_platform():
+        return False  # the platform scope has no anonymous access
     if user is not None and getattr(user, "is_authenticated", False):
         return False
     try:
@@ -238,6 +319,9 @@ def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
 
     This is the original TurboDRF permission system using settings.py
 
+    On the platform scope the roles are the caller's platform roles and the
+    map is TURBODRF_PLATFORM_ROLES, whatever the permission mode.
+
     Args:
         user: Django user object with 'roles' attribute
         model: Django model class
@@ -245,9 +329,7 @@ def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
     Returns:
         PermissionSnapshot: Computed permission snapshot
     """
-    from .settings import TURBODRF_ROLES as default_roles
-
-    TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", default_roles)
+    TURBODRF_ROLES = _static_roles_config()
 
     snapshot = PermissionSnapshot()
     app_label = model._meta.app_label
@@ -323,6 +405,15 @@ def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
                 snapshot.writable_fields.add(field_name)
 
     return snapshot
+
+
+def _static_roles_config():
+    """The static role map of the current scope."""
+    if is_platform():
+        return platform_roles_config()
+    from .settings import TURBODRF_ROLES as default_roles
+
+    return getattr(settings, "TURBODRF_ROLES", default_roles)
 
 
 def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
@@ -442,6 +533,7 @@ def get_cache_key(user, model) -> Optional[str]:
     cache_prefix = getattr(
         settings, "TURBODRF_PERMISSION_CACHE_PREFIX", "turbodrf_perm"
     )
+    scope = current_scope()
 
     if user and user.is_authenticated:
         # Key on `.pk`, NEVER `.id`. A custom user model with a non-'id'
@@ -474,7 +566,7 @@ def get_cache_key(user, model) -> Optional[str]:
     # The role configuration; bumped by invalidate_user_permissions(): a new
     # generation is a new key.
     sig = (
-        _memoised(("roles_signature",), None, _roles_signature),
+        _memoised(("roles_signature", scope), None, _roles_signature),
         _memoised(
             ("generations", user_id),
             None,
@@ -482,6 +574,8 @@ def get_cache_key(user, model) -> Optional[str]:
         ),
         _model_signature(model),
     )
+    if scope != TENANT:
+        sig += (scope,)
 
     # hashlib (not builtin hash()) so the key is stable across processes.
     # Builtin hash() is PYTHONHASHSEED-randomized per worker, which fragments a
@@ -491,11 +585,19 @@ def get_cache_key(user, model) -> Optional[str]:
         repr((tuple(sorted(user_roles)), sig)).encode("utf-8")
     ).hexdigest()[:16]
 
-    return f"{cache_prefix}:{user_id}:{app_label}:{model_name}:{version_hash}"
+    # A platform snapshot never shares a key with a tenant one (the tenant
+    # key keeps its pre-0.8 form).
+    scope_part = "" if scope == TENANT else f"{scope}:"
+    return (
+        f"{cache_prefix}:{scope_part}{user_id}:{app_label}:{model_name}:"
+        f"{version_hash}"
+    )
 
 
 def _roles_signature():
     """The role configuration every snapshot depends on."""
+    if is_platform():
+        return _static_signature(platform_roles_config())
     if get_permission_mode() == "database":
         from .models import TurboDRFRole
 
@@ -509,7 +611,10 @@ def _roles_signature():
     # configuration changes — including override_settings(TURBODRF_ROLES=...)
     # in tests. Without this a snapshot built under restricted roles in one
     # test pollutes the cache for later tests reusing the same user.pk.
-    roles = getattr(settings, "TURBODRF_ROLES", {})
+    return _static_signature(getattr(settings, "TURBODRF_ROLES", {}))
+
+
+def _static_signature(roles):
     try:
         return tuple(
             sorted((role, tuple(sorted(perms))) for role, perms in roles.items())
@@ -526,7 +631,11 @@ def _model_signature(model):
         config = model.turbodrf()
     except Exception:
         config = None
-    public = isinstance(config, dict) and bool(config.get("public_access"))
+    public = (
+        not is_platform()
+        and isinstance(config, dict)
+        and bool(config.get("public_access"))
+    )
     return (tuple(sorted(_model_restricted_fields(model))), public)
 
 
@@ -643,12 +752,15 @@ def build_permission_snapshot(user, model, use_cache=True) -> PermissionSnapshot
     if not use_cache:
         return _build_snapshot(user, model)
     return _memoised(
-        ("snapshot", id(user), model), user, lambda: _cached_snapshot(user, model)
+        ("snapshot", current_scope(), id(user), model),
+        user,
+        lambda: _cached_snapshot(user, model),
     )
 
 
 def _build_snapshot(user, model):
-    if get_permission_mode() == "database":
+    # The platform scope is always static: TURBODRF_PLATFORM_ROLES.
+    if not is_platform() and get_permission_mode() == "database":
         return build_permission_snapshot_database(user, model)
     # static mode (or fallback)
     return build_permission_snapshot_static(user, model)
@@ -686,7 +798,7 @@ def attach_snapshot_to_request(request, model):
     if not hasattr(request, "_turbodrf_snapshots"):
         request._turbodrf_snapshots = {}
 
-    cache_key = f"{model._meta.app_label}.{model._meta.model_name}"
+    cache_key = request_snapshot_key(model)
 
     if cache_key not in request._turbodrf_snapshots:
         snapshot = build_permission_snapshot(request.user, model)
@@ -709,5 +821,12 @@ def get_snapshot_from_request(request, model) -> Optional[PermissionSnapshot]:
     if not hasattr(request, "_turbodrf_snapshots"):
         return None
 
-    cache_key = f"{model._meta.app_label}.{model._meta.model_name}"
-    return request._turbodrf_snapshots.get(cache_key)
+    return request._turbodrf_snapshots.get(request_snapshot_key(model))
+
+
+def request_snapshot_key(model):
+    """The key of ``model``'s snapshot in a request's ``_turbodrf_snapshots``
+    on the current scope."""
+    key = f"{model._meta.app_label}.{model._meta.model_name}"
+    scope = current_scope()
+    return key if scope == TENANT else f"{scope}:{key}"

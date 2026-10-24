@@ -195,7 +195,9 @@ class TurboDRFMetadata(SimpleMetadata):
                 # As DefaultDjangoPermission: anonymous callers read a
                 # public_access model, and nothing else.
                 if user is None or not user.is_authenticated:
-                    config = model.turbodrf()
+                    from .mixins import _model_config
+
+                    config = _model_config(model)
                     return perm == "read" and bool(config.get("public_access"))
                 return user.has_perm(
                     f"{model._meta.app_label}."
