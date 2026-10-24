@@ -10,11 +10,42 @@ Usage:
     python manage.py turbodrf_explain ModelName --fields "title,author.name"
 """
 
+from contextlib import contextmanager
+
 from django.apps import apps
 from django.core.management.base import BaseCommand, CommandError
 
 from turbodrf.compiler import compile_model
 from turbodrf.mixins import TurboDRFMixin
+
+_MISSING = object()
+
+
+@contextmanager
+def _compiled_config(model):
+    """Temporarily make ``model.turbodrf()`` opt in to the compiled path, so
+    a model that opts out can still be explained. Always restored."""
+    original = model.__dict__.get("turbodrf", _MISSING)
+    config = dict(model.turbodrf(), compiled=True)
+    model.turbodrf = classmethod(lambda cls: config)
+    try:
+        yield
+    finally:
+        if original is _MISSING:
+            del model.turbodrf
+        else:
+            model.turbodrf = original
+
+
+class _RoleUser:
+    """A caller holding only ``role`` (static permission mode)."""
+
+    is_authenticated = True
+    is_anonymous = False
+    pk = None  # never cached
+
+    def __init__(self, role):
+        self.roles = [role]
 
 
 class Command(BaseCommand):
@@ -25,12 +56,14 @@ class Command(BaseCommand):
         parser.add_argument(
             "--role",
             type=str,
-            help="Show plan as seen by this role (permission filtering)",
+            help="Show the list response a caller with this role gets "
+            "(static permission mode)",
         )
         parser.add_argument(
             "--fields",
             type=str,
-            help="Comma-separated field list (overrides model config)",
+            help="Comma-separated ?fields= selection, as a client sends it "
+            "(only configured fields apply)",
         )
         parser.add_argument(
             "--sql",
@@ -41,6 +74,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         model_name = options["model_name"]
         role = options.get("role")
+        fields = options.get("fields")
         show_sql = options.get("sql", False)
 
         # Find the model
@@ -53,24 +87,27 @@ class Command(BaseCommand):
         if model is None:
             raise CommandError(f"No TurboDRF model named '{model_name}' found.")
 
-        # Compile
-        plan = compile_model(model)
+        # Compiled exactly when the router compiles it: opted in (the
+        # default) and compilable.
+        config = model.turbodrf()
+        plan = compile_model(model) if config.get("compiled", True) else None
+        compiled = plan is not None
         if plan is None:
-            # Force compile for explanation
-            config = model.turbodrf()
-            config["compiled"] = True
-            original_turbodrf = model.turbodrf
-            model.turbodrf = classmethod(lambda cls: config).__get__(model, type(model))
-            plan = compile_model(model)
-            model.turbodrf = original_turbodrf
+            # Explain anyway: compile with the opt-in forced on.
+            with _compiled_config(model):
+                plan = compile_model(model)
 
         if plan is None:
             raise CommandError(f"Could not compile {model_name}.")
 
-        config = model.turbodrf()
         name = f"{model._meta.app_label}.{model.__name__}"
         self.stdout.write(f"\n{self.style.SUCCESS(name)}")
-        self.stdout.write(f"  Compiled: {config.get('compiled', False)}")
+        if compiled:
+            self.stdout.write("  Compiled: True")
+        elif not config.get("compiled", True):
+            self.stdout.write("  Compiled: False (opted out with 'compiled': False)")
+        else:
+            self.stdout.write("  Compiled: False")
         self.stdout.write(f"  Public access: {config.get('public_access', False)}")
 
         # Field tree
@@ -109,79 +146,121 @@ class Command(BaseCommand):
                     how = f"sandboxed, relations: {loads}"
                 self.stdout.write(f"    {prop_name} ({how})")
 
-        # Permission filtering
-        if role:
-            self._show_role_filtering(model, plan, role)
+        # What a caller gets: the role's permissions and ?fields=.
+        compiled_qs, active_plan = plan.apply_to_queryset(model._default_manager.all())
+        if role or fields:
+            selected = self._select(model, plan, role, fields)
+            if selected is None:
+                return
+            compiled_qs, active_plan = selected
 
         # Complexity
-        num_joins = len(plan.fk_annotations)
-        num_m2m_queries = len(plan.m2m_specs)
-        total_fields = (
-            len(plan.simple_fields)
-            + len(plan.fk_annotations)
-            + sum(len(s["sub_fields"]) for s in plan.m2m_specs.values())
-            + len(plan.property_fields)
-        )
+        active_simple, active_fk, active_m2m, active_props = active_plan
         self.stdout.write(f"\n  {self.style.NOTICE('Complexity:')}")
-        self.stdout.write(f"    Total fields: {total_fields}")
-        self.stdout.write(f"    JOINs: {num_joins}")
-        self.stdout.write(f"    M2M queries: {num_m2m_queries}")
-        self.stdout.write(f"    Total queries: {1 + num_m2m_queries}")
+        self.stdout.write(f"    Total fields: {len(_rendered_keys(plan, active_plan))}")
+        self.stdout.write(f"    JOINs: {len(active_fk)}")
+        self.stdout.write(f"    M2M queries: {len(active_m2m)}")
+        # A paginated list runs a COUNT, the SELECT, and one query per M2M.
+        self.stdout.write(f"    Total queries: {2 + len(active_m2m)}")
+        if active_props:
+            self.stdout.write(
+                "    (+ property fields: one query per batch of rows, plus one "
+                "per declared relation)"
+            )
 
         # SQL
         if show_sql:
-            self._show_sql(model, plan)
+            self.stdout.write(f"\n  {self.style.NOTICE('SQL:')}")
+            self.stdout.write(f"    {compiled_qs.query}")
+            self.stdout.write("    (before the per-request tenant / predicate filters)")
 
-    def _show_role_filtering(self, model, plan, role_name):
+    def _select(self, model, plan, role, fields):
+        """The (queryset, active plan) the compiled list uses for a caller
+        with ``role`` sending ``?fields=``, computed by the viewset's own
+        field gates (mirrors TurboDRFViewSet._compiled_list). None when the
+        role can't be explained."""
         from django.conf import settings
+        from rest_framework.request import Request
+        from rest_framework.test import APIRequestFactory
 
+        from turbodrf.backends import get_permission_mode
         from turbodrf.settings import TURBODRF_ROLES as default_roles
+        from turbodrf.views import TurboDRFViewSet
 
-        roles_config = getattr(settings, "TURBODRF_ROLES", default_roles)
-        if role_name not in roles_config:
-            self.stdout.write(
-                self.style.ERROR(f"\n  Role '{role_name}' not found in TURBODRF_ROLES")
-            )
-            return
+        query = {"fields": fields} if fields else {}
+        request = Request(APIRequestFactory().get("/", query))
+        view = TurboDRFViewSet()
+        view.model = model
+        view.request = request
+        view.format_kwarg = None
+        view.action = "list"
 
-        # Build a mock snapshot for this role
-        from turbodrf.backends import build_permission_snapshot_static
-
-        class MockUser:
-            is_authenticated = True
-            id = 0
-            roles = [role_name]
-            _test_roles = [role_name]
-
-        snapshot = build_permission_snapshot_static(MockUser(), model)
-
-        self.stdout.write(
-            f"\n  {self.style.NOTICE(f'Permission filtering (role: {role_name}):')}"
-        )
-        self.stdout.write(f"    Actions: {snapshot.allowed_actions or 'none'}")
-
-        if snapshot.readable_fields:
-            # Show which fields survive
-            all_fields = set(plan.simple_fields)
-            all_fields.update(plan.fk_annotations.keys())
-            all_fields.update(plan.m2m_specs.keys())
-            all_fields.update(plan.property_fields.keys())
-
-            permitted = all_fields & snapshot.readable_fields
-            pruned = all_fields - snapshot.readable_fields
-
-            if pruned:
-                self.stdout.write(f"    Permitted: {', '.join(sorted(permitted))}")
+        readable = allowed_fk = allowed_m2m = None
+        if role:
+            if get_permission_mode() != "static":
                 self.stdout.write(
-                    self.style.ERROR(f"    Pruned: {', '.join(sorted(pruned))}")
+                    self.style.ERROR(
+                        "\n  --role is supported in static permission mode only "
+                        "(database mode reads roles per user)."
+                    )
                 )
-            else:
-                self.stdout.write("    All fields permitted")
+                return None
+            roles_config = getattr(settings, "TURBODRF_ROLES", default_roles)
+            if role not in roles_config:
+                self.stdout.write(
+                    self.style.ERROR(f"\n  Role '{role}' not found in TURBODRF_ROLES")
+                )
+                return None
+            request.user = _RoleUser(role)
+            snapshot = view._caller_snapshot(request)
+            header = f"Permission filtering (role: {role}):"
+            self.stdout.write(f"\n  {self.style.NOTICE(header)}")
+            actions = ", ".join(sorted(snapshot.allowed_actions)) or "none"
+            self.stdout.write(f"    Actions: {actions}")
 
-    def _show_sql(self, model, plan):
-        queryset = model.objects.all()
-        compiled_qs, _ = plan.apply_to_queryset(queryset)
-        sql = str(compiled_qs.query)
+            allowed_fk = view._filter_compiled_fk_annotations(plan, request)
+            allowed_m2m = view._filter_compiled_m2m_subfields(plan, request)
+            readable = view._get_compiled_readable_fields(request)
+            if readable is not None:
+                readable = set(readable)
+                if plan.property_fields:
+                    readable |= view._readable_property_fields(plan, request)
+                if allowed_fk:
+                    readable |= {plan._fk_base_field(k) for k in allowed_fk}
 
-        self.stdout.write(f"\n  {self.style.NOTICE('SQL:')}")
-        self.stdout.write(f"    {sql}")
+        else:
+            header = f"Field selection (?fields={fields}):"
+            self.stdout.write(f"\n  {self.style.NOTICE(header)}")
+
+        requested = view._parse_client_fields(request, plan)
+        if requested is not None:
+            readable = readable & requested if readable is not None else requested
+
+        manager = model._default_manager
+        everything = _rendered_keys(plan, plan.apply_to_queryset(manager.none())[1])
+        selected = plan.apply_to_queryset(
+            manager.all(),
+            readable,
+            allowed_fk_keys=allowed_fk,
+            allowed_m2m_subfields=allowed_m2m,
+        )
+        rendered = _rendered_keys(plan, selected[1])
+        pruned = [key for key in everything if key not in rendered]
+        self.stdout.write(f"    Rendered: {', '.join(rendered) or '(none)'}")
+        if pruned:
+            self.stdout.write(self.style.ERROR(f"    Pruned: {', '.join(pruned)}"))
+        else:
+            self.stdout.write("    All fields permitted")
+        return selected
+
+
+def _rendered_keys(plan, active_plan):
+    """The keys a compiled list row has for ``active_plan`` (what
+    CompiledQueryPlan.post_process leaves)."""
+    active_simple, active_fk, active_m2m, active_props = active_plan
+    keys = [
+        f
+        for f in active_simple
+        if f != plan.pk_field or plan.pk_field in plan._original_fields
+    ]
+    return keys + list(active_fk) + list(active_m2m) + list(active_props)

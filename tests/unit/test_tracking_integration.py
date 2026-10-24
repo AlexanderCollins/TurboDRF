@@ -213,7 +213,12 @@ class TestTurboDRFTrackingMixin(TestCase):
             "rest_framework_tracking.mixins": mixins_module,
         }
         with override_settings(TURBODRF_ENABLE_TRACKING=True):
-            with patch.dict(sys.modules, fake_modules):
+            with (
+                patch.dict(sys.modules, fake_modules),
+                patch(
+                    "turbodrf.tracking._is_tracking_app_installed", return_value=True
+                ),
+            ):
                 mixin = get_tracking_mixin()
         self.assertTrue(issubclass(mixin, _FakeLoggingMixin))
         self.assertIs(mixin, self._mixin().__class__)

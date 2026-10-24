@@ -1,19 +1,49 @@
 """
 Benchmark compiled vs DRF read paths for a model.
 
+Each timed call is a real list request, as the given user, through the
+model's registered viewset (permissions, tenant and predicate scoping,
+filters, pagination and rendering included), once on the compiled path and
+once on the DRF serializer path.
+
 Usage:
-    python manage.py turbodrf_benchmark ModelName
-    python manage.py turbodrf_benchmark ModelName --requests 500
-    python manage.py turbodrf_benchmark ModelName --page-size 50
+    python manage.py turbodrf_benchmark ModelName --user alice
+    python manage.py turbodrf_benchmark ModelName --user alice --requests 500
+    python manage.py turbodrf_benchmark ModelName --user alice --page-size 50
 """
 
 import time
 
 from django.apps import apps
+from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 
-from turbodrf.compiler import compile_model
 from turbodrf.mixins import TurboDRFMixin
+
+
+def _registered_viewset(model):
+    """(viewset class, initkwargs) of ``model``'s list route in the URLconf,
+    or None."""
+    from django.urls import URLResolver, get_resolver
+
+    from turbodrf.views import TurboDRFViewSet
+
+    patterns = list(get_resolver().url_patterns)
+    while patterns:
+        pattern = patterns.pop()
+        if isinstance(pattern, URLResolver):
+            patterns.extend(pattern.url_patterns)
+            continue
+        callback = getattr(pattern, "callback", None)
+        cls = getattr(callback, "cls", None)
+        if (
+            isinstance(cls, type)
+            and issubclass(cls, TurboDRFViewSet)
+            and getattr(cls, "model", None) is model
+            and (getattr(callback, "actions", None) or {}).get("get") == "list"
+        ):
+            return cls, dict(getattr(callback, "initkwargs", None) or {})
+    return None
 
 
 class Command(BaseCommand):
@@ -21,6 +51,13 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("model_name", type=str, help="Model name to benchmark")
+        parser.add_argument(
+            "--user",
+            type=str,
+            required=True,
+            help="Username to send the requests as (permissions and row "
+            "scoping apply as for that user)",
+        )
         parser.add_argument(
             "--requests",
             type=int,
@@ -41,7 +78,10 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        from turbodrf.compiler import is_compiled
+
         model_name = options["model_name"]
+        username = options["user"]
         num_requests = options["requests"]
         page_size = options["page_size"]
         warmup = options["warmup"]
@@ -55,109 +95,108 @@ class Command(BaseCommand):
 
         if model is None:
             raise CommandError(f"No TurboDRF model named '{model_name}' found.")
+        if num_requests < 1:
+            raise CommandError("--requests must be at least 1.")
 
-        count = model.objects.count()
-        if count == 0:
-            raise CommandError(f"{model_name} has no data. Create some objects first.")
+        User = get_user_model()
+        try:
+            user = User._default_manager.get_by_natural_key(username)
+        except User.DoesNotExist:
+            raise CommandError(f"No user '{username}'.")
+
+        registered = _registered_viewset(model)
+        if registered is None:
+            raise CommandError(f"{model_name} has no list route in the URLconf.")
+        viewset, initkwargs = registered
+
+        # The DRF serializer path of the same viewset.
+        serializer_viewset = type(
+            f"{viewset.__name__}SerializerPath",
+            (viewset,),
+            {"_should_use_compiled_path": lambda self, request: False},
+        )
+        drf_view = serializer_viewset.as_view({"get": "list"}, **initkwargs)
+
+        first = self._request(drf_view, user, page_size)
+        if first.status_code != 200:
+            raise CommandError(
+                f"GET {model_name} list as {username} returned "
+                f"{first.status_code}: {getattr(first, 'data', '')}"
+            )
+        data = first.data
+        count = (
+            data["pagination"]["total_items"]
+            if isinstance(data, dict) and "pagination" in data
+            else len(data)
+        )
+        if not count:
+            raise CommandError(
+                f"{model_name} has no data visible to {username}. "
+                "Create some objects first."
+            )
 
         self.stdout.write(
-            f"\nBenchmarking {model_name} ({count} objects, page_size={page_size})"
+            f"\nBenchmarking {model_name} as {username} "
+            f"({count} objects, page_size={page_size})"
         )
         self.stdout.write(f"Requests: {num_requests} (+ {warmup} warmup)\n")
 
-        # Benchmark DRF path
-        drf_times = self._benchmark_drf(model, num_requests, warmup, page_size)
-
-        # Benchmark compiled path
-        plan = compile_model(model)
-        if plan is None:
-            # Temporarily compile it for the benchmark
-            config = model.turbodrf()
-            config["compiled"] = True
-            # Monkey-patch temporarily
-            original_turbodrf = model.turbodrf
-            model.turbodrf = classmethod(lambda cls: config).__get__(model, type(model))
-            plan = compile_model(model)
-            model.turbodrf = original_turbodrf
-
-        if plan is None:
-            raise CommandError(f"Could not compile {model_name}.")
-
-        compiled_times = self._benchmark_compiled(
-            model, plan, num_requests, warmup, page_size
-        )
-
-        # Results
-        drf_avg = sum(drf_times) / len(drf_times) * 1000
-        drf_p95 = sorted(drf_times)[int(len(drf_times) * 0.95)] * 1000
-        compiled_avg = sum(compiled_times) / len(compiled_times) * 1000
-        compiled_p95 = sorted(compiled_times)[int(len(compiled_times) * 0.95)] * 1000
-        speedup = drf_avg / compiled_avg if compiled_avg > 0 else 0
+        drf_times = self._benchmark(drf_view, user, num_requests, warmup, page_size)
+        drf_avg, drf_p95 = _summary(drf_times)
 
         self.stdout.write(f"{'Path':<12} {'Avg':>10} {'p95':>10}")
         self.stdout.write(f"{'-'*34}")
         self.stdout.write(f"{'DRF':<12} {drf_avg:>8.2f}ms {drf_p95:>8.2f}ms")
+
+        if not is_compiled(model):
+            self.stdout.write(
+                f"\n{model_name} isn't served by the compiled path "
+                "(see turbodrf_check); nothing to compare."
+            )
+            return
+
+        compiled_view = viewset.as_view({"get": "list"}, **initkwargs)
+        compiled_times = self._benchmark(
+            compiled_view, user, num_requests, warmup, page_size
+        )
+        compiled_avg, compiled_p95 = _summary(compiled_times)
+        speedup = drf_avg / compiled_avg if compiled_avg > 0 else 0
+
         self.stdout.write(
             f"{'Compiled':<12} {compiled_avg:>8.2f}ms {compiled_p95:>8.2f}ms"
         )
         self.stdout.write(f"\nSpeedup: {self.style.SUCCESS(f'{speedup:.1f}x')}")
 
-    def _benchmark_drf(self, model, num_requests, warmup, page_size):
-        """Benchmark the DRF serializer path."""
-        from turbodrf.serializers import TurboDRFSerializer
+    def _request(self, view, user, page_size):
+        response = view(_list_request(user, page_size))
+        response.render()
+        return response
 
-        config = model.turbodrf()
-        fields_config = config.get("fields", "__all__")
-        if isinstance(fields_config, dict):
-            list_fields = fields_config.get("list", "__all__")
-        else:
-            list_fields = fields_config
-
-        queryset = model.objects.all()[:page_size]
-
-        # Create serializer class
-        meta_attrs = {
-            "model": model,
-            "fields": "__all__" if list_fields == "__all__" else list_fields,
-        }
-        SerializerClass = type(
-            f"{model.__name__}BenchSerializer",
-            (TurboDRFSerializer,),
-            {"Meta": type("Meta", (), meta_attrs)},
-        )
-
-        # Warmup
+    def _benchmark(self, view, user, num_requests, warmup, page_size):
+        """Seconds per list request (render included), after warmup."""
         for _ in range(warmup):
-            serializer = SerializerClass(queryset, many=True)
-            _ = serializer.data
+            self._request(view, user, page_size)
 
-        # Benchmark
         times = []
         for _ in range(num_requests):
+            request = _list_request(user, page_size)
             start = time.perf_counter()
-            serializer = SerializerClass(queryset, many=True)
-            _ = serializer.data
+            view(request).render()
             times.append(time.perf_counter() - start)
-
         return times
 
-    def _benchmark_compiled(self, model, plan, num_requests, warmup, page_size):
-        """Benchmark the compiled read path."""
-        queryset = model.objects.all()
 
-        # Warmup
-        for _ in range(warmup):
-            compiled_qs, active_plan = plan.apply_to_queryset(queryset)
-            rows = list(compiled_qs[:page_size])
-            plan.post_process(rows, active_plan)
+def _list_request(user, page_size):
+    from rest_framework.test import APIRequestFactory, force_authenticate
 
-        # Benchmark
-        times = []
-        for _ in range(num_requests):
-            start = time.perf_counter()
-            compiled_qs, active_plan = plan.apply_to_queryset(queryset)
-            rows = list(compiled_qs[:page_size])
-            plan.post_process(rows, active_plan)
-            times.append(time.perf_counter() - start)
+    request = APIRequestFactory().get("/", {"page_size": page_size})
+    force_authenticate(request, user=user)
+    return request
 
-        return times
+
+def _summary(times):
+    """(average, p95) in milliseconds."""
+    ordered = sorted(times)
+    average = sum(ordered) / len(ordered) * 1000
+    p95 = ordered[min(int(len(ordered) * 0.95), len(ordered) - 1)] * 1000
+    return average, p95

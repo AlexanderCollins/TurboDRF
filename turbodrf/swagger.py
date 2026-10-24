@@ -19,12 +19,17 @@ What a caller sees:
       so serializers of models the caller can't use are not published.
     - List responses documented with TurboDRF's real pagination envelope
       (``{"pagination": {...}, "data": [...]}``).
+    - Each operation once: the router's no-trailing-slash URL variants are
+      not documented separately.
 
 Role selection:
     By default the schema reflects all of the caller's roles. ``?role=<r>``
-    (or ``session['api_role']``) narrows it to a single role the caller
-    already holds. It can never widen the schema. Narrowing is supported in
-    static permission mode; in database mode the parameter is ignored.
+    narrows it to a single role the caller already holds. Without the query
+    parameter, ``request.session['api_role']`` is read the same way; TurboDRF
+    never sets that key, so it only applies if your app stores the caller's
+    chosen role there. Either way the role can never widen the schema.
+    Narrowing is supported in static permission mode; in database mode it is
+    ignored.
 """
 
 import hashlib
@@ -32,8 +37,9 @@ import logging
 from collections import OrderedDict
 
 from drf_yasg import openapi
-from drf_yasg.generators import OpenAPISchemaGenerator
+from drf_yasg.generators import EndpointEnumerator, OpenAPISchemaGenerator
 from drf_yasg.inspectors import NotHandled, PaginatorInspector, SwaggerAutoSchema
+from drf_yasg.utils import no_body
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +123,11 @@ def _request_snapshot_key(model):
 
 def _configured_fields(model, kind):
     """The model's configured fields for ``kind`` ('list' or 'detail'),
-    resolved exactly as TurboDRFViewSet.get_serializer_class does."""
-    fields = model.turbodrf().get("fields", "__all__")
-    if isinstance(fields, dict):
-        fields = fields.get(kind, "__all__")
-    return fields
+    resolved exactly as TurboDRFViewSet.get_serializer_class does (see
+    turbodrf.mixins._resolve_configured_fields)."""
+    from .mixins import _resolve_configured_fields
+
+    return _resolve_configured_fields(model, kind)
 
 
 def _serializer_context(view):
@@ -195,6 +201,32 @@ def _strip_sensitive_properties(node):
             stack.extend(current)
 
 
+# Suffix TurboDRFRouter.get_urls gives the URL names of its no-trailing-slash
+# duplicate routes.
+_NO_SLASH_SUFFIX = "_no_slash"
+
+
+class _NoSlashEndpointEnumerator(EndpointEnumerator):
+    """Endpoint enumerator that skips the router's no-slash duplicates.
+
+    TurboDRFRouter registers every route twice, ``items/`` and ``items``, so
+    writes work without a trailing slash. Documenting both would list every
+    path twice (``/items/``, ``/items``, ``/items/{id}/``, ``/items/{id}``)
+    and generate every operation twice. The duplicates' URL names end in
+    ``_no_slash``; only the URL name tells them apart, and drf-yasg passes it
+    here (not to the generator's later hooks).
+    """
+
+    def should_include_endpoint(
+        self, path, callback, app_name="", namespace="", url_name=None
+    ):
+        if isinstance(url_name, str) and url_name.endswith(_NO_SLASH_SUFFIX):
+            return False
+        return super().should_include_endpoint(
+            path, callback, app_name, namespace, url_name
+        )
+
+
 class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
     """
     OpenAPI schema generator that scopes the schema to the caller.
@@ -210,6 +242,8 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
             reflects all of the caller's roles.
     """
 
+    endpoint_enumerator_class = _NoSlashEndpointEnumerator
+
     def __init__(self, info, version="", url=None, patterns=None, urlconf=None):
         super().__init__(info, version, url, patterns, urlconf)
         self.current_role = None
@@ -222,15 +256,17 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
 
         Args:
             request: The schema request. Its user decides what is documented.
-                ``?role=<r>`` (or ``session['api_role']``) narrows the schema
+                ``?role=<r>`` (or, without it, ``session['api_role']``, a
+                key your app may set; TurboDRF never does) narrows the schema
                 to one role, honoured ONLY if the caller holds it.
             public: Ignored for TurboDRF endpoints: their permission check
                 always runs for the caller.
 
         Returns:
-            openapi.Swagger: The caller-scoped schema. With no request it has no
-            paths and no definitions; an anonymous caller sees only reads of
-            ``public_access`` models.
+            openapi.Swagger: The caller-scoped schema. An anonymous caller, and
+            a call with no request at all, gets the anonymous schema: only
+            reads of ``public_access`` models, with the fields an anonymous
+            caller can read.
         """
         from .backends import get_permission_mode, get_user_roles
 
@@ -332,119 +368,58 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
             return False
         return self._snapshot(view, model).can_perform_action(action)
 
-    def get_endpoints(self, request=None):
-        """
-        Get API endpoints, filtering out duplicate no-slash variants.
 
-        This override filters out the duplicate URL patterns created for
-        trailing slash handling, preventing duplicate entries in the
-        Swagger documentation.
-        """
-        endpoints = super().get_endpoints(request)
+def _swagger2_schema(node):
+    """Convert a DRF (OpenAPI 3) schema dict to a drf-yasg (Swagger 2) one.
 
-        # drf-yasg's get_endpoints returns a list of tuples on older
-        # releases and a dict {path: (callback, methods)} on newer ones.
-        # Both shapes are handled to avoid a 500 against newer drf-yasg.
-        if isinstance(endpoints, dict):
-            return self._filter_endpoint_dict(endpoints)
-
-        return self._filter_endpoint_tuples(endpoints)
-
-    def _filter_endpoint_dict(self, endpoints_dict):
-        """drf-yasg dict form: {path: (callback, methods)} or similar."""
-        filtered = {}
-        for path, value in endpoints_dict.items():
-            callback = value[0] if isinstance(value, tuple) and value else value
-            if self._is_no_slash_duplicate(callback):
-                continue
-            filtered[path] = value
-        return filtered
-
-    def _filter_endpoint_tuples(self, endpoints):
-        """drf-yasg tuple form: list of (path, path_regex, method, callback)."""
-        filtered_endpoints = []
-        for entry in endpoints:
-            # Defensively handle 4-tuple AND 5-tuple shapes
-            if len(entry) < 4:
-                # Unknown shape — pass through unfiltered
-                filtered_endpoints.append(entry)
-                continue
-            if self._is_no_slash_duplicate(entry[3]):
-                continue
-            filtered_endpoints.append(entry)
-        return filtered_endpoints
-
-    def _is_no_slash_duplicate(self, callback):
-        """True if this callback is a duplicate no-slash variant."""
-        if not (hasattr(callback, "cls") and hasattr(callback.cls, "_basename")):
-            return False
-        return (
-            hasattr(callback, "actions")
-            and hasattr(callback, "name")
-            and callback.name
-            and callback.name.endswith("_no_slash")
-        )
+    DRF paginators describe their envelope for DRF's OpenAPI 3 generator,
+    where a nullable value is ``nullable: true``. Swagger 2 has no
+    ``nullable``; drf-yasg's spelling is the ``x-nullable`` extension. Nested
+    objects are converted too. drf-yasg schema objects (the page's item
+    schema) are kept as they are.
+    """
+    if isinstance(node, openapi.SwaggerDict) or not isinstance(node, dict):
+        return node
+    converted = OrderedDict()
+    for key, value in node.items():
+        if key == "example":
+            continue
+        if key == "nullable":
+            converted["x-nullable"] = value
+        elif key == "properties" and isinstance(value, dict):
+            converted[key] = OrderedDict(
+                (name, _swagger2_schema(prop)) for name, prop in value.items()
+            )
+        elif key in ("items", "additionalProperties"):
+            converted[key] = _swagger2_schema(value)
+        else:
+            converted[key] = value
+    return converted
 
 
 class TurboDRFPaginatorInspector(PaginatorInspector):
     """Document TurboDRFPagination's real response envelope.
 
-    drf-yasg's default inspector would describe TurboDRFPagination as a stock
-    PageNumberPagination (``count``/``next``/``previous``/``results``), which
-    is not what the API returns.
+    The envelope is defined once, by the paginator's own
+    ``get_paginated_response_schema`` (which DRF's OpenAPI 3 generator also
+    uses); this inspector converts it to Swagger 2. drf-yasg's default
+    inspector only converts the top level, so the nested
+    ``pagination.next`` / ``previous`` kept OpenAPI 3's ``nullable``, which
+    isn't valid Swagger 2.
     """
 
     def get_paginated_response(self, paginator, response_schema):
-        from rest_framework.pagination import PageNumberPagination
-
         from .views import TurboDRFPagination
 
         if not isinstance(paginator, TurboDRFPagination):
             return NotHandled
-        paginator_cls = type(paginator)
-        if (
-            paginator_cls.get_paginated_response_schema
-            is not PageNumberPagination.get_paginated_response_schema
-        ):
-            # The paginator describes its own envelope; let drf-yasg use it.
-            return NotHandled
-        if (
-            paginator_cls.get_paginated_response
-            is not TurboDRFPagination.get_paginated_response
-        ):
-            # A subclass changed the envelope; we don't know its shape.
-            return NotHandled
-
-        def link():
-            return openapi.Schema(
-                type=openapi.TYPE_STRING, format=openapi.FORMAT_URI, x_nullable=True
-            )
-
-        pagination = openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=[
-                "next",
-                "previous",
-                "current_page",
-                "total_pages",
-                "total_items",
-            ],
-            properties=OrderedDict(
-                (
-                    ("next", link()),
-                    ("previous", link()),
-                    ("current_page", openapi.Schema(type=openapi.TYPE_INTEGER)),
-                    ("total_pages", openapi.Schema(type=openapi.TYPE_INTEGER)),
-                    ("total_items", openapi.Schema(type=openapi.TYPE_INTEGER)),
-                )
-            ),
+        envelope = _swagger2_schema(
+            paginator.get_paginated_response_schema(response_schema)
         )
         return openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["pagination", "data"],
-            properties=OrderedDict(
-                (("pagination", pagination), ("data", response_schema))
-            ),
+            type=envelope["type"],
+            required=envelope.get("required"),
+            properties=envelope.get("properties"),
         )
 
 
@@ -455,7 +430,11 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
     - Request and response serializers are built for the caller's own
       permissions (see module docstring), never from the unfiltered model
       configuration.
-    - Custom actions don't show the model serializer as their request body.
+    - Custom actions don't show the model serializer as their request body;
+      they document the ``serializer_class`` their ``@action`` declares, if
+      any.
+    - An explicit ``@swagger_auto_schema(request_body=...)`` is honoured on
+      every operation.
     - List responses use TurboDRF's pagination envelope.
     """
 
@@ -467,60 +446,64 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
             if inspector is not TurboDRFPaginatorInspector
         ]
 
+    def _is_custom_action(self):
+        if not hasattr(self.view, "action"):
+            return False
+        return self.view.action not in _WRITE_ACTIONS + _STANDARD_READ_ACTIONS
+
+    def _declared_action_serializer(self):
+        """The serializer_class a custom ``@action(serializer_class=...)``
+        declares (the router passes it to the view instance), or None."""
+        return self.view.__dict__.get("serializer_class")
+
     def get_request_body_parameters(self, consumes):
         """
         Get request body parameters for the current operation.
 
-        For custom actions (methods decorated with @action), this method
-        returns an empty list to prevent drf-yasg from including all model
-        fields in the request schema.
+        A custom action (``@action``) documents a request body only when one
+        is declared: ``@swagger_auto_schema(request_body=...)`` or the
+        action's own ``serializer_class``. Otherwise drf-yasg would document
+        the model serializer, which the action doesn't take.
 
-        For standard CRUD operations (create, update, etc.), it delegates
-        to the parent implementation which correctly includes model fields.
+        Standard CRUD operations use the parent implementation, which calls
+        get_request_serializer below.
         """
-        # Check if this is a custom action
-        if hasattr(self.view, "action"):
-            action = self.view.action
-
-            # If it's a custom action (not a standard one), don't include
-            # model fields unless explicitly defined
-            if action not in _WRITE_ACTIONS + _STANDARD_READ_ACTIONS:
-                return []
-
-        # For standard actions, use the default behavior
+        if (
+            self._is_custom_action()
+            and self.overrides.get("request_body") is None
+            and self._declared_action_serializer() is None
+        ):
+            return []
         return super().get_request_body_parameters(consumes)
 
     def get_request_serializer(self):
         """
         Get the request serializer for the current operation.
 
-        For write operations (create, update, partial_update), returns a
-        serializer with exactly the fields the caller may write.
-
-        For custom actions, returns None to prevent automatic serializer
-        field inclusion in the request schema.
+        - An explicit ``@swagger_auto_schema(request_body=...)`` wins
+          (``drf_yasg.utils.no_body`` means no body).
+        - Write operations (create, update, partial_update) get a serializer
+          with exactly the fields the caller may write.
+        - A custom action gets the ``serializer_class`` its ``@action``
+          declares, on methods that take a body, else no body.
         """
-        if hasattr(self.view, "action"):
-            action = self.view.action
+        override = self._get_request_body_override()
+        if override is not None:
+            return None if override is no_body else override
 
-            if action in _WRITE_ACTIONS:
-                return self._get_write_operation_serializer()
+        if not hasattr(self.view, "action"):
+            return super().get_request_serializer()
 
-            if action in _STANDARD_READ_ACTIONS:
-                return super().get_request_serializer()
+        action = self.view.action
+        if action in _WRITE_ACTIONS:
+            return self._get_write_operation_serializer()
+        if action in _STANDARD_READ_ACTIONS:
+            return super().get_request_serializer()
 
-            # Custom actions - check for explicit serializer
-            action_method = getattr(self.view, action, None)
-            if action_method and hasattr(action_method, "kwargs"):
-                serializer_class = action_method.kwargs.get("serializer_class")
-                if serializer_class:
-                    return serializer_class()
-
-            # No serializer for request body
-            return None
-
-        # For standard actions, use the default behavior
-        return super().get_request_serializer()
+        declared = self._declared_action_serializer()
+        if declared is not None and self.method in self.implicit_body_methods:
+            return declared(context=_serializer_context(self.view))
+        return None
 
     def get_view_serializer(self):
         """Response serializer for TurboDRF views, built for the caller.
@@ -543,7 +526,7 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
 
         action = getattr(self.view, "action", None)
         if action not in _WRITE_ACTIONS + _STANDARD_READ_ACTIONS:
-            declared = self.view.__dict__.get("serializer_class")
+            declared = self._declared_action_serializer()
             if declared is not None:
                 return declared(context=_serializer_context(self.view))
 
@@ -587,20 +570,15 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
         from .serializers import TurboDRFSerializer, TurboDRFSerializerFactory
         from .validation import is_field_path_sensitive
 
-        fields = _configured_fields(model, "detail")
-        if fields == "__all__":
-            fields = [f.name for f in model._meta.fields]
-        if isinstance(fields, (list, tuple)):
+        # Writes use the detail fields, as the API does ("__all__" includes
+        # forward M2M fields).
+        fields = []
+        for name in _configured_fields(model, "detail"):
             # Strip nested fields (`__` paths) — DRF ModelSerializer can't
             # use them in Meta.fields, and only the base FK is writable.
-            seen = set()
-            cleaned = []
-            for f in fields:
-                base = f.split("__")[0]
-                if base not in seen:
-                    seen.add(base)
-                    cleaned.append(base)
-            fields = cleaned
+            base = name.split("__")[0]
+            if base not in fields:
+                fields.append(base)
 
         if permissions_bypassed():
             # Parity with the API: no TurboDRF field permissions apply.
