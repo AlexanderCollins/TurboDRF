@@ -1,11 +1,5 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
-
 version: 2
 updates:
-  # Enable version updates for Python dependencies
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
@@ -13,16 +7,15 @@ updates:
       day: "monday"
       time: "04:00"
     open-pull-requests-limit: 10
-    reviewers:
-      - "yourusername"
     labels:
       - "dependencies"
       - "python"
     commit-message:
       prefix: "chore"
       include: "scope"
-    
-  # Enable version updates for GitHub Actions
+
+  # Workflows pin actions to commit SHAs; Dependabot bumps the SHA and the
+  # version comment together.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -30,8 +23,6 @@ updates:
       day: "monday"
       time: "04:00"
     open-pull-requests-limit: 5
-    reviewers:
-      - "yourusername"
     labels:
       - "dependencies"
       - "github-actions"

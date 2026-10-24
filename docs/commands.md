@@ -1,5 +1,10 @@
 # Management Commands
 
+Run Django's `python manage.py check` in CI and before each deploy. It
+imports your URLconf, which creates `TurboDRFRouter()` and runs all of
+TurboDRF's startup checks; `get_wsgi_application()` alone doesn't, so a
+broken config would otherwise deploy and fail on the first request.
+
 ## turbodrf_check
 
 Report how each TurboDRF model is served and scoped:
@@ -16,7 +21,7 @@ For each enabled model it prints:
 - `public_access`.
 - Tenancy, when `TURBODRF_TENANT_MODEL` is set: the resolved `tenant_field` (marked when auto-detected; the command uses the router's `TURBODRF_AUTODETECT_TENANT` default, `False`), the within-tenant predicates, `shared`, or `NOT DECLARED` for a model the router will refuse to register.
 
-It only reports. The router's startup gates (compiled-path and search-field safety, `Custom` write validators, permission strings) run when `TurboDRFRouter()` is created, usually when your URLconf is imported, not here. The command exits 0 whatever it finds.
+It only reports, and exits 0 whatever it finds. The startup checks run in `manage.py check`, as above.
 
 ## turbodrf_benchmark
 
@@ -24,10 +29,10 @@ Compare compiled vs DRF serializer performance:
 
 ```bash
 python manage.py turbodrf_benchmark Book
-python manage.py turbodrf_benchmark Book --requests 500 --page-size 50
+python manage.py turbodrf_benchmark Book --requests 500 --page-size 50 --warmup 20
 ```
 
-Requires data in the database to benchmark against.
+`--requests` (default 100) timed requests per path, `--page-size` (default 20) rows per request, `--warmup` (default 10) untimed requests first. Requires data in the database to benchmark against.
 
 ## turbodrf_explain
 

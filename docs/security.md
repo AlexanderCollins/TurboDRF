@@ -4,6 +4,12 @@
 
 Endpoints require authentication unless `public_access: True` is explicitly set.
 
+> **`TURBODRF_DISABLE_PERMISSIONS = True` is for local development only.**
+> It removes every permission check, authentication included: anonymous
+> callers can create, update and delete through the generated endpoints,
+> and read any model that isn't row-scoped. Never set it in a deployed
+> environment.
+
 `public_access: True` gives anonymous callers model-level read (GET, HEAD,
 OPTIONS) and nothing more. Field rules still bind them: a field that any role
 has a read rule for needs an explicit grant, and anonymous callers get grants
@@ -119,7 +125,7 @@ class Order(models.Model, TurboDRFMixin):
             'tenant_field': 'store',
             'owner_field': 'customer',
             'bypass_owner_roles': ['staff', 'admin'],
-            'fields': '__all__',
+            'fields': ['id', 'store', 'customer', 'total'],
         }
 ```
 
@@ -128,10 +134,11 @@ When `TURBODRF_TENANT_MODEL` is set in settings and `TURBODRF_REQUIRE_TENANCY=Tr
 `tenant_field`, a non-empty `visibility`, nor `'tenancy': 'shared'` — closing
 the "developer forgot to scope this" class of bugs at boot. An `owner_field`
 alone doesn't count: it scopes rows within a tenant, and its bypass roles
-would see every tenant's rows.
+would see every tenant's rows. Nor does a `visibility` list made only of
+`Owner` predicates with bypass roles and `Conditional` predicates.
 
-See `docs/tenancy.md` for the full predicate vocabulary, sugar form, and
-configuration reference.
+See [Tenancy](tenancy.md) for the full predicate vocabulary, sugar form,
+and configuration reference.
 
 ### What the predicate system enforces
 
@@ -152,8 +159,13 @@ configuration reference.
 - **Tenant reassignment rejection** — PATCH cannot change a row's tenant FK to
   a different tenant.
 - **Owner write check** — non-bypass roles cannot set an owner column to
-  another user. With a multi-column `owner_field` this covers every listed
-  column. The owner is auto-filled on create only; an update leaves it as is.
+  another user, or change an owner column whose current value is another
+  user. With a multi-column `owner_field` this covers every listed column, so
+  a co-owner can't take over the other column. The owner is auto-filled on
+  create only; an update leaves it as is.
+- **`Either` writes** — a write must pass every child's write check, so the
+  `Owner` check above holds for users who see a row through another branch
+  (`Members`, `Group`, `Custom`).
 - **`Conditional` write check** — the row is re-checked after the save, in the
   same transaction. A write that would leave it invisible to the writer is
   rolled back with a 400.
@@ -314,18 +326,15 @@ either Author or Profile has its own rules.
 
 ## Custom predicate write safety
 
-`Custom(q_func=...)` defaults `validate_write` to `[]` — meaning "this
-predicate doesn't object to the write." When a `Custom` is wrapped in
-`Either(Owner, Custom)` (the common shape for "owner OR external
-grant"), the Either combinator passes if any child returns no errors.
-A no-op `Custom` therefore silently overrides `Owner`'s checks: any
-caller whose role has the model-level write permission can bypass
-owner enforcement via the Custom branch.
+A `Custom` predicate's write rule is its `write_validator`. Inside
+`Either`, a write must pass every child's write check, so a `Custom` can only
+add restrictions to the `Owner` rules on another branch; it can't lift them.
+(In 0.6.x and earlier, `Either` passed a write when any one child passed,
+so a `Custom` that objected to nothing overrode `Owner`.)
 
-The risk is latent — it only becomes exploitable once the role attached
-to the Custom predicate is granted a write permission. But the failure
-mode is silent and the audit trail is confusing after the fact ("we
-always had owner enforcement, why did it stop working?").
+A `Custom` without a `write_validator` still says nothing about writes, and
+it's easy to forget that a role it admits may later gain write actions. So
+every `Custom` must state its write rule.
 
 ### Startup gate
 
@@ -337,13 +346,13 @@ predicate stack (recursing into `Either`) and refuses to start if any
 
 When the gate fires you have three options:
 
-- **Pass `write_validator=lambda d, i, r: []`** if the predicate is
-  intentionally read-only and writes should pass through. Explicit
-  opt-in to the original behavior.
-- **Pass `write_validator=my_check`** to enforce writes. The function
-  returns a list of error strings (empty = allow, non-empty = block).
-  This is the defense-in-depth fix for predicates intended for
-  read-only role grants:
+- **Pass `write_validator=lambda d, i, r: []`** if the predicate adds no
+  write rule: the users it admits can edit rows they see, subject to the
+  other predicates (inside `Either`, `Owner`'s checks still apply).
+- **Pass `write_validator=my_check`** to restrict writes. The function
+  receives `(validated_data, instance, request)` and returns a list of error
+  strings (empty = allow, non-empty = block). Use it for predicates meant
+  for read-only role grants:
 
   ```python
   def block_role_writes(validated_data, instance, request):
@@ -482,3 +491,12 @@ The primary key is appended as a tie-breaker.
   sensitive deny-list.
 - **Keycloak roles are captured at login.** See
   [integrations.md](integrations.md#where-the-roles-come-from).
+- **Unknown `turbodrf()` keys are ignored.** A misspelled key
+  (`'owner_feild'`, `'tenant_feild'`) is dropped without an error, along
+  with the scoping it meant to add. Check each model's resolved scoping with
+  `python manage.py turbodrf_check`.
+- **Startup checks run when the URLconf is imported.** A process that never
+  imports it (`get_wsgi_application()` before the first request) starts with
+  a broken config and fails on the first request. Run
+  `python manage.py check`, which imports the URLconf, in CI and before each
+  deploy.
