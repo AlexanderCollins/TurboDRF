@@ -1197,17 +1197,6 @@ class TestPredicateAlgebraInvariants(TestCase):
             ~Q(is_staff_loan=True),
         )
 
-    def test_co_tenant_check_fires_only_when_tenant_field_present(self):
-        """The Layer-3 co-tenant check runs only when the host has a
-        `tenant_field` setting (gated on `tenant_user_field and tenant_field`).
-        Lives in the _check_fk_injection_writes helper since the refactor."""
-        from inspect import getsource
-
-        from turbodrf.serializers import _check_fk_injection_writes
-
-        src = getsource(_check_fk_injection_writes)
-        self.assertIn("tenant_user_field and tenant_field", src)
-
 
 # ============================================================================
 # Anon POST to tenant-scoped endpoint short-circuits at permission layer

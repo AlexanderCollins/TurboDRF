@@ -177,9 +177,10 @@ class Command(BaseCommand):
     def _select(self, model, plan, role, fields):
         """The (queryset, active plan) the compiled list uses for a caller
         with ``role`` sending ``?fields=``, computed by the viewset's own
-        field gates (mirrors TurboDRFViewSet._compiled_list). None when the
+        field gates (TurboDRFViewSet._compiled_field_gates). None when the
         role can't be explained."""
         from django.conf import settings
+        from django.test import override_settings
         from rest_framework.request import Request
         from rest_framework.test import APIRequestFactory
 
@@ -195,7 +196,6 @@ class Command(BaseCommand):
         view.format_kwarg = None
         view.action = "list"
 
-        readable = allowed_fk = allowed_m2m = None
         if role:
             if get_permission_mode() != "static":
                 self.stdout.write(
@@ -218,23 +218,17 @@ class Command(BaseCommand):
             actions = ", ".join(sorted(snapshot.allowed_actions)) or "none"
             self.stdout.write(f"    Actions: {actions}")
 
-            allowed_fk = view._filter_compiled_fk_annotations(plan, request)
-            allowed_m2m = view._filter_compiled_m2m_subfields(plan, request)
-            readable = view._get_compiled_readable_fields(request)
-            if readable is not None:
-                readable = set(readable)
-                if plan.property_fields:
-                    readable |= view._readable_property_fields(plan, request)
-                if allowed_fk:
-                    readable |= {plan._fk_base_field(k) for k in allowed_fk}
-
+            readable, allowed_fk, allowed_m2m = view._compiled_field_gates(
+                request, plan
+            )
         else:
             header = f"Field selection (?fields={fields}):"
             self.stdout.write(f"\n  {self.style.NOTICE(header)}")
-
-        requested = view._parse_client_fields(request, plan)
-        if requested is not None:
-            readable = readable & requested if readable is not None else requested
+            # No role: show the fields themselves, before any permission rule.
+            with override_settings(TURBODRF_DISABLE_PERMISSIONS=True):
+                readable, allowed_fk, allowed_m2m = view._compiled_field_gates(
+                    request, plan
+                )
 
         manager = model._default_manager
         everything = _rendered_keys(plan, plan.apply_to_queryset(manager.none())[1])
