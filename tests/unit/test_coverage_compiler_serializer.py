@@ -407,24 +407,28 @@ class TestSerializeM2MGetAttrException(TestCase):
     """Cover lines 154-155: exception in getattr during M2M serialization."""
 
     def test_getattr_exception_produces_none(self):
-        """When getattr on a related object raises an exception."""
-        serializer = TurboDRFSerializer()
-
-        # Create a custom object that raises on attribute access for 'name'
-        class ExplodingObj:
-            def __getattr__(self, name):
-                raise Exception("boom")
-
-        mock_manager = MagicMock()
-        mock_manager.all.return_value = [ExplodingObj()]
-
-        instance = MagicMock()
-        instance.categories = mock_manager
-
-        # The try/except around getattr should catch and set None
-        result = serializer._serialize_m2m_field(
-            instance, "categories", ["categories__name"]
+        """When reading a sub-field of a related object raises an exception."""
+        author = RelatedModel.objects.create(name="Author", description="desc")
+        article = ArticleWithCategories.objects.create(
+            title="Test", content="Content", author=author
         )
+        article.categories.add(Category.objects.create(name="Tech"))
+
+        class TestSerializer(TurboDRFSerializer):
+            class Meta:
+                model = ArticleWithCategories
+                fields = ["title", "categories"]
+                _nested_fields = {"categories": ["categories__name"]}
+
+        serializer = TestSerializer(article)
+
+        # The try/except around the sub-field read should catch and set None
+        with patch.object(
+            TurboDRFSerializer, "_nested_value", side_effect=Exception("boom")
+        ):
+            result = serializer._serialize_m2m_field(
+                article, "categories", ["categories__name"]
+            )
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
         self.assertIsNone(result[0]["name"])
