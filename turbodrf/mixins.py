@@ -2,10 +2,15 @@
 Core mixins for TurboDRF.
 
 This module provides the TurboDRFMixin that enables automatic API generation
-for Django models.
+for Django models, plus the helpers that read a model's ``turbodrf()``
+configuration the same way everywhere (the API, the OpenAPI schema, OPTIONS
+and the management commands).
 """
 
-from django.core.exceptions import FieldDoesNotExist
+
+def _model_config(model):
+    config = model.turbodrf() if hasattr(model, "turbodrf") else None
+    return config if isinstance(config, dict) else {}
 
 
 def get_searchable_fields(model):
@@ -15,16 +20,49 @@ def get_searchable_fields(model):
     first, falling back to a ``searchable_fields`` class attribute. The
     config-dict form is preferred — it lives alongside ``fields`` /
     ``tenant_field`` and is honored by both the ``?search=`` handling and the
-    boot-time searchable-fields safety check. (Previously only the class
-    attribute was read, so declaring it in the config dict silently did
-    nothing.)
+    boot-time searchable-fields safety check.
+
+    A key present in the config wins even when it's empty:
+    ``'searchable_fields': []`` turns search off for the model, whatever the
+    class attribute says.
     """
-    config = model.turbodrf() if hasattr(model, "turbodrf") else None
-    if isinstance(config, dict):
-        from_config = config.get("searchable_fields")
-        if from_config:
-            return list(from_config)
+    from_config = _model_config(model).get("searchable_fields")
+    if from_config is not None:
+        return list(from_config)
     return list(getattr(model, "searchable_fields", None) or [])
+
+
+def _resolve_configured_fields(model, view_type="list"):
+    """The fields ``model``'s ``turbodrf()`` config exposes for ``view_type``.
+
+    The one resolution of the ``fields`` config, shared by the API, the
+    OpenAPI schema, OPTIONS and the management commands:
+
+    - ``view_type="list"`` uses the list fields; anything else
+      (``"detail"``, ``"retrieve"``, writes, custom actions) uses the detail
+      fields.
+    - A ``{'list': ..., 'detail': ...}`` dict that leaves one key out uses
+      the other key for it, never ``'__all__'``.
+    - ``'__all__'`` (the whole value or one of the dict's values) means every
+      concrete field plus every forward many-to-many field; no reverse
+      relations.
+
+    Returns a new list of the configured names (``__`` paths and property
+    names included). Sensitive-field and permission filtering happen later,
+    per caller.
+    """
+    fields = _model_config(model).get("fields", "__all__")
+    if isinstance(fields, dict):
+        list_fields = fields.get("list", fields.get("detail", []))
+        detail_fields = fields.get("detail", list_fields)
+        fields = list_fields if view_type == "list" else detail_fields
+    if fields == "__all__":
+        return [f.name for f in model._meta.fields] + [
+            f.name for f in model._meta.many_to_many
+        ]
+    if isinstance(fields, str):
+        return [fields]
+    return list(fields or [])
 
 
 class TurboDRFMixin:
@@ -50,8 +88,7 @@ class TurboDRFMixin:
         ...             'fields': ['title', 'author', 'price']
         ...         }
 
-    The mixin provides several helper methods for field introspection and
-    configuration that are used internally by TurboDRF.
+    ``get_api_fields()`` returns the configured fields for a view type.
     """
 
     @classmethod
@@ -67,13 +104,16 @@ class TurboDRFMixin:
                 - 'enabled' (bool): Whether to enable API for this model.
                   Defaults to True.
                 - 'endpoint' (str): Custom endpoint name. If not provided,
-                  defaults to the pluralized model name.
+                  defaults to the lowercase model name with an "s" appended
+                  (no real pluralization: ``Category`` -> ``categorys``).
                 - 'fields' (list|dict|str): Fields to expose in the API.
                   Can be:
                   - A list of field names: ['title', 'author', 'price']
                   - A dict with different fields for list/detail views:
-                    {'list': ['title', 'author'], 'detail': '__all__'}
-                  - The string '__all__' to include all fields
+                    {'list': ['title', 'author'], 'detail': '__all__'}.
+                    A dict with only one key uses it for both views.
+                  - The string '__all__': every concrete field plus forward
+                    many-to-many fields (no reverse relations)
                 - 'lookup_field' (str): Field to use for object lookup in URLs.
                   Defaults to 'pk'. Use 'slug' or any other unique field
                   instead of integer IDs.
@@ -105,7 +145,8 @@ class TurboDRFMixin:
                 - 'searchable_fields' (list[str]): Field names (or '__'-paths)
                   enabled for ``?search=``. Gated by field-level read
                   permissions and validated at startup. May also be declared as
-                  a ``searchable_fields`` class attribute (legacy location).
+                  a ``searchable_fields`` class attribute (legacy location);
+                  the config key wins when present, even if it's empty.
                 - 'read_only' (bool): When True, only list/retrieve are served;
                   CRUD writes (POST/PUT/PATCH/DELETE) return 405. Declared
                   'actions' keep their own methods. Good for audit logs and
@@ -142,18 +183,19 @@ class TurboDRFMixin:
     @classmethod
     def get_api_fields(cls, view_type="list"):
         """
-        Get fields for a specific view type.
+        Get the configured fields for a view type.
 
-        This method resolves the fields configuration based on the view type
-        (list or detail). It handles the various field configuration formats
-        supported by TurboDRF.
+        Resolved as the viewset resolves them: a dict that leaves a view
+        type out uses the other one, and ``'__all__'`` means every concrete
+        field plus forward many-to-many fields.
 
         Args:
-            view_type (str): The type of view ('list' or 'detail').
-                Defaults to 'list'.
+            view_type (str): ``'list'``, or anything else for the detail
+                fields (``'detail'``). Defaults to ``'list'``.
 
         Returns:
-            list: List of field names to include in the API response.
+            list: The configured field names, before any per-caller
+            permission or sensitive-field filtering.
 
         Example:
             >>> Book.get_api_fields('list')
@@ -161,65 +203,4 @@ class TurboDRFMixin:
             >>> Book.get_api_fields('detail')
             ['title', 'author', 'price', 'description', 'created_at']
         """
-        config = cls.turbodrf()
-        fields = config.get("fields", "__all__")
-
-        if fields == "__all__":
-            # Get all model fields except reverse relations
-            return [
-                f.name
-                for f in cls._meta.get_fields()
-                if not f.many_to_many and not f.one_to_many
-            ]
-
-        if isinstance(fields, dict):
-            # Different fields for list/detail views; a view left out of the
-            # dict uses the other one (as the viewset does).
-            other = "detail" if view_type == "list" else "list"
-            return fields.get(view_type, fields.get(other, []))
-
-        # If it's a list, use for both views
-        return fields
-
-    @classmethod
-    def get_field_type(cls, field_path):
-        """
-        Resolve field type for nested fields.
-
-        This method traverses relationships to determine the type of a field
-        specified using Django's double-underscore notation
-        (e.g., 'author__name').
-
-        Args:
-            field_path (str): Field path using double-underscore notation.
-                Example: 'author__name' or 'category__parent__name'
-
-        Returns:
-            Field: The Django field instance, or None if the field
-            doesn't exist.
-
-        Example:
-            >>> Book.get_field_type('author__name')
-            <django.db.models.fields.CharField: name>
-            >>> Book.get_field_type('nonexistent__field')
-            None
-        """
-        parts = field_path.split("__")
-        model = cls
-
-        # Traverse relationships
-        for part in parts[:-1]:
-            try:
-                field = model._meta.get_field(part)
-                if hasattr(field, "related_model"):
-                    model = field.related_model
-                else:
-                    return None
-            except FieldDoesNotExist:
-                return None
-
-        # Get the final field
-        try:
-            return model._meta.get_field(parts[-1])
-        except FieldDoesNotExist:
-            return None
+        return _resolve_configured_fields(cls, view_type)

@@ -141,12 +141,19 @@ class TestSentryWhenEnabled(TestCase):
 
             self.assertEqual(SentryContextMiddleware(get_response)(request), "resp")
 
-            request_scope.set_user.assert_called_once_with({"id": user.pk})
-            request_scope.set_tag.assert_any_call("user_roles", "admin")
+            # Nothing is resolved or written eagerly: the event processor
+            # describes the user when (if) an event is captured.
+            request_scope.set_user.assert_not_called()
+            request_scope.set_tag.assert_not_called()
             request_scope.add_event_processor.assert_called_once()
             # Nothing written to the process-wide API.
             mock_sdk.set_user.assert_not_called()
             mock_sdk.new_scope.return_value.__exit__.assert_called_once()
+
+            processor = request_scope.add_event_processor.call_args[0][0]
+            event = processor({"user": {"username": "mw_user"}}, {})
+            self.assertEqual(event["user"], {"id": user.pk})
+            self.assertEqual(event["tags"]["user_roles"], "admin")
 
     def test_event_processor_sees_user_authenticated_after_middleware(self):
         """Token/JWT users are authenticated by DRF after the middleware ran;
@@ -168,7 +175,7 @@ class TestSentryWhenEnabled(TestCase):
                 return "resp"
 
             SentryContextMiddleware(view)(request)
-            request_scope.set_user.assert_called_once_with(None)
+            request_scope.set_user.assert_not_called()
 
             processor = request_scope.add_event_processor.call_args[0][0]
             event = processor({"tags": {}}, {})

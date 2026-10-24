@@ -1755,57 +1755,20 @@ class SwaggerInternals(SecBase):
     # ---- endpoint filter ----
 
     def test_endpoint_filter_drops_no_slash_dupes(self):
-        # Dict & tuple forms drop the no-slash duplicate; normal entries
-        # pass through; short-tuple inputs pass through untouched; mis-
-        # shaped callbacks are NOT flagged as duplicates.
-        gen = _gen()
+        # The router's no-slash duplicates are dropped by URL name, so the
+        # real schema documents each path once (slash form only).
+        import json
 
-        class CB_dup:
-            class cls:
-                _basename = "x"
-
-            actions = {"get": "list"}
-            name = "x_no_slash"
-
-        class CB_normal(CB_dup):
-            name = "x"
-
-        self.assertEqual(gen._filter_endpoint_dict({"/api/x/": (CB_dup, ["GET"])}), {})
-        out = gen._filter_endpoint_dict({"/api/x/": (CB_normal, ["GET"])})
-        self.assertEqual(set(out.keys()), {"/api/x/"})
-
-        self.assertEqual(
-            gen._filter_endpoint_tuples([("/api/x", "rx", "GET", CB_dup)]), []
-        )
-        self.assertEqual(gen._filter_endpoint_tuples([("/x", "rx")]), [("/x", "rx")])
-
-        # Negative cases: each is mis-shaped in a different way and must
-        # NOT be flagged as a duplicate.
-        class CB_no_attr:
-            pass
-
-        class CB_no_actions:
-            class cls:
-                _basename = "x"
-
-            name = "y"
-
-        class CB_blank_name:
-            class cls:
-                _basename = "x"
-
-            actions = {"get": "list"}
-            name = ""
-
-        class CB_no_basename:
-            class cls:
-                pass
-
-            actions = {"get": "list"}
-            name = "x_no_slash"
-
-        for cb in (CB_no_attr(), CB_no_actions(), CB_blank_name(), CB_no_basename()):
-            self.assertFalse(gen._is_no_slash_duplicate(cb))
+        client = APIClient()
+        client.force_authenticate(user=self.admin_user)
+        r = client.get("/swagger/?format=openapi")
+        self.assertEqual(r.status_code, 200)
+        paths = json.loads(r.content)["paths"]
+        self.assertIn("/samplemodels/", paths)
+        self.assertIn("/samplemodels/{id}/", paths)
+        self.assertNotIn("/samplemodels", paths)
+        self.assertNotIn("/samplemodels/{id}", paths)
+        self.assertEqual([p for p in paths if not p.endswith("/")], [])
 
     # ---- model resolution / operation inclusion ----
 

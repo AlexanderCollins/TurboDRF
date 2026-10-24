@@ -220,8 +220,9 @@ class TestKeycloakRoleMiddlewareCall(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
 
-    def test_middleware_sets_roles_on_authenticated_user(self):
-        """Lines 239-248: authenticated user gets roles from social_auth."""
+    def test_middleware_never_sets_roles_on_authenticated_user(self):
+        """The middleware is a deprecated no-op (the roles resolver covers
+        every request); it used to write social-auth roles onto the user."""
         from turbodrf.integrations.keycloak import KeycloakRoleMiddleware
 
         user = User.objects.create_user(username="kc_mw_user")
@@ -242,8 +243,11 @@ class TestKeycloakRoleMiddlewareCall(TestCase):
         middleware = KeycloakRoleMiddleware(get_response)
         response = middleware(request)
 
+        # Deprecated no-op: the user model's own roles stay authoritative and
+        # social-auth isn't queried by the middleware.
         self.assertEqual(response, "ok")
-        self.assertEqual(request.user.__dict__.get("roles"), ["admin"])
+        self.assertNotIn("roles", request.user.__dict__)
+        mock_manager.filter.assert_not_called()
 
     def test_middleware_skips_anonymous_user(self):
         """Lines 239-249: anonymous user is not modified."""
@@ -314,7 +318,12 @@ class TestTrackingWithMockedPackage(TestCase):
         with patch.dict("sys.modules", {"rest_framework_tracking": mock_module}):
             from turbodrf.tracking import is_tracking_enabled
 
-            self.assertTrue(is_tracking_enabled())
+            # Importable is not enough: the app must be in INSTALLED_APPS.
+            self.assertFalse(is_tracking_enabled())
+            with patch(
+                "turbodrf.tracking._is_tracking_app_installed", return_value=True
+            ):
+                self.assertTrue(is_tracking_enabled())
 
     @override_settings(TURBODRF_ENABLE_TRACKING=True)
     def test_get_tracking_mixin_returns_class(self):
@@ -327,12 +336,15 @@ class TestTrackingWithMockedPackage(TestCase):
         mock_mixins.LoggingMixin = FakeLoggingMixin
 
         mock_pkg = MagicMock()
-        with patch.dict(
-            "sys.modules",
-            {
-                "rest_framework_tracking": mock_pkg,
-                "rest_framework_tracking.mixins": mock_mixins,
-            },
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "rest_framework_tracking": mock_pkg,
+                    "rest_framework_tracking.mixins": mock_mixins,
+                },
+            ),
+            patch("turbodrf.tracking._is_tracking_app_installed", return_value=True),
         ):
             from turbodrf.tracking import get_tracking_mixin
 
@@ -409,8 +421,8 @@ class TestAllAuthMiddlewareDictRoles(TestCase):
     def setUp(self):
         self.factory = RequestFactory()
 
-    def test_middleware_sets_roles_via_dict_for_plain_user(self):
-        """Line 148: user without a roles property gets roles via __dict__."""
+    def test_middleware_never_sets_roles_via_dict(self):
+        """It used to write group roles into a plain user's __dict__."""
         from turbodrf.integrations.allauth import AllAuthRoleMiddleware
 
         user = _PlainUser()
@@ -427,7 +439,9 @@ class TestAllAuthMiddlewareDictRoles(TestCase):
         with override_settings(TURBODRF_ALLAUTH_ROLE_MAPPING={}):
             middleware(request)
 
-        self.assertEqual(request.user.__dict__["roles"], ["editor"])
+        # Deprecated no-op: nothing is written into the user's __dict__.
+        self.assertNotIn("roles", request.user.__dict__)
+        user.groups.all.assert_not_called()
 
 
 class TestAllAuthSetupIntegration(TestCase):

@@ -146,11 +146,14 @@ class TestAllAuthMiddlewareDisabled(TestCase):
             middleware(anon_request)
             self.assertNotIn("roles", anon_request.user.__dict__)
 
+        # Deprecated no-op: enabled or not, it never writes roles onto the
+        # user or queries groups (the installed role resolver does that).
         with override_settings(TURBODRF_ALLAUTH_INTEGRATION=True):
             request = RequestFactory().get("/")
             request.user = user
             middleware(request)
-            self.assertEqual(user.__dict__["roles"], ["admin"])
+            self.assertNotIn("roles", user.__dict__)
+            user.groups.all.assert_not_called()
 
 
 class _GroupUser:
@@ -179,8 +182,10 @@ class TestAllAuthRoleMiddleware(TestCase):
         self.admin_group = Group.objects.create(name="admin")
         self.editor_group = Group.objects.create(name="editor")
 
-    def test_middleware_adds_roles_property(self):
-        """Test that middleware adds roles property to user."""
+    def test_middleware_does_not_shadow_the_user_models_roles(self):
+        """The model's own ``roles`` (here the test app's property, which
+        says 'viewer') is what every request gets. The middleware used to
+        overwrite it with group roles on session requests only."""
         from turbodrf.integrations.allauth import AllAuthRoleMiddleware
 
         self.user.groups.add(self.admin_group)
@@ -193,8 +198,8 @@ class TestAllAuthRoleMiddleware(TestCase):
 
         middleware(request)
 
-        self.assertTrue(hasattr(request.user, "roles"))
-        self.assertEqual(request.user.roles, ["admin"])
+        self.assertEqual(request.user.roles, ["viewer"])
+        self.assertFalse(hasattr(request.user, "_test_roles"))
 
     def test_middleware_with_anonymous_user(self):
         """Test middleware handles anonymous users gracefully."""
@@ -211,8 +216,8 @@ class TestAllAuthRoleMiddleware(TestCase):
         response = middleware(request)
 
         self.assertEqual(response, "response")
-        # Anonymous user should have empty roles
-        self.assertEqual(request.user.roles, [])
+        # Nothing is written onto the anonymous user.
+        self.assertNotIn("roles", request.user.__dict__)
 
     def test_middleware_preserves_existing_roles(self):
         """Test middleware doesn't override existing roles property."""

@@ -278,13 +278,14 @@ class TurboDRFExplainCommandTest(TestCase):
         self.assertIn("1", joins_line)
 
     def test_complexity_m2m_query_count(self):
-        """CompiledArticle has 1 M2M, so M2M queries should be 1."""
+        """CompiledArticle has 1 M2M, so M2M queries should be 1; a paginated
+        list adds the COUNT and the SELECT."""
         out = self._call("CompiledArticle")
         lines = out.split("\n")
         m2m_line = [line for line in lines if "M2M queries:" in line][0]
         self.assertIn("1", m2m_line)
         total_line = [line for line in lines if "Total queries:" in line][0]
-        self.assertIn("2", total_line)
+        self.assertIn("3", total_line)
 
     def test_sql_flag_shows_sql(self):
         """--sql flag should include SQL output."""
@@ -304,10 +305,15 @@ class TurboDRFExplainCommandTest(TestCase):
 
     def test_non_compiled_model_explains_anyway(self):
         """Non-compiled models should still be explainable (force-compiled)."""
-        out = self._call("SampleModel")
-        self.assertIn("SampleModel", out)
+        out = self._call("Gadget")  # opts out with compiled=False
+        self.assertIn("Gadget", out)
         self.assertIn("Simple fields:", out)
         self.assertIn("Compiled: False", out)
+
+    def test_compiled_by_default(self):
+        """No 'compiled' key means compiled, as in the router."""
+        out = self._call("SampleModel")
+        self.assertIn("Compiled: True", out)
 
     def test_role_flag_shows_permissions(self):
         """--role viewer should show permission filtering section."""
@@ -335,16 +341,21 @@ class TurboDRFExplainCommandTest(TestCase):
 class TurboDRFBenchmarkCommandTest(TestCase):
     """Tests for the turbodrf_benchmark management command.
 
-    Note: The benchmark command's DRF path creates a raw DRF serializer with
-    the model's list fields. Models whose list fields include FK/M2M traversals
-    (e.g. related__name) will fail on the DRF path because DRF ModelSerializer
-    doesn't accept __ field names in Meta.fields. Tests here use models with
-    simple-only list fields (RelatedModel, Category) to exercise the full path.
+    Every timed call is a real list request through the model's registered
+    viewset as ``--user`` (here a superuser, which the test app maps to the
+    'admin' role).
     """
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        get_user_model().objects.create_superuser("bench", "b@x.test", "x")
 
     def _call(self, *args, **kwargs):
         out = StringIO()
-        call_command("turbodrf_benchmark", *args, stdout=out, **kwargs)
+        call_command(
+            "turbodrf_benchmark", *args, "--user", "bench", stdout=out, **kwargs
+        )
         return out.getvalue()
 
     def test_nonexistent_model_raises(self):
@@ -388,11 +399,10 @@ class TurboDRFBenchmarkCommandTest(TestCase):
         self.assertIn("page_size=10", out)
         self.assertIn("Requests: 5", out)
 
-    def test_benchmark_non_compiled_model(self):
-        """Non-compiled models should still be benchmarkable (force-compiled)."""
+    def test_benchmark_compiled_by_default(self):
+        """No 'compiled' key means compiled, as in the router: both paths."""
         for i in range(3):
             RelatedModel.objects.create(name=f"Bench {i}")
-        # RelatedModel doesn't set compiled=True
         out = self._call("RelatedModel", "--requests", "5", "--warmup", "1")
         self.assertIn("Speedup", out)
 

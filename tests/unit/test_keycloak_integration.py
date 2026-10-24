@@ -455,9 +455,11 @@ class TestKeycloakMiddlewareDisabled(TestCase):
             self.assertEqual(middleware(request), "ok")
             self.assertNotIn("roles", user.__dict__)
 
+        # Deprecated no-op: it never writes roles onto the user, enabled or
+        # not (the installed role resolver covers every request).
         with override_settings(TURBODRF_KEYCLOAK_INTEGRATION=True):
             middleware(request)
-            self.assertEqual(user.__dict__["roles"], ["admin"])
+            self.assertNotIn("roles", user.__dict__)
 
 
 class TestKeycloakDocumentation(TestCase):
