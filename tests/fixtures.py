@@ -5,12 +5,27 @@ Provides common test data and helper functions.
 """
 
 from decimal import Decimal
+from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
 
 from tests.test_app.models import RelatedModel, SampleModel
 
 User = get_user_model()
+
+
+def router_apps(models):
+    """A stand-in for ``turbodrf.router.apps`` that lists only ``models``, for
+    a router that should see just those: ``mock.patch("turbodrf.router.apps",
+    router_apps([...]))``.
+
+    Don't patch ``turbodrf.router.apps.get_models`` itself: that object is
+    Django's app registry, and a model's relation tree built while it's
+    patched (after a test cleared the registry's cache) misses the reverse
+    relations of every model left out, for every later test in the process.
+    """
+    models = list(models)
+    return SimpleNamespace(get_models=lambda *args, **kwargs: list(models))
 
 
 class UserFixtures:
