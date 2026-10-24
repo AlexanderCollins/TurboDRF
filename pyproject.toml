@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,14 +10,14 @@ readme = "README.md"
 authors = [
     {name = "Alexander Collins"}
 ]
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
     "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -47,37 +47,36 @@ dev = [
     "pytest-cov>=2.0",
     "pytest-xdist>=3.0",
     "hypothesis>=6.0",
-    "black>=22.0",
-    "flake8>=4.0",
-    "isort>=5.0",
-    "mypy>=0.9",
     "msgspec>=0.18.0",
+    "Pillow>=9.0",  # the test app has an ImageField
+    # Lint tools are pinned so local runs and CI agree.
+    "black==26.10.1",
+    "flake8==7.4.1",
+    "isort==9.0.2",
 ]
 docs = [
     "sphinx>=5.0",
     "myst-parser>=2.0",
+    "sphinx-rtd-theme>=1.0",
 ]
 allauth = [
     "django-allauth>=0.57.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/alexandercollins/turbodrf"
-Documentation = "https://turbodrf.readthedocs.io"
-Repository = "https://github.com/alexandercollins/turbodrf.git"
-"Bug Tracker" = "https://github.com/alexandercollins/turbodrf/issues"
+Homepage = "https://turbodrf.com"
+Documentation = "https://turbodrf.com/docs/"
+Repository = "https://github.com/AlexanderCollins/TurboDRF"
+"Bug Tracker" = "https://github.com/AlexanderCollins/TurboDRF/issues"
 
 [tool.setuptools.packages.find]
 include = ["turbodrf*"]
 
-[tool.setuptools.package-data]
-turbodrf = ["templates/turbodrf/*.html"]
-
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"
-python_files = ["test_*.py", "*_test.py", "testing/python/*.py"]
+python_files = ["test_*.py", "*_test.py"]
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --ignore=performance_test.py -n auto --dist=loadfile"
+addopts = "-ra --strict-markers -n auto --dist=loadfile"
 
 [tool.black]
 line-length = 88

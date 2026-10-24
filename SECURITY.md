@@ -49,13 +49,18 @@ the subject so it surfaces ahead of routine triage.
 
 ## Supported versions
 
+Security fixes go into the latest minor release line only (currently
+0.6.x). Older lines don't get patches: upgrade, following the release notes
+in [`CHANGELOG.md`](CHANGELOG.md).
+
 | Version | Supported |
 |---------|-----------|
-| 0.6.x   | ✅ |
-| < 0.6   | ❌ — upgrade; see the 0.6.0 notes in [`CHANGELOG.md`](CHANGELOG.md) |
+| Latest minor (0.6.x today) | ✅ |
+| Older minors | ❌ — upgrade |
 
 ## Threat model
 
 See [`docs/security.md`](docs/security.md) for the documented threat
 model: what TurboDRF protects against, where consumer code retains
-responsibility, and the framework's defense-in-depth options, and its known limitations.
+responsibility, the framework's defense-in-depth options, and its known
+limitations.

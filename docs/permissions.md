@@ -2,11 +2,17 @@
 
 TurboDRF supports three permission modes.
 
-## 1. No permissions (development)
+## 1. No permissions (local development only)
 
 ```python
 TURBODRF_DISABLE_PERMISSIONS = True
 ```
+
+> **Never set this outside local development.** It removes every permission
+> check, authentication included: anonymous callers can create, update and
+> delete through every generated endpoint, and read any model that isn't
+> row-scoped. Only actions that declare their own `permission_classes` keep
+> a check.
 
 ## 2. Django default permissions
 
@@ -59,15 +65,27 @@ TURBODRF_ROLES = {
 
 Use the model's exact lowercase `app_label.model_name` and a concrete or
 many-to-many field name (`author`, not `author_id`). There are no wildcards.
-The router checks every string at startup and refuses to boot on a typo (see
-[Security](security.md#permission-string-typo-gate)).
+The router checks every string in `TURBODRF_ROLES` at startup and refuses to
+boot on a typo (see [Security](security.md#permission-string-typo-gate)). In
+database mode that startup check doesn't read the `RolePermission` table;
+each row is validated when it's saved instead (see
+[Database-backed permissions](#database-backed-permissions)).
 
 ### How field permissions work
 
-1. If ANY role defines an explicit field rule (e.g. `price.read`), that field requires explicit permission for ALL roles -- in static and database mode, and for anonymous callers
+1. Once any role has an explicit rule for a field (e.g. `price.read`), every other role loses that access unless it's granted the same rule -- in static and database mode, and for anonymous callers
 2. Fields listed in the model's `sensitive_fields` attribute are readable only through an explicit `.read` grant, as if a rule existed (reads only; add a `.write` rule to restrict writes)
 3. Fields without explicit rules fall back to model-level permission
 4. This means: to restrict `price` for viewers, you must add `price.read` to at least one role (like admin)
+
+### Roles that create need write on required fields
+
+A field a role can't write is left out of that role's requests. So if a
+required field (no default, not nullable) has a `.write` rule, every role
+with `.create` on the model needs that `.write` too, or its POSTs fail
+because the row can't be saved without the field. For example, an `editor`
+with `books.book.create` needs `books.book.price.write` once any role has a
+`price.write` rule.
 
 ### Anonymous callers and the `guest` role
 
@@ -89,7 +107,8 @@ Anonymous callers can't write through the generated CRUD routes, whatever
 
 ### Assigning roles to users
 
-TurboDRF reads `user.roles` -- a property that returns a list of role names:
+In static mode (the default), TurboDRF reads `user.roles` -- an attribute or
+property that returns a list of role names:
 
 ```python
 # From Django groups
@@ -105,6 +124,11 @@ class User(AbstractUser):
 ```
 
 Authenticated users with no roles get 403.
+
+In database mode, roles come from the `UserRole` table and `user.roles` is
+ignored. With the allauth or Keycloak integration on, TurboDRF installs a
+`roles` property for you when the user model doesn't define one (see
+[Integrations](integrations.md#how-the-integrations-resolve-roles)).
 
 ### Static vs database mode
 
@@ -131,8 +155,17 @@ from turbodrf.models import TurboDRFRole, RolePermission, UserRole
 
 role = TurboDRFRole.objects.create(name='editor')
 RolePermission.objects.create(role=role, app_label='books', model_name='book', action='read')
+RolePermission.objects.create(
+    role=role, app_label='books', model_name='book',
+    field_name='price', permission_type='read',
+)
 UserRole.objects.create(user=user, role=role)
 ```
+
+Saving a `RolePermission` validates it like a `TURBODRF_ROLES` string: the
+exact lowercase `app_label` and `model_name` of a registered model, and a
+real concrete or many-to-many field name. `bulk_create()` and QuerySet
+`update()` skip `save()`, so they skip this check.
 
 ### Caching
 

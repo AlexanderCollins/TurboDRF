@@ -90,7 +90,9 @@ Response format:
         "total_pages": 10,
         "total_items": 200
     },
-    "data": [...]
+    "data": [
+        {"id": 21, "title": "Django for APIs", "price": "39.00"}
+    ]
 }
 ```
 

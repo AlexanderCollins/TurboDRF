@@ -40,7 +40,7 @@ TurboDRF auto-detects the fastest available JSON library:
 
 | Library | Speed vs stdlib | Install |
 |---|---|---|
-| msgspec | ~7x faster | `pip install turbodrf[fast]` |
+| msgspec | ~7x faster | `pip install "turbodrf[fast]"` |
 | orjson | ~5x faster | `pip install orjson` |
 | stdlib json | baseline | built-in |
 

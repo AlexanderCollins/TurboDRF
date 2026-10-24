@@ -1,7 +1,8 @@
 # Migrating to the Predicate System
 
-If your project doesn't set `TURBODRF_TENANT_MODEL`, **nothing changes** —
-predicates are opt-in.
+A model's `tenant_field`, `owner_field` and `visibility` scope its rows
+whether or not `TURBODRF_TENANT_MODEL` is set. A project that declares none
+of them and doesn't set `TURBODRF_TENANT_MODEL` sees no change.
 
 For multi-tenant projects:
 
@@ -14,8 +15,8 @@ TURBODRF_TENANT_USER_FIELD = 'workspace'   # request.user.workspace → tenant
 ```
 
 `TURBODRF_TENANT_USER_FIELD` is the attribute on `request.user` that returns
-the user's tenant. A direct FK on User is typical; a `@property` or
-`workspaces.first()` works too.
+the user's tenant, as a model instance or an integer pk. A direct foreign
+key on the user model is the usual choice.
 
 ## 2. Declare tenancy on every model
 
@@ -36,14 +37,20 @@ return {'tenancy': 'shared'}
 # Power form (when sugar doesn't fit)
 return {
     'tenant_field': 'workspace',   # mandatory boundary — a setting, not a predicate
-    'visibility': [Either(Owner('a'), Owner('b'))],
+    'visibility': [Either(Owner('owner'), Members('collaborators'))],
 }
 ```
+
+Rows with several owner columns don't need the power form:
+`'owner_field': ['author', 'reviewer']`. The tenant model itself and the user
+model need their own rule; see
+[Exposing the tenant model and the user model](tenancy.md#exposing-the-tenant-model-and-the-user-model).
 
 ## 3. Verify
 
 ```bash
-python manage.py turbodrf_check          # see resolved predicates per model
+python manage.py check                    # builds the router: runs every startup check
+python manage.py turbodrf_check           # see resolved predicates per model
 pytest                                    # run your tests
 ```
 
@@ -53,10 +60,13 @@ pytest                                    # run your tests
   rejected).
 - A model with only `owner_field` fails the startup check: add a
   `tenant_field` (or `'tenancy': 'shared'`).
+- A `tenant_field` must be a path of forward foreign keys ending at the
+  tenant model, and `TURBODRF_TENANT_USER_FIELD` must be set; otherwise the
+  router refuses to start.
 - PATCHes that try to reassign the tenant FK now return **400**.
 - Detail/PATCH/DELETE return **404** (not 403) when a row is outside scope.
 - List endpoints return only scoped rows.
-- Lists fixtures relying on "all rows visible to everyone" need per-tenant
+- Test fixtures relying on "all rows visible to everyone" need per-tenant
   setup.
 - Custom `@action` routes that call `Model.objects.get(...)` directly bypass
   scoping — switch to `self.get_object()` or apply predicates manually.
