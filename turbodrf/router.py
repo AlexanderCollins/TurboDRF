@@ -146,7 +146,6 @@ def _validate_fields_and_lookup(model, config):
     doesn't have. Either one failed every request with a 500 instead: a
     ``fields`` typo only logged "Could not compile …" (and nothing at all with
     ``compiled: False``)."""
-    _validate_config_keys(model, config)
     names = _configured_field_names(model, config)
     bad = [
         name
@@ -276,6 +275,10 @@ class TurboDRFRouter(DefaultRouter):
         models = [m for m in apps.get_models() if issubclass(m, TurboDRFMixin)]
         configs = {model: model.turbodrf() for model in models}
         enabled = [m for m in models if configs[m].get("enabled", True)]
+        # A misspelt key drops what it meant to configure, on a disabled model
+        # (still a scoped FK / filter target) as much as an enabled one.
+        for model in models:
+            _validate_config_keys(model, configs[model])
 
         # ---------------------------------------------------------------
         # Resolve and register tenancy for EVERY model, enabled or not: a
