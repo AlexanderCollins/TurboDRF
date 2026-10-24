@@ -37,7 +37,7 @@
 </div>
 <script>
   const cards = {
-    home: ['Your Django models,<br><span>served as a secure API.</span>', 'Generated viewsets, serializers, routes and OpenAPI, with field-level roles and row-level tenancy on every request.'],
+    home: ['Generate a REST API<br><span>from your Django models</span>', 'With role-based field permissions and tenant isolation on every request.'],
     docs: ['TurboDRF <span>documentation</span>', 'Installation, configuration, permissions, tenancy, security and every setting.'],
   };
   const [t, s] = cards[new URLSearchParams(location.search).get('card') || 'home'];

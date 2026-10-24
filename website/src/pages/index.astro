@@ -14,12 +14,12 @@ const code = await modelTokens();
 const keys = { tenant: PIN.tenant.id, owner: PIN.owner.id, sensitive: PIN.sensitive.id };
 
 const features = [
-  { icon: 'icon-[lucide--layers]', title: 'The whole REST surface', body: 'List, detail, create, update and delete routes, plus OpenAPI, from the model. No view or URL files.' },
-  { icon: 'icon-[lucide--sliders-horizontal]', title: 'Search, filter, order', body: 'Lookups, ordering and ?fields= on every field the caller can read, nothing else.' },
-  { icon: 'icon-[lucide--git-merge]', title: 'Predicates when you need them', body: 'Owner, Members, Group, Either and Conditional for row rules beyond owner and tenant.' },
-  { icon: 'icon-[lucide--zap]', title: 'Lean list reads', body: 'Lists read values straight from the database, with joins for nested fields, in a fixed number of queries.' },
-  { icon: 'icon-[lucide--book-open]', title: 'OpenAPI per role', body: 'Swagger and ReDoc show each caller only the fields their role can read and write.' },
-  { icon: 'icon-[lucide--plug]', title: 'Roles from your identity provider', body: 'Map django-allauth groups or Keycloak / OIDC claims to roles. Sentry hooks included.' },
+  { icon: 'icon-[lucide--layers]', title: 'CRUD endpoints and OpenAPI docs', body: 'List, detail, create, update and delete endpoints, and Swagger and ReDoc pages. You don\'t write views or URL files.' },
+  { icon: 'icon-[lucide--sliders-horizontal]', title: 'Search, filtering and ordering', body: 'Filter, sort and pick fields with query parameters. Users can only filter and sort on fields they\'re allowed to read.' },
+  { icon: 'icon-[lucide--git-merge]', title: 'Custom row rules', body: 'Owner, Members, Group, Either and Conditional let you write rules like "visible to its team members" when owner and workspace aren\'t enough.' },
+  { icon: 'icon-[lucide--zap]', title: 'Fast list pages', body: 'List pages read values straight from the database, with joins for related fields. The number of queries stays the same as pages grow.' },
+  { icon: 'icon-[lucide--book-open]', title: 'API docs for each role', body: 'The Swagger and ReDoc pages show each user only the fields their role can read and write.' },
+  { icon: 'icon-[lucide--plug]', title: 'Roles from allauth or Keycloak', body: 'Turn django-allauth groups or Keycloak claims into TurboDRF roles. There\'s also a Sentry integration.' },
 ];
 
 const gates = [
@@ -31,9 +31,9 @@ const gates = [
 ];
 
 const clips = [
-  { name: 'model-to-api', title: 'A model becomes an API', label: 'The Project model is written, the router added, and a request returns JSON.' },
-  { name: 'roles', title: 'Same request, four callers', label: 'An admin, a manager and a viewer in one workspace and an admin in another request the same project.' },
-  { name: 'guardrails', title: 'Six refused requests', label: 'Six requests the demo API refused or trimmed, with the real responses.' },
+  { name: 'model-to-api', title: 'Creating the API from a model', label: 'The Project model is written, the router added, and a request returns JSON.' },
+  { name: 'roles', title: 'The same request from four users', label: 'An admin, a manager and a viewer in one workspace and an admin in another request the same project.' },
+  { name: 'guardrails', title: 'Six requests the API refused or trimmed', label: 'Six requests the demo API refused or trimmed, with the real responses.' },
 ];
 ---
 <Layout title="TurboDRF">
@@ -43,16 +43,16 @@ const clips = [
       <div class="grid lg:grid-cols-[1.25fr_1fr] gap-x-12 gap-y-6 items-end">
         <div>
           <a href="/changelog/" class="inline-flex items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--bg-2)]/60 px-3 py-1 text-xs ink-2 hover:border-[color-mix(in_oklab,var(--mint)_40%,transparent)] transition-colors" data-reveal>
-            <span class="badge badge-primary badge-xs font-mono">v{VERSION}</span> Django REST Framework, generated
+            <span class="badge badge-primary badge-xs font-mono">v{VERSION}</span> Release notes
           </a>
           <h1 class="font-display text-[2.4rem] leading-[1.04] sm:text-6xl lg:text-[4.2rem] mt-5" data-reveal style="--d:.06s">
-            Your Django models,<br /><span class="text-turbo">served as a secure API.</span>
+            Generate a REST API<br /><span class="text-turbo">from your Django models</span>
           </h1>
         </div>
         <div data-reveal style="--d:.14s">
-          <p class="text-lg ink-2 leading-relaxed">One mixin and one method on a model give you the full REST API. Every request is held to the caller's tenant, their own rows, and the fields their role may read.</p>
+          <p class="text-lg ink-2 leading-relaxed">Add a mixin and a <code class="font-mono text-[.9em] text-[var(--ink)]">turbodrf()</code> method to a model, and TurboDRF creates its endpoints, serializer and API docs. Each request only returns the rows and fields that user is allowed to see.</p>
           <div class="mt-6 flex flex-wrap items-center gap-3">
-            <a href="/docs/quickstart/" class="btn btn-primary rounded-full px-6 h-11">Quickstart <span class="icon-[lucide--arrow-right] size-4"></span></a>
+            <a href="/docs/quickstart/" class="btn btn-primary rounded-full px-6 h-11">Read the quickstart <span class="icon-[lucide--arrow-right] size-4"></span></a>
             <button type="button" class="btn rounded-full h-11 px-5 font-mono font-normal border-[var(--line)] bg-[var(--bg-2)]/70 hover:bg-[var(--bg-3)]" data-copy={INSTALL} aria-label="Copy the install command">
               <span class="mint">$</span> {INSTALL}
               <span class="icon-[lucide--copy] size-4 ink-3"></span><span class="sr-only" data-copy-label>Copy</span>
@@ -63,7 +63,7 @@ const clips = [
 
       <div class="mt-12 sm:mt-14" data-reveal="scale" style="--d:.22s">
         <div class="flex flex-wrap items-center justify-between gap-3 mb-3 text-sm ink-3">
-          <span class="flex items-center gap-2"><span class="icon-[lucide--mouse-pointer-click] size-4 mint"></span>A real model, and what it returned to five callers. Pick one.</span>
+          <span class="flex items-center gap-2"><span class="icon-[lucide--mouse-pointer-click] size-4 mint"></span>A model from the demo project, and what <code class="font-mono text-[.9em]">GET /api/projects/</code> returned to five users. Choose a user to see their result.</span>
           <span class="flex flex-wrap gap-x-4 gap-y-1 text-xs">
             {PINS.map((p) => (
               <span class="inline-flex items-center gap-1.5"><span class="pin pin-xs" style={`--pin:${p.color}`}>{p.id}</span>{p.title}</span>
@@ -89,14 +89,13 @@ const clips = [
   <section id="security" class="wrap py-20 sm:py-28 scroll-mt-20">
     <div class="grid lg:grid-cols-[1fr_auto] gap-6 items-end">
       <div class="max-w-2xl">
-        <p class="eyebrow" data-reveal>Permissions and tenancy</p>
-        <h2 class="font-display text-3xl sm:text-[2.6rem] mt-4 leading-[1.1]" data-reveal>What each caller can do.</h2>
-        <p class="mt-4 ink-2 text-lg leading-relaxed" data-reveal>Seven requests from five callers: 35 real responses from the same model. Pick any cell to see the exchange and the rule behind it.</p>
+        <h2 class="font-display text-3xl sm:text-[2.6rem] leading-[1.1]" data-reveal>What each user is allowed to do</h2>
+        <p class="mt-4 ink-2 text-lg leading-relaxed" data-reveal>Each of five users sent the same seven requests to the demo API. Every cell is the real response. Click a cell to see the request, the response and the rule that decided it.</p>
       </div>
       <div class="flex flex-wrap gap-2 text-xs" data-reveal>
-        <span class="cell-ok rounded-full px-3 py-1.5 inline-flex items-center gap-1.5"><span class="icon-[lucide--check] size-3.5"></span>allowed</span>
-        <span class="cell-partial rounded-full px-3 py-1.5 inline-flex items-center gap-1.5"><span class="icon-[lucide--circle-dashed] size-3.5"></span>allowed, a field held back</span>
-        <span class="cell-no rounded-full px-3 py-1.5 inline-flex items-center gap-1.5"><span class="icon-[lucide--x] size-3.5"></span>refused</span>
+        <span class="cell-ok rounded-full px-3 py-1.5 inline-flex items-center gap-1.5"><span class="icon-[lucide--check] size-3.5"></span>Allowed</span>
+        <span class="cell-partial rounded-full px-3 py-1.5 inline-flex items-center gap-1.5"><span class="icon-[lucide--circle-dashed] size-3.5"></span>Allowed, with a field left out</span>
+        <span class="cell-no rounded-full px-3 py-1.5 inline-flex items-center gap-1.5"><span class="icon-[lucide--x] size-3.5"></span>Refused</span>
       </div>
     </div>
     <div class="mt-10" data-reveal="scale">
@@ -108,8 +107,7 @@ const clips = [
   <section class="border-y line" style="background:color-mix(in oklab, var(--bg-2) 55%, var(--bg))">
     <div class="wrap py-20 sm:py-24">
       <div class="max-w-2xl">
-        <p class="eyebrow" data-reveal>On every request</p>
-        <h2 class="font-display text-3xl sm:text-[2.6rem] mt-4 leading-[1.1]" data-reveal>Which rows, then which fields.</h2>
+        <h2 class="font-display text-3xl sm:text-[2.6rem] leading-[1.1]" data-reveal>How TurboDRF handles a request</h2>
       </div>
       <div class="mt-12" data-reveal><RequestFlow /></div>
     </div>
@@ -118,9 +116,8 @@ const clips = [
   <!-- Startup gates -->
   <section class="wrap py-20 sm:py-24 grid lg:grid-cols-[1fr_1.2fr] gap-10 items-start">
     <div>
-      <p class="eyebrow" data-reveal>Fails closed</p>
-      <h2 class="font-display text-3xl sm:text-[2.6rem] mt-4 leading-[1.1]" data-reveal>Mistakes stop the app starting.</h2>
-      <p class="mt-4 ink-2 leading-relaxed" data-reveal>The router checks every model when it starts and refuses to serve an API with any of these:</p>
+      <h2 class="font-display text-3xl sm:text-[2.6rem] leading-[1.1]" data-reveal>Configuration mistakes stop the app from starting</h2>
+      <p class="mt-4 ink-2 leading-relaxed" data-reveal>When the app starts, TurboDRF checks every model. It won't start if it finds any of these:</p>
       <ul class="mt-5 space-y-2.5">
         {gates.map((g, i) => (
           <li class="flex gap-3 ink-2 text-[.95rem]" data-reveal style={`--d:${i * 0.05}s`}><span class="icon-[lucide--octagon-x] size-5 shrink-0 text-[var(--color-error)]"></span>{g}</li>
@@ -136,8 +133,7 @@ const clips = [
   <!-- Features -->
   <section id="features" class="border-y line scroll-mt-20" style="background:color-mix(in oklab, var(--bg-2) 55%, var(--bg))">
     <div class="wrap py-20 sm:py-24">
-      <p class="eyebrow" data-reveal>Also generated</p>
-      <h2 class="font-display text-3xl sm:text-[2.6rem] mt-4 leading-[1.1] max-w-2xl" data-reveal>Everything else a REST API needs.</h2>
+      <h2 class="font-display text-3xl sm:text-[2.6rem] leading-[1.1] max-w-2xl" data-reveal>Other features</h2>
       <div class="mt-10 grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {features.map((f, i) => (
           <div class="panel p-6 feature" data-reveal style={`--d:${(i % 3) * 0.06}s`}>
@@ -159,9 +155,8 @@ const clips = [
       </div>
     </div>
     <div class="order-1 lg:order-2">
-      <p class="eyebrow" data-reveal>For you and your coding agent</p>
-      <h2 class="font-display text-3xl sm:text-[2.6rem] mt-4 leading-[1.1]" data-reveal>Ships with an AGENTS.md.</h2>
-      <p class="mt-4 ink-2 text-lg leading-relaxed" data-reveal>Instructions written for AI coding agents: how to add a model, which tenancy key to pick, and what never to do. <code class="font-mono text-[.9em]">turbodrf_check</code> reports each model's tenancy so you can see what it'll enforce.</p>
+      <h2 class="font-display text-3xl sm:text-[2.6rem] leading-[1.1]" data-reveal>Instructions for AI coding agents</h2>
+      <p class="mt-4 ink-2 text-lg leading-relaxed" data-reveal>TurboDRF includes an AGENTS.md file that tells coding agents how to add a model, which tenancy option to choose, and which mistakes to avoid. Run <code class="font-mono text-[.9em]">turbodrf_check</code> to see each model's tenancy settings, as shown here.</p>
       <a href="/docs/agents/" class="btn btn-ghost rounded-full mt-6 px-0 hover:bg-transparent mint" data-reveal>Read AGENTS.md <span class="icon-[lucide--arrow-right] size-4"></span></a>
     </div>
   </section>
@@ -169,8 +164,8 @@ const clips = [
   <!-- Watch -->
   <section class="border-t line">
     <div class="wrap py-20 sm:py-24">
-      <p class="eyebrow" data-reveal>Watch it run</p>
-      <h2 class="font-display text-3xl sm:text-[2.6rem] mt-4 leading-[1.1]" data-reveal>Fifteen seconds each.</h2>
+      <h2 class="font-display text-3xl sm:text-[2.6rem] leading-[1.1]" data-reveal>Videos of the demo project</h2>
+      <p class="mt-4 ink-2 text-lg leading-relaxed max-w-2xl" data-reveal>Three short clips, about 15 seconds each, made from the demo project's code and its real responses.</p>
       <div class="mt-10 grid md:grid-cols-3 gap-5">
         {clips.map((c, i) => (
           <figure data-reveal style={`--d:${i * 0.06}s`}>
@@ -186,11 +181,11 @@ const clips = [
   <section class="wrap pb-8">
     <div class="carbon grain rounded-[2rem] px-8 py-16 sm:p-20 text-center border border-[var(--line)]">
       <div class="relative z-[1]">
-        <h2 class="font-display text-3xl sm:text-5xl leading-[1.08]" data-reveal>Start with <span class="text-turbo">one model.</span></h2>
-        <p class="mt-5 ink-2 text-lg max-w-xl mx-auto" data-reveal>Install it, add the mixin and the router, give your roles their permissions.</p>
+        <h2 class="font-display text-3xl sm:text-5xl leading-[1.08]" data-reveal>Try it on <span class="text-turbo">one of your models</span></h2>
+        <p class="mt-5 ink-2 text-lg max-w-xl mx-auto" data-reveal>Install the package, add the mixin to a model, add the router and give your roles their permissions. The quickstart covers each step.</p>
         <div class="mt-9 flex flex-wrap justify-center gap-3" data-reveal>
           <a href="/docs/quickstart/" class="btn btn-primary rounded-full px-6 h-12">Read the quickstart <span class="icon-[lucide--arrow-right] size-4"></span></a>
-          <a href={REPO_URL} target="_blank" rel="noopener" class="btn rounded-full px-6 h-12 border-[var(--line)] bg-[var(--bg-2)]/70 hover:bg-[var(--bg-3)]">Star on GitHub</a>
+          <a href={REPO_URL} target="_blank" rel="noopener" class="btn rounded-full px-6 h-12 border-[var(--line)] bg-[var(--bg-2)]/70 hover:bg-[var(--bg-3)]">View on GitHub</a>
         </div>
       </div>
     </div>

@@ -630,12 +630,12 @@ def clip_roles():
                 na = seg(t, T_NOTE, T_NOTE + 0.3) * fade
                 s = 0.7 + 0.3 * ease_back(seg(t, T_NOTE, T_NOTE + 0.45))
                 ny = y + 122 + len(lines) * lh + 14
-                chip(frame, x + 28, ny, "no budget: viewer lacks demo.project.budget.read", (253, 164, 175),
+                chip(frame, x + 28, ny, "budget left out: viewer doesn't have budget.read", (253, 164, 175),
                      (52, 22, 28), na, s, size=14, h=30, bold=False)
             else:
                 na = seg(t, T_NOTE, T_NOTE + 0.3) * fade
                 ny = y + 122 + len(lines) * lh + 14
-                text(d, x + 28, ny + 4, "budget shown: has budget.read", sans(18, 500), INK3, na)
+                text(d, x + 28, ny + 4, "budget included: role has budget.read", sans(18, 500), INK3, na)
 
         # Bob, in the other workspace.
         p = ease(seg(t, T_BOB, T_BOB + 0.6))
@@ -656,7 +656,7 @@ def clip_roles():
         ja = seg(t, T_BOB + 1.5, T_BOB + 1.9) * fade
         draw_runs(d, bx + 560, by + 106, compact_json(other["response"]), mono(22), mono(22).getlength("M"), ja)
         na = seg(t, T_BOB + 2.1, T_BOB + 2.5) * fade
-        text(d, bx + 360, by + 168, "Acme's rows don't exist for a Globex user, admin or not. A 404, not a 403, so ids reveal nothing.",
+        text(d, bx + 360, by + 168, "To a Globex user, Acme's projects don't exist, even for an admin. The answer is 404, not 403.",
              sans(21, 500), INK2, na)
         return frame
 
@@ -669,10 +669,10 @@ def clip_roles():
 def clip_guardrails():
     budget_resp = {k: CALLS["patch_manager_budget"]["response"][k] for k in ("id", "title", "budget")}
     rows = [
-        ("bob", CALLS["detail_other_tenant"], "Another workspace's project"),
-        ("alice", CALLS["create_cross_tenant_fk"], "Another workspace's client"),
+        ("bob", CALLS["detail_other_tenant"], "Read another workspace's project"),
+        ("alice", CALLS["create_cross_tenant_fk"], "Use another workspace's client"),
         ("victor", CALLS["patch_viewer"], "Edit without update rights"),
-        ("maya", dict(CALLS["patch_manager_budget"], response=budget_resp), "Write a field she can't write"),
+        ("maya", dict(CALLS["patch_manager_budget"], response=budget_resp), "Change a field she can't write"),
         ("victor", CALLS["fields_viewer"], "Ask for a hidden field"),
         ("maya", CALLS["delete_manager"], "Delete without delete rights"),
     ]
@@ -696,8 +696,8 @@ def clip_guardrails():
         d = ImageDraw.Draw(frame, "RGBA")
         fade = 1 - seg(t, END, END + FADE)
         a0 = ease(seg(t, 0, 0.5)) * fade
-        text(d, RX, 64, "Built to say no.", sans(48, 700), INK, a0)
-        text(d, RX, 132, "What the demo API answered when its users tried things they shouldn't.", sans(24, 500), INK2, a0)
+        text(d, RX, 64, "Requests the demo API refused or trimmed", sans(48, 700), INK, a0)
+        text(d, RX, 132, "Each row is a real request and the response the API sent back.", sans(24, 500), INK2, a0)
 
         for i, (name, call, title) in enumerate(rows):
             t0 = T0 + i * STEP

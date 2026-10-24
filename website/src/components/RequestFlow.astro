@@ -2,12 +2,12 @@
 // What happens to one list request, stage by stage. The rail fills and each
 // stage lights in turn when the diagram scrolls into view (data-draw).
 const stages = [
-  { icon: 'icon-[lucide--key-round]', title: 'Authenticated', body: 'Anonymous callers get nothing unless the model is public_access.' },
-  { icon: 'icon-[lucide--badge-check]', title: 'Role allows it', body: 'demo.project.read, from TURBODRF_ROLES or the database.' },
-  { icon: 'icon-[lucide--building-2]', title: 'Rows in scope', body: "The caller's tenant, then owner and predicate rules." },
-  { icon: 'icon-[lucide--columns-3]', title: 'Fields they can read', body: 'Sensitive fields need an explicit .read grant.' },
-  { icon: 'icon-[lucide--zap]', title: 'Compiled query', body: '.values() with joins: no model instances to build.' },
-  { icon: 'icon-[lucide--braces]', title: 'JSON', body: 'Rendered by msgspec or orjson when installed.' },
+  { icon: 'icon-[lucide--key-round]', title: '1. Is the user signed in?', body: "If not, the request is refused, unless the model is marked public_access." },
+  { icon: 'icon-[lucide--badge-check]', title: '2. Does their role allow it?', body: 'The role needs the permission, such as demo.project.read, from TURBODRF_ROLES or the database.' },
+  { icon: 'icon-[lucide--building-2]', title: '3. Keep only their rows', body: "Rows outside the user's workspace are removed, then the owner and other row rules apply." },
+  { icon: 'icon-[lucide--columns-3]', title: '4. Remove hidden fields', body: "Fields the role can't read are left out. Sensitive fields need an explicit .read permission." },
+  { icon: 'icon-[lucide--zap]', title: '5. Run the query', body: 'List pages read values directly with .values() and joins, without building model objects.' },
+  { icon: 'icon-[lucide--braces]', title: '6. Return JSON', body: 'Encoded with msgspec or orjson when either is installed.' },
 ];
 ---
 <ol class="flow" data-draw>

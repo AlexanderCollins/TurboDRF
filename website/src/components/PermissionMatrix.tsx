@@ -4,7 +4,7 @@ import { useState } from 'react';
 import JsonView from './JsonView';
 
 export interface MatrixCaller { id: string; role: string | null; workspace: string | null; color: string }
-export interface MatrixAction { key: string; label: string; request: string }
+export interface MatrixAction { key: string; label: string; request: string; highlight: string[] }
 export interface Cell {
   status: number;
   outcome: 'ok' | 'partial' | 'no';
@@ -23,11 +23,12 @@ const STATUS_TEXT: Record<number, string> = { 200: 'OK', 201: 'Created', 204: 'N
 export default function PermissionMatrix({ callers, actions, cells }: { callers: MatrixCaller[]; actions: MatrixAction[]; cells: Record<string, Record<string, Cell>> }) {
   const [sel, setSel] = useState<[string, string]>(['read_p2', 'victor']);
   const cell = cells[sel[0]][sel[1]];
+  const lit = actions.find((a) => a.key === sel[0])?.highlight ?? [];
   const caller = callers.find((c) => c.id === sel[1])!;
   const icon = { ok: 'icon-[lucide--check]', partial: 'icon-[lucide--circle-dashed]', no: 'icon-[lucide--x]' };
   return (
     <div className="space-y-4">
-      <p className="md:hidden text-xs ink-3 flex items-center gap-1.5"><span className="icon-[lucide--move-horizontal] size-3.5" />Swipe the table to see every caller.</p>
+      <p className="md:hidden text-xs ink-3 flex items-center gap-1.5"><span className="icon-[lucide--move-horizontal] size-3.5" />Swipe the table sideways to see every user.</p>
       <div className="panel overflow-x-auto">
         <table className="matrix w-full min-w-[46rem] border-collapse text-sm">
           <thead>
@@ -84,7 +85,7 @@ export default function PermissionMatrix({ callers, actions, cells }: { callers:
               <span className={`method method-${cell.method.toLowerCase()}`}>{cell.method}</span>
               <span className="break-all">{cell.url}</span>
             </div>
-            {cell.body && <JsonView value={cell.body} className="mt-3 ink-2" />}
+            {cell.body && <JsonView value={cell.body} highlight={lit} className="mt-3 ink-2" />}
             <p className="font-sans text-[.9rem] ink-2 leading-relaxed mt-5 flex gap-2.5 items-start">
               {cell.pin ? (
                 <span className="pin pin-sm shrink-0" style={{ '--pin': cell.pinColor } as React.CSSProperties}>{cell.pin}</span>
@@ -96,7 +97,7 @@ export default function PermissionMatrix({ callers, actions, cells }: { callers:
           </div>
           <div className="p-5 font-mono text-[.74rem] leading-[1.55] min-w-0 max-h-[22rem] overflow-auto">
             <span className={`http ${cell.status < 300 ? 'http-2' : 'http-4'}`}>{cell.status} {STATUS_TEXT[cell.status] ?? ''}</span>
-            {cell.response !== null ? <JsonView value={cell.response} highlight={['budget']} className="mt-3" /> : <div className="ink-3 mt-3">(empty body)</div>}
+            {cell.response !== null ? <JsonView value={cell.response} highlight={lit} className="mt-3" /> : <div className="ink-3 mt-3">(empty body)</div>}
           </div>
         </div>
       </div>
