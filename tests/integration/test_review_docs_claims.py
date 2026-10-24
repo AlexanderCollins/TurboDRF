@@ -409,16 +409,19 @@ class TestReadOnlyPredicatesOnWritableModel(_TwoTenants):
             ],
             {"title": "ordinary"},
         )
-        self.assertLess(r.status_code, 500)
+        self.assertEqual(r.status_code, 201, r.content)
 
     def test_either_owner_members_non_owner_write_is_not_500(self):
+        """Either runs every child's write check: the Members branch no
+        longer overrides Owner's "can't assign the row to another user"."""
         from turbodrf.predicates import Either, Members, Owner
 
         r = self._post(
             [Either(Owner("assigned_broker"), Members("assigned_broker"))],
             {"title": "x", "assigned_broker": self.manager_a.pk},
         )
-        self.assertLess(r.status_code, 500)
+        self.assertEqual(r.status_code, 400, r.content)
+        self.assertFalse(Deal.objects.filter(title="x").exists())
 
 
 # ---------------------------------------------------------------------------

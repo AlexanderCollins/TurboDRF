@@ -13,6 +13,7 @@ from django.conf import settings as django_settings
 from django.contrib.auth import get_user_model
 from django.db import models as dj_models
 from django.test import TestCase, override_settings
+from django.test.utils import isolate_apps
 from drf_yasg import openapi
 from rest_framework.test import APIRequestFactory
 
@@ -590,6 +591,9 @@ class TestTurboDRFMetadata(TestCase):
             self.assertEqual(len(status_info["choices"]), 2)
             self.assertEqual(status_info["choices"][0]["value"], "draft")
 
+    # Isolated: in the global app registry, this deliberately misconfigured
+    # model would make every later router build in the worker refuse to boot.
+    @isolate_apps("tests.test_app")
     @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
     def test_metadata_field_exception_returns_unknown(self):
         class BadFieldModel(TurboDRFMixin, dj_models.Model):
