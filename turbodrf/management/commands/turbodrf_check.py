@@ -10,7 +10,7 @@ from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist
 from django.core.management.base import BaseCommand
 
-from turbodrf.mixins import TurboDRFMixin
+from turbodrf.mixins import TurboDRFMixin, _resolve_configured_fields
 
 
 class Command(BaseCommand):
@@ -49,25 +49,16 @@ class Command(BaseCommand):
 
     def _check_model(self, model):
         config = model.turbodrf()
-        fields_config = config.get("fields", "__all__")
         # Same default as the router: compiled unless opted out.
-        compiled = config.get("compiled", True)
+        opted_in = config.get("compiled", True)
         public_access = config.get("public_access", False)
 
-        # Resolve list fields
-        if isinstance(fields_config, dict):
-            list_fields = fields_config.get("list", "__all__")
-        else:
-            list_fields = fields_config
-
-        if list_fields == "__all__":
-            list_fields = [
-                f.name for f in model._meta.get_fields() if hasattr(f, "column")
-            ]
+        # The list fields the API serves (the compiled path serves lists).
+        list_fields = _resolve_configured_fields(model, "list")
 
         # Check each field for eligibility
         issues = []
-        field_summary = {"db": 0, "fk": 0, "m2m": 0, "property": 0}
+        field_summary = {"db": 0, "fk": 0, "m2m": 0, "reverse": 0, "property": 0}
 
         for field_name in list_fields:
             if "__" not in field_name:
@@ -86,27 +77,45 @@ class Command(BaseCommand):
                     base_field = model._meta.get_field(parts[0])
                     if base_field.many_to_many:
                         field_summary["m2m"] += 1
-                    elif hasattr(base_field, "related_model"):
+                    elif getattr(base_field, "one_to_many", False):
+                        # A reverse FK (``book_set__title``): many rows.
+                        field_summary["reverse"] += 1
+                    elif getattr(base_field, "related_model", None) is not None:
                         field_summary["fk"] += 1
                     else:
                         issues.append(f"  '{field_name}' traverses non-relation field")
                 except FieldDoesNotExist:
                     issues.append(f"  '{parts[0]}' base field does not exist")
 
+        # Compiled exactly when the router compiles it: opted in, and the
+        # compiler can render every list field as the serializer path does.
+        blocker = None
+        if opted_in and not issues:
+            from turbodrf.compiler import compile_blocker
+
+            try:
+                blocker = compile_blocker(model)
+            except Exception as e:  # the router logs and falls back too
+                blocker = str(e)
+        compiled = opted_in and not issues and blocker is None
+
         # Output
         name = f"{model._meta.app_label}.{model.__name__}"
         status = self.style.SUCCESS("compiled") if compiled else "not compiled"
-        eligible = len(issues) == 0
 
-        if eligible:
-            symbol = self.style.SUCCESS("OK")
-        else:
+        if issues:
             symbol = self.style.ERROR("INELIGIBLE")
+        else:
+            symbol = self.style.SUCCESS("OK")
 
         self.stdout.write(f"\n{name} [{status}] {symbol}")
+        reverse = (
+            f", {field_summary['reverse']} reverse" if field_summary["reverse"] else ""
+        )
         self.stdout.write(
             f"  Fields: {field_summary['db']} DB, {field_summary['fk']} FK, "
-            f"{field_summary['m2m']} M2M, {field_summary['property']} property"
+            f"{field_summary['m2m']} M2M{reverse}, "
+            f"{field_summary['property']} property"
         )
         self.stdout.write(f"  Public access: {public_access}")
         unscoped = sorted(config.get("unscoped_properties") or ())
@@ -120,12 +129,6 @@ class Command(BaseCommand):
         # Tenancy / predicate report
         self._report_tenancy(model, config)
 
-        blocker = None
-        if compiled and not issues:
-            from turbodrf.compiler import compile_blocker
-
-            blocker = compile_blocker(model)
-
         if issues:
             self.stdout.write(self.style.ERROR("  Issues:"))
             for issue in issues:
@@ -136,11 +139,11 @@ class Command(BaseCommand):
                     f"  Served by the serializer path, not compiled: {blocker}"
                 )
             )
-        elif not compiled:
+        elif not opted_in:
             self.stdout.write(
                 self.style.WARNING(
                     "  Eligible for compiled path. "
-                    "Add 'compiled': True to turbodrf() config."
+                    "Remove 'compiled': False from the turbodrf() config."
                 )
             )
 
@@ -176,21 +179,35 @@ class Command(BaseCommand):
 
         self.stdout.write(f"  Tenant model: {tenant_model_setting}")
 
+        # The router's gate (TurboDRFRouter.discover_models): within-tenant
+        # predicates such as an 'owner_field' don't count.
+        if (
+            require
+            and tenant_field is None
+            and not autodetected
+            and not has_tenancy_declaration(config)
+        ):
+            owner_note = (
+                " An 'owner_field' alone scopes rows within a tenant, not "
+                "across tenants."
+                if config.get("owner_field")
+                else ""
+            )
+            self.stdout.write(
+                self.style.ERROR(
+                    "  Tenancy: NOT DECLARED — router will refuse to "
+                    "register this model. Add 'tenant_field', "
+                    "'visibility', or 'tenancy': 'shared'." + owner_note
+                )
+            )
+            return
+
         if config.get("tenancy") == "shared":
             self.stdout.write("  Tenancy: shared (no row scoping)")
             return
 
         if not tenant_field and not predicates:
-            if require and not has_tenancy_declaration(config):
-                self.stdout.write(
-                    self.style.ERROR(
-                        "  Tenancy: NOT DECLARED — router will refuse to "
-                        "register this model. Add 'tenant_field', "
-                        "'visibility', or 'tenancy': 'shared'."
-                    )
-                )
-            else:
-                self.stdout.write("  Tenancy: (none)")
+            self.stdout.write("  Tenancy: (none)")
             return
 
         if tenant_field:

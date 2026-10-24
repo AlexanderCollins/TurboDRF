@@ -515,39 +515,9 @@ class TestExplainAllFieldsPermitted(TestCase):
     """Test turbodrf_explain --role admin where all fields are permitted."""
 
     def test_all_fields_permitted_shows_message(self):
-        """Patch the snapshot to make all fields permitted."""
-        from turbodrf.backends import PermissionSnapshot
-
+        """admin reads every SampleModel list field, nested ones included."""
         out = StringIO()
-
-        # We need readable_fields to contain all plan output keys.
-        # Patch build_permission_snapshot_static to return a snapshot
-        # where readable_fields matches all plan fields.
-        def mock_build_snapshot(user, model):
-            return PermissionSnapshot(
-                allowed_actions={"read"},
-                readable_fields={
-                    "id",
-                    "title",
-                    "price",
-                    "related",
-                    "is_active",
-                    "related_name",
-                    "display_title",
-                },
-            )
-
-        with patch(
-            "turbodrf.backends.build_permission_snapshot_static",
-            side_effect=mock_build_snapshot,
-        ):
-            call_command(
-                "turbodrf_explain",
-                "CompiledSampleModel",
-                "--role",
-                "admin",
-                stdout=out,
-            )
+        call_command("turbodrf_explain", "SampleModel", "--role", "admin", stdout=out)
         output = out.getvalue()
         self.assertIn("All fields permitted", output)
 
@@ -578,18 +548,22 @@ class TestExplainCompileFailure(TestCase):
 
 
 class TestBenchmarkForceCompile(TestCase):
-    """Test benchmark force-compile and dict field config branches."""
+    """Benchmark runs real list requests as --user on both read paths."""
+
+    def setUp(self):
+        # A superuser has the test app's 'admin' role.
+        User.objects.create_superuser("bench_admin", "b@x.test", "x")
 
     def test_benchmark_with_non_compiled_model(self):
-        """Category is not compiled, so benchmark forces compile (lines 75-81).
-
-        Category has a simple field list (not dict), so DRF path works.
-        """
+        """Category is compiled by default (no 'compiled' key): both paths
+        are measured."""
         Category.objects.create(name="BenchCat", description="D")
         out = StringIO()
         call_command(
             "turbodrf_benchmark",
             "Category",
+            "--user",
+            "bench_admin",
             "--requests",
             "5",
             "--warmup",
@@ -609,6 +583,8 @@ class TestBenchmarkForceCompile(TestCase):
         call_command(
             "turbodrf_benchmark",
             "RelatedModel",
+            "--user",
+            "bench_admin",
             "--requests",
             "5",
             "--warmup",
@@ -620,26 +596,29 @@ class TestBenchmarkForceCompile(TestCase):
 
 
 class TestBenchmarkCompileFailure(TestCase):
-    """Test benchmark when compilation fails."""
+    """A model the router didn't compile: only the DRF path is measured (it
+    used to be force-compiled, measuring a path requests never take)."""
 
-    def test_compile_failure_raises(self):
+    def test_not_compiled_measures_drf_path_only(self):
+        User.objects.create_superuser("bench_admin2", "b@x.test", "x")
         RelatedModel.objects.create(name="R")
-        with patch(
-            "turbodrf.management.commands.turbodrf_benchmark.compile_model",
-            return_value=None,
-        ):
-            with self.assertRaises(CommandError) as ctx:
-                out = StringIO()
-                call_command(
-                    "turbodrf_benchmark",
-                    "RelatedModel",
-                    "--requests",
-                    "1",
-                    "--warmup",
-                    "0",
-                    stdout=out,
-                )
-            self.assertIn("Could not compile", str(ctx.exception))
+        out = StringIO()
+        with patch("turbodrf.compiler.is_compiled", return_value=False):
+            call_command(
+                "turbodrf_benchmark",
+                "RelatedModel",
+                "--user",
+                "bench_admin2",
+                "--requests",
+                "1",
+                "--warmup",
+                "0",
+                stdout=out,
+            )
+        output = out.getvalue()
+        self.assertIn("DRF", output)
+        self.assertIn("nothing to compare", output)
+        self.assertNotIn("Speedup", output)
 
 
 # ---------------------------------------------------------------------------
@@ -1052,34 +1031,14 @@ class TestSchemaGeneratorGetEndpoints(TestCase):
             info=openapi.Info(title="Test", default_version="v1"),
         )
 
-        # Mock super().get_endpoints to return known data
-        mock_callback_normal = MagicMock()
-        mock_callback_normal.cls = MagicMock()
-        mock_callback_normal.cls._basename = "sample"
-        mock_callback_normal.actions = {"get": "list"}
-        mock_callback_normal.name = "samplemodel-list"
+        # Real drf-yasg enumeration of the test urlconf: {path: (cls, ops)}.
+        endpoints = gen.get_endpoints(request=None)
 
-        mock_callback_no_slash = MagicMock()
-        mock_callback_no_slash.cls = MagicMock()
-        mock_callback_no_slash.cls._basename = "sample"
-        mock_callback_no_slash.actions = {"get": "list"}
-        mock_callback_no_slash.name = "samplemodel-list_no_slash"
-
-        fake_endpoints = [
-            ("/api/samplemodels/", "regex", "GET", mock_callback_normal),
-            ("/api/samplemodels", "regex", "GET", mock_callback_no_slash),
-        ]
-
-        with patch.object(
-            RoleBasedSchemaGenerator.__bases__[0],
-            "get_endpoints",
-            return_value=fake_endpoints,
-        ):
-            endpoints = gen.get_endpoints(request=None)
-
-        # _no_slash variant should be filtered out
-        self.assertEqual(len(endpoints), 1)
-        self.assertEqual(endpoints[0][0], "/api/samplemodels/")
+        self.assertIn("/api/samplemodels/", endpoints)
+        self.assertIn("/api/samplemodels/{id}/", endpoints)
+        # _no_slash variants are filtered out
+        self.assertNotIn("/api/samplemodels", endpoints)
+        self.assertNotIn("/api/samplemodels/{id}", endpoints)
 
 
 # ---------------------------------------------------------------------------
@@ -1463,74 +1422,33 @@ class TestMixinGetApiFieldsAll(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# mixins.py — line 160: get_field_type non-relational intermediate returns None
-# ---------------------------------------------------------------------------
-
-
-class TestMixinGetFieldTypeNonRelational(TestCase):
-    """Test get_field_type returns None for non-relational intermediate field."""
-
-    def test_non_relational_intermediate_returns_none(self):
-        """CharField with related_model=None causes get_field_type to return None."""
-        # title is CharField, which has related_model=None
-        # Traversing title__something: gets title field, field.related_model is None,
-        # so model becomes None, then next get_field fails.
-        # Actually looking at the code more carefully:
-
-        # for part in parts[:-1]:
-        #     field = model._meta.get_field(part)
-        #     if hasattr(field, "related_model"):
-        #         model = field.related_model   <-- None for CharField
-        #     else:
-        #         return None  <-- This is line 160
-
-        # CharField HAS related_model (set to None), so hasattr returns True,
-        # and model becomes None. Next iteration: None._meta.get_field() raises.
-        # So line 160 isn't reachable with normal Django fields.
-        # We need a field without related_model attr at all.
-
-        # Let's mock it
-        mock_field = MagicMock(spec=["name"])
-        # spec=["name"] means hasattr(mock_field, "related_model") returns False
-
-        with patch.object(SampleModel._meta, "get_field", return_value=mock_field):
-            result = SampleModel.get_field_type("mockfield__name")
-        self.assertIsNone(result)
-
-
-# ---------------------------------------------------------------------------
 # turbodrf_benchmark.py — line 112: dict fields config → list_fields from dict
 # ---------------------------------------------------------------------------
 
 
 class TestBenchmarkDictFieldsConfig(TestCase):
-    """Test benchmark _benchmark_drf with dict fields config (line 112).
+    """Benchmark a dict fields config with nested list fields (it used to
+    crash: the DRF path built a ModelSerializer with `__` paths)."""
 
-    The benchmark uses list fields from the config. When config is a dict,
-    it extracts the 'list' key. We can test this by calling _benchmark_drf
-    directly.
-    """
-
-    def test_drf_benchmark_with_dict_config_model(self):
-        """CompiledSampleModel has dict config — exercises line 112."""
-        from turbodrf.management.commands.turbodrf_benchmark import Command
-
+    def test_benchmark_with_dict_config_model(self):
+        User.objects.create_superuser("bench_admin3", "b@x.test", "x")
         rel = RelatedModel.objects.create(name="BenchR", description="D")
-        CompiledSampleModel.objects.create(
+        SampleModel.objects.create(
             title="BenchT", price=Decimal("1.00"), is_active=True, related=rel
         )
-
-        cmd = Command(stdout=StringIO())
-        # _benchmark_drf should handle the dict config
-        # But it will fail if list_fields contain __ notation (FK traversals).
-        # CompiledSampleModel list has: title, price, related__name, is_active, display_title
-        # The DRF serializer can't handle __ fields. But the benchmark code uses
-        # the raw list_fields in Meta.fields, which will crash.
-        # So this test actually exercises the path but expects the crash.
-        # Instead, let's call it on RelatedModel which has simple fields.
-        times = cmd._benchmark_drf(RelatedModel, 3, 1, 20)
-        self.assertEqual(len(times), 3)
-        self.assertTrue(all(t > 0 for t in times))
+        out = StringIO()
+        call_command(
+            "turbodrf_benchmark",
+            "SampleModel",
+            "--user",
+            "bench_admin3",
+            "--requests",
+            "3",
+            "--warmup",
+            "1",
+            stdout=out,
+        )
+        self.assertIn("Speedup", out.getvalue())
 
 
 # ---------------------------------------------------------------------------

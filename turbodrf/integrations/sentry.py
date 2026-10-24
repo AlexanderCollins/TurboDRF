@@ -2,10 +2,17 @@
 TurboDRF Sentry integration.
 
 Optional Sentry tagging and breadcrumb reporting for TurboDRF requests.
-When enabled, every request gets Sentry tags for tenant_id and user_roles
-plus the user's id (never the username or any other PII), and
-security-relevant events (FK injection rejected, tenant reassignment
-rejected, etc.) are recorded as breadcrumbs.
+When enabled, every Sentry event captured during a request by an
+authenticated user gets tags for tenant_id and user_roles, and its Sentry
+user is replaced by ``{"id": <pk>}`` (TurboDRF drops the username, email
+and IP address sentry-sdk's Django integration adds under
+``send_default_pii``). Anonymous requests' events, and the request data
+sentry-sdk attaches (headers, cookies, body), follow your ``sentry_sdk.init``
+settings. Security-relevant events (FK injection rejected, tenant
+reassignment rejected, etc.) are recorded as breadcrumbs.
+
+The user, roles and tenant are resolved only when an event is captured, so
+requests that capture nothing cost no extra queries.
 
 Off by default. To enable:
 
@@ -95,7 +102,9 @@ def set_request_context(request, scope=None):
     and tags are CLEARED, so nothing carries over from an earlier request
     that shared the scope.
 
-    Called automatically by SentryContextMiddleware. Safe to call manually.
+    SentryContextMiddleware doesn't call this (it describes the user only
+    when an event is captured, see _late_user_event_processor); call it
+    yourself to tag a scope eagerly, e.g. outside a request.
 
     Args:
         request: The request whose ``user`` to describe.
@@ -139,7 +148,9 @@ def _late_user_event_processor(request):
     Middleware runs before DRF authentication, so a token/JWT-authenticated
     user is still anonymous when SentryContextMiddleware runs. DRF writes the
     authenticated user back to the Django request, so reading
-    ``request.user`` when an event is captured picks it up.
+    ``request.user`` when an event is captured picks it up. Resolving the
+    user, roles and tenant here, not in the middleware, also means a request
+    that captures no event runs no queries for them.
     """
 
     def processor(event, hint):
@@ -221,11 +232,14 @@ def capture_security_message(message, **extra):
         return
 
     try:
-        with sdk.push_scope() as scope:
-            for k, v in extra.items():
-                scope.set_extra(k, v)
-            scope.set_tag("turbodrf.security_event", "true")
-            sdk.capture_message(message, level="warning")
+        # Scope kwargs apply to this event only (sentry-sdk 1.x and 2.x),
+        # without the deprecated push_scope().
+        sdk.capture_message(
+            message,
+            level="warning",
+            tags={"turbodrf.security_event": "true"},
+            extras=dict(extra),
+        )
     except Exception as e:
         logger.debug("Sentry capture_message failed: %s", e)
 
@@ -233,12 +247,15 @@ def capture_security_message(message, **extra):
 class SentryContextMiddleware:
     """Per-request Sentry tagging.
 
-    Install AFTER `AuthenticationMiddleware` so request.user is available.
+    Install AFTER `AuthenticationMiddleware`.
     No-op when sentry-sdk isn't installed or TURBODRF_ENABLE_SENTRY=False.
 
-    The request runs inside its own Sentry scope, so the user and tags set
-    here never carry over to another request. Users that DRF authenticates
-    later (token/JWT) are picked up when an event is captured.
+    The request runs inside its own Sentry scope, so nothing set for it
+    carries over to another request. The middleware itself reads nothing: an
+    event processor on that scope resolves the user (including one DRF
+    authenticates later by token/JWT), roles and tenant when an event is
+    captured, so requests without an event, such as health checks, run no
+    extra queries.
     """
 
     def __init__(self, get_response):
@@ -259,7 +276,6 @@ class SentryContextMiddleware:
                     logger.debug("Sentry request scope failed: %s", e)
                     scope = None
 
-            set_request_context(request, scope=scope)
             if scope is not None:
                 try:
                     scope.add_event_processor(_late_user_event_processor(request))
