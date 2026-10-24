@@ -1,11 +1,11 @@
 # TurboDRF
 
 [![PyPI Version](https://img.shields.io/pypi/v/turbodrf?label=pypi)](https://pypi.org/project/turbodrf/)
-[![Tests](https://img.shields.io/github/actions/workflow/status/alexandercollins/turbodrf/ci.yml?branch=main&label=tests)](https://github.com/alexandercollins/turbodrf/actions)
-[![Coverage](https://img.shields.io/badge/coverage-95.39%25-brightgreen)](https://github.com/alexandercollins/turbodrf)
+[![Tests](https://img.shields.io/github/actions/workflow/status/AlexanderCollins/TurboDRF/ci.yml?branch=main&label=tests)](https://github.com/AlexanderCollins/TurboDRF/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/AlexanderCollins/be56a59111eeae7a6d64b60d119d2bc9/raw/turbodrf-coverage.json)](https://github.com/AlexanderCollins/TurboDRF/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/)
 [![Django](https://img.shields.io/badge/django-4.2%20%7C%205.2%20%7C%206.0-darkgreen)](https://www.djangoproject.com/)
-[![License](https://img.shields.io/badge/license-MIT-purple)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-purple)](https://github.com/AlexanderCollins/TurboDRF/blob/main/LICENSE)
 
 **Dead simple Django REST Framework API generator with role-based permissions.**
 
@@ -16,57 +16,86 @@ Turn your Django models into fully-featured REST APIs with a mixin and a method.
 ```bash
 pip install turbodrf
 
-# Optional: faster JSON rendering (7x faster than stdlib)
-pip install turbodrf[fast]
+# Optional: faster JSON rendering with msgspec
+pip install "turbodrf[fast]"
 ```
 
-## Quick Start
+## Quick start
 
-**1. Add to settings:**
+**1. Settings.** Add the apps, and roles that grant each action:
 
 ```python
 INSTALLED_APPS = [
+    # ... Django's default apps ...
     'rest_framework',
+    'drf_yasg',      # serves the Swagger / ReDoc pages
     'turbodrf',
+    'shop',
 ]
+
+TURBODRF_ROLES = {
+    'editor': [
+        'shop.author.read', 'shop.author.create', 'shop.author.update', 'shop.author.delete',
+        'shop.book.read', 'shop.book.create', 'shop.book.update', 'shop.book.delete',
+    ],
+    'viewer': ['shop.author.read', 'shop.book.read'],
+}
 ```
 
-**2. Add the mixin to your model:**
+**2. Models.** Add the mixin and a `turbodrf()` classmethod:
 
 ```python
 from django.db import models
 from turbodrf.mixins import TurboDRFMixin
+
+class Author(models.Model, TurboDRFMixin):
+    name = models.CharField(max_length=100)
+    email = models.EmailField()
+
+    @classmethod
+    def turbodrf(cls):
+        return {'fields': ['id', 'name', 'email']}
 
 class Book(models.Model, TurboDRFMixin):
     title = models.CharField(max_length=200)
     author = models.ForeignKey(Author, on_delete=models.CASCADE)
     price = models.DecimalField(max_digits=10, decimal_places=2)
 
-    searchable_fields = ['title']
-
     @classmethod
     def turbodrf(cls):
         return {
             'fields': {
-                'list': ['title', 'author__name', 'price'],
-                'detail': ['title', 'author__name', 'author__email', 'price']
-            }
+                'list': ['id', 'title', 'author', 'author__name', 'price'],
+                'detail': ['id', 'title', 'author', 'author__name', 'author__email', 'price'],
+            },
+            'searchable_fields': ['title'],
         }
 ```
 
-**3. Add the router:**
+**3. Give users roles.** TurboDRF reads `user.roles`, a list of role names.
+For example, use the names of the user's Django groups, in your app's
+`AppConfig.ready()`:
 
 ```python
-from turbodrf.router import TurboDRFRouter
+from django.contrib.auth.models import User
 
-router = TurboDRFRouter()
+User.add_to_class('roles', property(lambda user: [g.name for g in user.groups.all()]))
+```
+
+Other options: [Assigning roles to users](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/permissions.md#assigning-roles-to-users).
+
+**4. URLs.**
+
+```python
+from django.urls import include, path
 
 urlpatterns = [
-    path('api/', include(router.urls)),
+    path('api/', include('turbodrf.urls')),
 ]
 ```
 
-**Done.** You now have a full REST API with search, filtering, pagination, and field selection:
+Run `makemigrations` and `migrate`, put a user in the `editor` group, and
+the API is up:
 
 ```
 GET    /api/books/                          # List
@@ -79,17 +108,28 @@ GET    /api/books/?price__lt=20             # Filter
 GET    /api/books/?fields=title,price       # Select fields
 ```
 
+A user with no role gets a 403 on every endpoint, and a nested field such as
+`author__name` needs read on the related model (`shop.author.read`). Roles
+don't scope rows: every editor sees every book until the model declares an
+`owner_field` or `tenant_field` (see [Tenancy](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/tenancy.md)).
+
+The [quick start guide](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/quickstart.md) runs these steps in a new
+project, with users and requests.
+
 ## Documentation
 
-- [Configuration](docs/configuration.md) -- all `turbodrf()` options: field selection, nested & computed fields, custom endpoints (`actions`), read-only endpoints, method allow-lists, `full_clean` validation
-- [Permissions](docs/permissions.md) -- role-based, field-level, and Django default permissions
-- [Tenancy & row-level access](docs/tenancy.md) -- predicates, multi-tenancy, FK injection defense
-- [Performance](docs/performance.md) -- compiled read path, fast JSON rendering, benchmarking
-- [Filtering & Search](docs/filtering.md) -- filtering, search, ordering, OR queries
-- [Integrations](docs/integrations.md) -- allauth, Keycloak, drf-api-tracking, Sentry (all experimental)
-- [Security](docs/security.md) -- sensitive fields, secure defaults, error responses
-- [Management Commands](docs/commands.md) -- turbodrf_check, turbodrf_benchmark, turbodrf_explain
-- **[Settings Reference](docs/settings_reference.md)** -- every TURBODRF_* setting in one place
+Full docs: <https://turbodrf.com/docs/>
+
+- [Installation](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/installation.md) -- requirements, extras, checking the configuration
+- [Configuration](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/configuration.md) -- all `turbodrf()` options: field selection, nested & computed fields, custom endpoints (`actions`), read-only endpoints, method allow-lists, `full_clean` validation
+- [Permissions](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/permissions.md) -- role-based, field-level, and Django default permissions
+- [Tenancy & row-level access](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/tenancy.md) -- predicates, multi-tenancy, FK injection defense
+- [Performance](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/performance.md) -- compiled read path, fast JSON rendering, benchmarking
+- [Filtering & Search](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/filtering.md) -- filtering, search, ordering, OR queries
+- [Integrations](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/integrations.md) -- allauth, Keycloak, drf-api-tracking, Sentry (all experimental)
+- [Security](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/security.md) -- sensitive fields, secure defaults, error responses
+- [Management Commands](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/commands.md) -- turbodrf_check, turbodrf_benchmark, turbodrf_explain
+- **[Settings Reference](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/settings_reference.md)** -- every TURBODRF_* setting in one place
 
 ## Permissions and access control
 
@@ -103,7 +143,7 @@ that all apply to every request (AND'd together):
 | Which fields can this user read or write? | **Field-level permissions** | Per-field rules `<app>.<model>.<field>.read` / `.write` in `TURBODRF_ROLES`. Hidden fields are stripped from responses, search, ordering, filters, and OPTIONS metadata. |
 | Are FK targets the user provides actually theirs? | **Write validation** | On every create/update, FK and M2M values in the request body are validated against the related model's tenant boundary and predicate stack, on every model (shared ones included). Cross-tenant or invisible targets return 400. |
 
-Field rules bind anonymous callers too: `public_access: True` gives them model-level read, and a field that any role has a read rule for needs a grant from a `guest` role. See [docs/permissions.md](docs/permissions.md#anonymous-callers-and-the-guest-role).
+Field rules bind anonymous callers too: `public_access: True` gives them model-level read, and a field that any role has a read rule for needs a grant from a `guest` role. See [Permissions](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/permissions.md#anonymous-callers-and-the-guest-role).
 
 ### How it actually works (concrete walk-through)
 
@@ -111,6 +151,7 @@ A multi-tenant SaaS has two workspaces (ABC and XYZ) and three roles: `member`, 
 
 ```python
 class Project(models.Model, TurboDRFMixin):
+    title = models.CharField(max_length=200)
     workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
     owner = models.ForeignKey(User, on_delete=models.CASCADE)
 
@@ -147,7 +188,7 @@ Now a request `GET /api/projects/` from Alice (member at ABC) goes through:
 If Alice tries cross-tenant tricks:
 - `GET /api/projects/<XYZ_project_id>/` → 404 (not 403, no existence leak)
 - `PATCH /api/projects/<her_project_id>/ {"workspace": <XYZ>}` → 400 (tenant reassignment rejected)
-- `POST /api/comments/ {"document": <XYZ_bank_id>}` → 400 (FK injection rejected)
+- `POST /api/tasks/ {"project": <XYZ_project_id>}` → 400 (FK injection: she can't reference another tenant's project)
 
 If a manager (with bypass) at ABC asks for `/api/projects/`:
 
@@ -157,10 +198,6 @@ WHERE project.workspace_id = <ABC's workspace id>
 ```
 
 Manager sees all ABC projects, but still can't see XYZ — the tenant boundary is **mandatory** and applied separately from the predicate algebra (it's a setting, not a predicate). This rules out an entire class of compositional bugs where bypass roles could OR-compose their way past the tenant wall.
-
-### Performance
-
-Tenant + owner predicates add **~0 measurable latency** vs. the unscoped baseline (predicates compile to a single Q AND'd onto the queryset; the WHERE clause runs at the DB layer with index hits). FK injection check on writes adds ~one query per scoped FK / M2M field in the request body. Both are negligible for typical workloads. See [docs/performance.md](docs/performance.md) for benchmarking the compiled vs DRF read paths.
 
 ### Quick recipes
 
@@ -177,12 +214,15 @@ Tenant + owner predicates add **~0 measurable latency** vs. the unscoped baselin
 # M2M membership (Slack channels, Linear projects)
 {'tenant_field': 'workspace', 'visibility': [Members('participants')]}
 
-# Power-form composition (when sugar doesn't fit)
+# Several owner columns (a match on any of them shows the row)
+{'tenant_field': 'workspace', 'owner_field': ['author', 'reviewer']}
+
+# Power-form composition: shared_with users can edit the row, not reassign its owner
 {'tenant_field': 'workspace', 'visibility': [Either(Owner('owner'), Members('shared_with'))]}
 ```
 
-See [docs/tenancy.md](docs/tenancy.md) for the full predicate vocabulary, hard-fail-at-startup behavior, and 404-vs-403 semantics.
+See [Tenancy](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/tenancy.md) for the full predicate vocabulary, hard-fail-at-startup behavior, and 404-vs-403 semantics.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](https://github.com/AlexanderCollins/TurboDRF/blob/main/LICENSE) for details.

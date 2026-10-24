@@ -12,7 +12,7 @@ that's not strictly required is gated and off by default.
 | `TURBODRF_ROLES` | placeholder example | Role → permissions mapping (static mode). If unset, TurboDRF falls back to the example in `turbodrf/settings.py` (`super_admin` / `editor` / `viewer` over `app_name.model_name`), which matches no real model and so grants nothing. Define your own. | [permissions.md](permissions.md) |
 | `TURBODRF_PERMISSION_MODE` | **`"static"`** | `"static"` (use `TURBODRF_ROLES` dict) or `"database"` (use `TurboDRFRole` model) | [permissions.md](permissions.md#static-vs-database-mode) |
 | `TURBODRF_USE_DEFAULT_PERMISSIONS` | **`False`** | Use Django's built-in model permissions instead of TurboDRF roles | [permissions.md](permissions.md) |
-| `TURBODRF_DISABLE_PERMISSIONS` | **`False`** | Disable all permission checks. **Don't use in production.** | — |
+| `TURBODRF_DISABLE_PERMISSIONS` | **`False`** | Disable all permission checks, authentication included: anonymous callers can create, update and delete through the generated endpoints. **Local development only.** | [permissions.md](permissions.md#1-no-permissions-local-development-only) |
 | `TURBODRF_PERMISSION_CACHE_TIMEOUT` | **`300`** | Permission snapshot cache TTL in seconds. Role changes already take effect on the next request; the TTL only bounds how long snapshots stay stale after a bulk `RolePermission` QuerySet `update()` / `delete()` (or call `invalidate_user_permissions()`). | [permissions.md](permissions.md#caching) |
 | `TURBODRF_PERMISSION_CACHE_PREFIX` | **`"turbodrf_perm"`** | Prefix for cache keys | — |
 
@@ -26,21 +26,22 @@ that's not strictly required is gated and off by default.
 
 ## Row-level access control (predicates)
 
-These activate the row-scoping system. When `TURBODRF_TENANT_MODEL` is unset
-(default), the predicate system stays dormant — existing TurboDRF apps
-upgrade with zero behavior change.
+A model's `tenant_field`, `owner_field` and `visibility` are enforced whether
+or not `TURBODRF_TENANT_MODEL` is set. Setting it turns on the startup checks
+that every model declares its tenancy and that each `tenant_field` ends at the
+tenant model, plus (opt-in) auto-detection.
 
 | Setting | Default | Purpose | Details |
 |---|---|---|---|
-| `TURBODRF_TENANT_MODEL` | **`None`** | Tenant model (e.g. `'accounts.Workspace'`). When set, every TurboDRF model must declare its tenancy or the router refuses to register it. | [tenancy.md](tenancy.md) |
-| `TURBODRF_TENANT_USER_FIELD` | **`None`** | Attribute on `request.user` that resolves to the tenant (e.g. `'workspace'` so `request.user.workspace` returns the tenant). It must return a model instance or an integer pk; anything else counts as no tenant, and tenant-scoped queries match nothing. Required when `TURBODRF_TENANT_MODEL` is set. | [tenancy.md](tenancy.md#settings) |
-| `TURBODRF_REQUIRE_TENANCY` | **`True`** | Hard-fail at startup if a model has no tenancy decision (`tenant_field`, a non-empty `visibility`, or `'tenancy': 'shared'`; `owner_field` alone doesn't count). Only triggers when `TURBODRF_TENANT_MODEL` is also set. | [tenancy.md](tenancy.md#hard-fail-at-startup) |
-| `TURBODRF_AUTODETECT_TENANT` | **`False`** | Walk the FK graph at startup to find the shortest unique path to the tenant model. Off by default — explicit declarations are easier to reason about. | [tenancy.md](tenancy.md) |
+| `TURBODRF_TENANT_MODEL` | **`None`** | Tenant model (e.g. `'accounts.Workspace'`). When set, every TurboDRF model must declare its tenancy and each `tenant_field` must end at this model, or the router refuses to start. | [tenancy.md](tenancy.md) |
+| `TURBODRF_TENANT_USER_FIELD` | **`None`** | Attribute on `request.user` that resolves to the tenant (e.g. `'workspace'` so `request.user.workspace` returns the tenant). It must return a model instance or an integer pk; anything else counts as no tenant, and tenant-scoped queries match nothing. Required whenever a model declares a `tenant_field`: the router refuses to start without it. | [tenancy.md](tenancy.md#settings) |
+| `TURBODRF_REQUIRE_TENANCY` | **`True`** | Hard-fail at startup if a model has no tenancy decision (`tenant_field`, a non-empty `visibility`, or `'tenancy': 'shared'`; `owner_field` alone doesn't count, nor does a `visibility` made only of `Owner`-with-bypass and `Conditional` predicates). Only triggers when `TURBODRF_TENANT_MODEL` is also set. | [tenancy.md](tenancy.md#hard-fail-at-startup) |
+| `TURBODRF_AUTODETECT_TENANT` | **`False`** | Walk the FK graph at startup to find the shortest unique path to the tenant model (needs `TURBODRF_TENANT_MODEL`). Off by default — explicit declarations are easier to reason about. | [tenancy.md](tenancy.md) |
 | `TURBODRF_ALLOW_UNSAFE_COMPILED_M2M` | **`False`** | Bypass the startup gate that blocks compiled-path M2M nesting into predicate-bearing targets. Logs a loud warning per offending model. Request-time scoping of the M2M still applies. Intended for migrations only. | [security.md](security.md#compiled-m2m-target-bypass) |
 | `TURBODRF_ALLOW_UNSAFE_COMPILED_FK` | **`False`** | Bypass the startup gate that blocks compiled-path FK annotations whose JOIN chain crosses a predicate-bearing target. Logs a loud warning per offending pair. Request-time scoping still renders out-of-scope values as `null`. Intended for migrations only. | [security.md](security.md#compiled-fk-annotation-bypass) |
 | `TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS` | **`False`** | Bypass the startup gate that blocks `searchable_fields` paths whose JOIN chain crosses a predicate-bearing target. Logs a loud warning per offending entry. Request-time scoping of the search still applies. Intended for migrations only. | [security.md](security.md#search-field-target-bypass) |
 | `TURBODRF_ALLOW_UNSAFE_FILTER_TRAVERSAL` | **`False`** | Disable the request-time scoping that wraps `__`-path filter URLs with target-model predicate / tenant Q's. When `True`, `?fk__field=...` JOINs without applying the target's own visibility rules. Migrations only; not recommended. | [security.md](security.md#url-driven-join-scoping) |
-| `TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE` | **`False`** | Bypass the startup gate that blocks `Custom` predicates without an explicit `write_validator`. Without one, `Either(Owner, Custom)` silently allows writes that bypass `Owner`'s checks. Migrations only; not recommended. | [security.md](security.md#custom-predicate-write-safety) |
+| `TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE` | **`False`** | Bypass the startup gate that blocks `Custom` predicates without an explicit `write_validator` (every `Custom` must state its write rule). Migrations only; not recommended. | [security.md](security.md#custom-predicate-write-safety) |
 | `TURBODRF_ALLOW_UNKNOWN_PERMISSIONS` | **`False`** | Skip the startup typo check for permission strings whose `app.model` isn't yet registered (plugin systems, lazy apps). Permissions on registered models are still checked. | [security.md](security.md#permission-string-typo-gate) |
 | `TURBODRF_LOG_UNRESTRICTED_CUSTOM` | **`True`** | When `True` (default), log a warning whenever a `Custom` predicate's `q_func` returns an empty `Q`. Tenant isolation still holds (separate layer), but an empty `Q` usually indicates a developer footgun (`return Q()` as a base case silently disables the within-tenant rule). | — |
 
@@ -73,13 +74,13 @@ effect; setting it does nothing.
 
 | Setting | Default | Purpose | Details |
 |---|---|---|---|
-| `TURBODRF_KEYCLOAK_INTEGRATION` | **`False`** | Enable Keycloak / OIDC role mapping. When `False`, `KeycloakRoleMiddleware` is a no-op. When `True` at startup, TurboDRF also installs a `roles` resolver on the user model so token/JWT users get roles (unless the model already defines `roles`). | [integrations.md#keycloak](integrations.md#keycloak--openid-connect) |
+| `TURBODRF_KEYCLOAK_INTEGRATION` | **`False`** | Enable Keycloak / OIDC role mapping. When `True` at startup, TurboDRF installs a `roles` resolver on the user model (unless the model already defines `roles`), which covers every authentication method. `KeycloakRoleMiddleware` is deprecated and does nothing. | [integrations.md#keycloak](integrations.md#keycloak--openid-connect) |
 | `TURBODRF_KEYCLOAK_PROVIDER` | **`"keycloak"`** | social-auth provider name whose stored data is read for roles. Other linked providers (GitHub, Google, ...) are ignored. | [integrations.md](integrations.md#where-the-roles-come-from) |
 | `TURBODRF_KEYCLOAK_ROLE_CLAIM` | **`"roles"`** | Dot-separated path to the roles claim in the claims social-auth stored at login (`extra_data`), e.g. `"realm_access.roles"` | [integrations.md](integrations.md) |
 | `TURBODRF_KEYCLOAK_ROLE_MAPPING` | **`{}`** | Keycloak role → TurboDRF role mapping. Acts as an allow-list when `TURBODRF_KEYCLOAK_STRICT_ROLES=True`. | [integrations.md](integrations.md) |
 | `TURBODRF_KEYCLOAK_STRICT_ROLES` | **`True`** | When True (default) and a mapping is configured, unmapped Keycloak roles are dropped. Set False for legacy passthrough. | [integrations.md](integrations.md#strict-mode-default) |
 | `TURBODRF_KEYCLOAK_MAX_ROLE_AGE` | **`None`** | Seconds. Roles are captured at login and otherwise last for the session; when set, they're dropped once the stored `auth_time` is older than this (or missing). | [integrations.md](integrations.md#where-the-roles-come-from) |
-| `TURBODRF_ALLAUTH_INTEGRATION` | **`False`** | Enable django-allauth Group → role mapping. When `False`, `AllAuthRoleMiddleware` is a no-op. When `True` at startup, TurboDRF also installs a `roles` resolver on the user model so token/JWT users get roles (unless the model already defines `roles`). | [integrations.md#django-allauth](integrations.md#django-allauth) |
+| `TURBODRF_ALLAUTH_INTEGRATION` | **`False`** | Enable django-allauth Group → role mapping. When `True` at startup, TurboDRF installs a `roles` resolver on the user model (unless the model already defines `roles`), which covers every authentication method. `AllAuthRoleMiddleware` is deprecated and does nothing. | [integrations.md#django-allauth](integrations.md#django-allauth) |
 | `TURBODRF_ALLAUTH_ROLE_MAPPING` | **`{}`** | Django Group name → TurboDRF role. Acts as an allow-list when `TURBODRF_ALLAUTH_STRICT_ROLES=True`. | [integrations.md](integrations.md) |
 | `TURBODRF_ALLAUTH_STRICT_ROLES` | **`True`** | When True (default) and a mapping is configured, groups not in the mapping give no role (and are logged). Set False for legacy passthrough of unmapped group names. | [integrations.md](integrations.md#strict-group-mapping-default) |
 | `TURBODRF_ENABLE_TRACKING` | **`False`** | Enable drf-api-tracking request/response logging. Values of `TURBODRF_SENSITIVE_FIELDS` keys are masked in the logs. | [integrations.md#drf-api-tracking](integrations.md#drf-api-tracking) |
@@ -89,18 +90,19 @@ effect; setting it does nothing.
 ## Per-model configuration (in `turbodrf()` classmethod)
 
 These are model-level toggles, not project settings. Documented here for
-completeness.
+completeness. **Keys that aren't listed here are ignored without an error**,
+so a misspelled key (`'owner_feild'`) silently drops its setting.
 
 | Key | Default | Purpose | Details |
 |---|---|---|---|
-| `'enabled'` | **`True`** | Whether to register the model as an API endpoint | [configuration.md](configuration.md) |
+| `'enabled'` | **`True`** | Whether to register the model as an API endpoint. A disabled model's tenancy is still registered (and checked). | [configuration.md](configuration.md) |
 | `'compiled'` | **`True`** | Use the compiled `.values()` read path (faster than DRF serializer). Set to `False` to fall back to the DRF path if needed. | [performance.md](performance.md) |
 | `'public_access'` | **`False`** | Allow unauthenticated GET / HEAD / OPTIONS. Anonymous callers get model-level read; a field with a read rule on any role needs a `guest` role grant. | [permissions.md](permissions.md#anonymous-callers-and-the-guest-role) |
-| `'fields'` | **`'__all__'`** | Fields to expose. List or `{'list': [...], 'detail': [...]}` dict (a dict with only one key uses it for both views). May include model `@property` / computed read fields (read-only on both read paths). | [configuration.md](configuration.md) |
+| `'fields'` | **`'__all__'`** | Fields to expose; always set it explicitly. List or `{'list': [...], 'detail': [...]}` dict (a dict with only one key uses it for both views). May include model `@property` / computed read fields (read-only on both read paths). An entry that names nothing on the model raises at startup. | [configuration.md](configuration.md) |
 | `'property_relations'` | `{}` | `{property: [relation path, ...]}`: the related objects a `@property` reads, loaded within the caller's scope. Properties run in a sandbox and can't query. | [configuration.md](configuration.md#the-property-sandbox) |
 | `'unscoped_properties'` | `[]` | Properties that run outside the sandbox, on the full instance with unrestricted queries. | [configuration.md](configuration.md#the-property-sandbox) |
-| `'endpoint'` | model name | Custom URL endpoint name | [configuration.md](configuration.md) |
-| `'lookup_field'` | `'pk'` | URL lookup field (e.g. `'slug'`) | [configuration.md](configuration.md) |
+| `'endpoint'` | model name + `s` | Custom URL endpoint name. The default is the lowercase model name plus `s`, not a real plural (`categorys`). | [configuration.md](configuration.md) |
+| `'lookup_field'` | `'pk'` | URL lookup field (e.g. `'slug'`). Must be a field of the model; a typo raises at startup. | [configuration.md](configuration.md) |
 | `'searchable_fields'` | — | Field names / `__`-paths enabled for `?search=` (gated by field-level read perms, validated at startup). Also settable as a class attribute. | [configuration.md](configuration.md#searchable-fields) |
 | `'read_only'` | **`False`** | Serve `list` / `retrieve` only; CRUD writes (POST/PUT/PATCH/DELETE) return `405`. Declared `actions` keep their own methods. | [configuration.md](configuration.md#read-only-endpoints) |
 | `'http_methods'` | all | Explicit HTTP method allow-list (e.g. `['get', 'post']`); disallowed verbs return `405`. `read_only` is the common shorthand. | [configuration.md](configuration.md#restricting-http-methods) |
@@ -119,12 +121,14 @@ If you start fresh and configure nothing, you get:
 - RBAC active via `TURBODRF_ROLES` (you must define one for anything to work)
 - Field permissions active
 - Sensitive deny-list active (passwords/tokens never leak)
-- Predicate system **dormant** (no `TURBODRF_TENANT_MODEL` set)
+- No row scoping until a model declares `tenant_field`, `owner_field` or
+  `visibility`; the tenancy startup gate is off until `TURBODRF_TENANT_MODEL`
+  is set
 - All integrations **off**
 - Compiled read path **on per-model**
 - Swagger docs **on** at `/swagger/`, scoped to the caller
 - Permission cache TTL **5 minutes** (role changes apply on the next request)
 
-To enable the predicate system: set `TURBODRF_TENANT_MODEL` and
+For multi-tenant data: set `TURBODRF_TENANT_MODEL` and
 `TURBODRF_TENANT_USER_FIELD`, then declare tenancy on each model.
 See [tenancy.md](tenancy.md) and [migration_to_predicates.md](migration_to_predicates.md).

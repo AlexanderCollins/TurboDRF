@@ -49,13 +49,14 @@ register any model that doesn't say how it relates to the tenant.
 ### Step 2: Decide each model's relationship to the tenant
 
 For every TurboDRFMixin model, ask: **how does this row belong to a
-tenant?** There are exactly three answers:
+tenant?**
 
 | Answer | Config |
 |---|---|
 | It has a direct FK to the tenant model | `"tenant_field": "workspace"` |
 | It chains through another model to the tenant | `"tenant_field": "project__workspace"` |
 | It's reference data, not tenant-scoped | `"tenancy": "shared"` |
+| It *is* the tenant model, or the user model | See [Exposing the tenant model and the user model](#exposing-the-tenant-model-and-the-user-model) |
 
 If none of these apply, you almost certainly have a design issue, not a
 TurboDRF question. Sort the data model first, then come back.
@@ -147,7 +148,9 @@ def turbodrf(cls):
 
 Translated: "owners or admins see the row, AND users matched by
 `collaborator_q` also see the row, AND collaborator writes are
-explicitly blocked."
+explicitly blocked." A write has to pass every child's write check, so
+`Owner`'s rules (nobody without a bypass role reassigns the owner) hold for
+every writer.
 
 ### Step 5: Write your `Custom` predicate's `q_func`
 
@@ -172,13 +175,15 @@ disabled the within-tenant rule. The framework will warn you about
 this at runtime — but you should code it to return `Q(pk__in=[])`
 whenever the user doesn't qualify.
 
-### Step 6: Always write `write_validator` if your model is writable
+### Step 6: Always write a `write_validator`
 
-If your `Custom` predicate is on a writable model, **the framework
-will refuse to start without an explicit `write_validator`**. This is
-intentional — `Custom`'s default `validate_write` returns no errors,
-which inside `Either(Owner, Custom)` silently lets writes bypass
-`Owner`'s checks.
+**The framework refuses to start if a `Custom` predicate has no
+`write_validator`**, so that every `Custom` states its write rule on
+purpose. The validator receives `(validated_data, instance, request)`
+(`instance` is `None` on create) and returns a list of error strings: empty
+allows the write, anything else rejects it with a 400. Inside `Either`, a
+write must pass every child's check, so a `write_validator` can only add
+restrictions, never lift `Owner`'s.
 
 Two valid shapes:
 
@@ -194,17 +199,18 @@ Custom(q_func=collaborator_q, write_validator=block_collaborator_writes)
 ```
 
 ```python
-# Or explicitly opt in to "writes pass through this predicate":
-Custom(q_func=read_only_q, write_validator=lambda d, i, r: [])
+# Or explicitly state "this predicate adds no write rule":
+Custom(q_func=collaborator_q, write_validator=lambda d, i, r: [])
 ```
 
 Which to use:
 
-- If the role the predicate matches is *read-only by intent*: use the
-  blocking validator. That way, even if the role grants change later
-  to include write actions, the predicate still blocks writes.
-- If the role *should* be able to write and `Owner` will catch the
-  ownership check: use the explicit no-op `lambda d, i, r: []`.
+- If the users this predicate admits are *read-only by intent*: use the
+  blocking validator. That way, even if their role later gains write
+  actions, the predicate still blocks their writes.
+- If they *should* be able to edit the rows they can see: use the no-op
+  `lambda d, i, r: []`. `Owner`'s checks still stop them reassigning the
+  owner.
 
 ### Step 7: Check the role grants
 
@@ -235,15 +241,14 @@ and listing close matches.
 
 ### Step 8: Boot the app and trust the gates
 
-The router runs five startup passes. If your config has a problem,
-you'll get a directed error before you can serve a request:
-
-1. Tenancy validation (every model has a tenancy decision).
-2. Compiled-path safety (M2M and FK joins to predicate-bearing targets).
-3. Searchable-fields safety (`__`-paths through predicate-bearing
-   targets).
-4. Predicate write safety (`Custom` without `write_validator`).
-5. Permission-string validation (`TURBODRF_ROLES` typos).
+The router checks the configuration when Django first imports your
+URLconf, and raises a directed `ImproperlyConfigured` error on a problem:
+tenancy declarations, compiled-path and search-field joins into
+predicate-bearing targets, `Custom` without `write_validator`, permission
+string typos, and more (see [Hard-fail-at-startup](#hard-fail-at-startup)).
+Run `python manage.py check` in CI and before each deploy: it imports the
+URLconf, so it runs them all. (`get_wsgi_application()` doesn't, so without
+it a broken config deploys and fails on the first request.)
 
 If the app boots, the static checks have passed. Exercise the runtime
 behaviour against your own test suite to confirm it matches what you expect.
@@ -316,38 +321,61 @@ user, the tenant boundary still holds.
 
 Filters to rows where `<field> = request.user`, unless caller has a bypass
 role. On create, a single owner column left out of the request is filled with
-the caller; updates never reassign it. Rejects non-bypass users from setting
-any owner column to another user.
+the caller; updates never reassign it.
+
+Writes by a caller without a bypass role are checked: they can't set any
+owner column to another user, and they can't change an owner column whose
+current value is another user. So a co-owner can't take over the other
+owner's column, and a collaborator who can see a row can't make it theirs.
 
 ```python
 Owner('assigned_to')
 Owner('assigned_to', bypass=['admin'])
-Owner(['author', 'editor'])     # multi-owner: any-match OR
+Owner(['author', 'reviewer'])   # multi-owner: any-match OR
 ```
 
 A multi-column `Owner` (or a list `owner_field`) reads rows where ANY column
-matches, and a write can't set ANY of the columns to another user. It isn't
-auto-filled.
+matches, and the write checks above cover every column. It isn't auto-filled.
+For several owner columns use one `Owner([...])`, not
+`Either(Owner(...), Owner(...))`.
 
 ### `Either(*predicates)` — OR composition
 
 ```python
-Either(Owner('owner'), Owner('reviewer'))
+Either(Owner('owner'), Members('shared_with'))
 ```
 
-Reads match rows any child matches. A child that places no restriction on
-the caller (an `Owner` whose bypass role they hold, say) makes the whole
-`Either` unrestricted. A write passes if any child's write check passes.
-`Either` doesn't auto-fill.
+- **Reads** match rows any child matches. A child that places no restriction
+  on the caller (an `Owner` whose bypass role they hold, say) makes the whole
+  `Either` unrestricted.
+- **Writes** must pass every child's write check. `Owner`'s checks apply to
+  every writer, including users who see the row through another child; a
+  `Custom` adds its `write_validator`; `Members`, `Group` and `Conditional`
+  add no write rule (`Conditional` still re-checks the saved row, see
+  [Advanced predicates](#advanced-predicates)).
+- **Create** fills a single-column `Owner` child's column with the caller when
+  the request leaves it out, as a top-level `Owner` does.
+
+In the example, a user in `shared_with` can edit the row's other fields but
+can't change `owner`.
 
 ⚠ `Tenant(...)` cannot appear inside `Either` — the framework rejects this
 configuration at startup. Use the `tenant_field` setting at the top level.
 
-### `Custom(q_func, ...)` — escape hatch
+### `Custom(q_func, write_validator=None, auto_filler=None)` — escape hatch
 
 ```python
-Custom(q_func=lambda req, roles: Q(client__assigned_manager=req.user))
+Custom(
+    q_func=lambda req, roles: Q(client__assigned_manager=req.user),
+    write_validator=lambda data, instance, req: [],
+)
 ```
+
+`q_func(request, user_roles)` returns a `Q` (see
+[Step 5](#step-5-write-your-custom-predicates-q_func)); `write_validator` is
+required (see [Step 6](#step-6-always-write-a-write_validator));
+`auto_filler(validated_data, request)` optionally returns the data to create
+with.
 
 A `Custom` predicate that returns `Q()` unconditionally just means "no
 within-tenant restriction" — the tenant boundary still applies separately,
@@ -369,15 +397,19 @@ return {
 }
 ```
 
-Power form (when you need `Either` or `Custom`):
+Several owner columns are still sugar: `'owner_field': ['author', 'reviewer']`
+compiles to one `Owner(['author', 'reviewer'])`.
+
+Power form (when you need `Either`, `Members`, `Group`, `Conditional` or
+`Custom`):
 
 ```python
-from turbodrf.predicates import Owner, Either, Custom
+from turbodrf.predicates import Either, Members, Owner
 
 return {
     'tenant_field': 'workspace',          # mandatory boundary (setting)
     'visibility': [                       # within-tenant predicates
-        Either(Owner('author'), Owner('reviewer')),
+        Either(Owner('author', bypass=['admin']), Members('collaborators')),
     ],
 }
 ```
@@ -385,11 +417,18 @@ return {
 `tenant_field` is a setting, not a predicate, and is allowed alongside
 `visibility`. `owner_field` / `bypass_owner_roles` are sugar that compiles
 to predicates — those *do* conflict with `visibility` (pick one or the
-other). A list `owner_field` compiles to one `Owner` over all its columns.
-Tenant inside `visibility` is supported but deprecated; use the
+other). Tenant inside `visibility` is supported but deprecated; use the
 `tenant_field` setting instead.
 
+⚠ **Spell the keys exactly.** `turbodrf()` ignores keys it doesn't know, so
+a typo such as `'owner_feild'` silently drops the owner rule and every
+member of the tenant sees every row. After changing a model's scoping, run
+`python manage.py turbodrf_check`: with `TURBODRF_TENANT_MODEL` set it
+prints each model's tenant field and within-tenant predicates, so a rule
+that didn't take effect is missing from its output.
+
 ---
+
 
 ## Hard-fail-at-startup
 
@@ -402,16 +441,28 @@ When `TURBODRF_TENANT_MODEL` is set and `TURBODRF_REQUIRE_TENANCY=True`
 
 (or have its tenant path auto-detected; see [Settings](#settings)).
 `owner_field` alone doesn't count: it scopes rows within a tenant, and its
-bypass roles would see every tenant's rows. Models without a tenancy
-decision raise `ImproperlyConfigured` at boot. This closes the "developer
-forgot to scope this model" failure mode.
+bypass roles would see every tenant's rows. For the same reason, a
+`visibility` list made only of `Owner` predicates with bypass roles and
+`Conditional` predicates doesn't count without a `tenant_field`. Models
+without a tenancy decision raise `ImproperlyConfigured` at boot. This closes
+the "developer forgot to scope this model" failure mode.
+
+A model with `'enabled': False` gets no endpoint, but its tenancy is still
+registered: other models' FK checks and nested fields that reach it use its
+`tenant_field` and predicates. Declare it like any other model's.
 
 Run `python manage.py turbodrf_check` to see what each model resolves to.
 
 Other hard-fails the router catches:
 
-- Invalid `tenant_field`/`owner_field` paths (with did-you-mean suggestions)
+- A `tenant_field` that isn't a path of forward foreign keys / one-to-ones
+  ending at the tenant model (when `TURBODRF_TENANT_MODEL` is set), or any
+  `tenant_field` while `TURBODRF_TENANT_USER_FIELD` is unset
+- Invalid `owner_field` paths (with did-you-mean suggestions), and `fields`
+  or `lookup_field` names the model doesn't have
+- A `Group(user_via=...)` that doesn't lead to users
 - `bypass_owner_roles` listing roles not in `TURBODRF_ROLES` (typo guard)
+- A `Custom` predicate without a `write_validator`
 
 These raise whatever the tenancy settings:
 
@@ -420,7 +471,7 @@ These raise whatever the tenancy settings:
   `visibility`
 - An empty `visibility` without a `tenant_field`
 
-To opt out globally during a migration:
+To opt out of the tenancy gate globally during a migration:
 
 ```python
 TURBODRF_REQUIRE_TENANCY = False
@@ -459,15 +510,97 @@ same permission-filtered serializer the CRUD routes use.
 
 ---
 
+## Exposing the tenant model and the user model
+
+The tenant model and the user model don't reach the tenant through a
+foreign key of their own, so they need their own rule. Don't give the tenant
+model `'tenant_field': 'id'`: the tenant boundary compares a foreign key
+with the caller's tenant, and doesn't work on the tenant's own primary key.
+
+**The tenant model.** Scope it to the caller's own tenant with a `Custom`
+predicate:
+
+```python
+from django.db import models
+from django.db.models import Q
+
+from turbodrf.mixins import TurboDRFMixin
+from turbodrf.predicates import Custom
+
+
+def own_workspace(request, user_roles):
+    workspace_id = getattr(request.user, 'workspace_id', None)
+    if workspace_id is None:
+        return Q(pk__in=[])          # no tenant: no rows
+    return Q(pk=workspace_id)
+
+
+class Workspace(models.Model, TurboDRFMixin):
+    name = models.CharField(max_length=200)
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            'fields': ['id', 'name'],
+            'visibility': [
+                Custom(own_workspace, write_validator=lambda d, i, r: []),
+            ],
+            'http_methods': ['get', 'patch'],   # no create or delete
+        }
+```
+
+A caller lists and reads only their own workspace (another workspace's id is
+a 404), and a role granted `accounts.workspace.update` can rename it.
+Creating and deleting tenants usually belongs to a signup or admin flow, not
+the API; use `'read_only': True` to drop the PATCH as well.
+
+With a predicate on the tenant model, the startup gate refuses compiled
+models that nest its fields (`'workspace__name'`). Read those from
+`/api/workspaces/{id}/`, or set `'compiled': False` on the nesting model.
+
+**The user model.** The mixin goes on the model class, so this needs a
+custom user model (`AUTH_USER_MODEL`):
+
+```python
+from django.contrib.auth.models import AbstractUser
+
+
+class User(AbstractUser, TurboDRFMixin):
+    workspace = models.ForeignKey(Workspace, null=True, on_delete=models.PROTECT)
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            'fields': ['id', 'username', 'first_name', 'last_name'],
+            'tenant_field': 'workspace',
+            'read_only': True,
+        }
+```
+
+List `fields` explicitly: `'__all__'` would expose `email`, `is_staff`,
+`is_superuser` and more (the sensitive deny-list removes only `password`).
+Keep it `read_only` and create users through your own signup flow.
+
+---
+
 ## Settings
 
 ```python
-TURBODRF_TENANT_MODEL = 'accounts.Workspace'   # required for row scoping
-TURBODRF_TENANT_USER_FIELD = 'workspace'       # required
+TURBODRF_TENANT_MODEL = 'accounts.Workspace'   # turns on the startup checks
+TURBODRF_TENANT_USER_FIELD = 'workspace'       # needed by every tenant_field
 
 TURBODRF_REQUIRE_TENANCY = True                # default — hard-fail
 TURBODRF_AUTODETECT_TENANT = False             # default — be explicit
 ```
+
+`tenant_field`, `owner_field` and `visibility` are enforced whether or not
+`TURBODRF_TENANT_MODEL` is set. Setting it turns on the tenancy gate, the
+check that each `tenant_field` ends at the tenant model, and auto-detection.
+
+`TURBODRF_TENANT_USER_FIELD` names the attribute of `request.user` that
+holds the user's tenant: a model instance or an integer pk. A direct
+foreign key on the user is the usual choice. Any other value counts as no
+tenant, and the caller sees no tenant-scoped rows.
 
 When `TURBODRF_AUTODETECT_TENANT=True`, the router walks each model's FK
 graph at startup to find the shortest unique path to the tenant model.
@@ -478,26 +611,41 @@ easier to reason about.
 
 ## Advanced predicates
 
-For app shapes that don't fit `Tenant + Owner + Either + Custom`, the
-`turbodrf.predicates` module also exports `Members` (M2M-to-User collections),
-`Group` (FK to a team that has M2M members), and `Conditional` (rows matching
-a Q clause are restricted to specified roles). These are usable in
-`'visibility': [...]` lists. Read the source for details.
+`turbodrf.predicates` also exports these, for use in `'visibility': [...]`
+lists (alone or inside `Either`):
+
+**`Members(m2m_field)`** — the caller must be in the row's many-to-many to
+users. `Members('participants')` shows a channel to its participants.
+
+**`Group(field, user_via='members')`** — the caller must belong to the
+group or team the row points at. `field` is the row's foreign key to that
+model; `user_via` is the lookup from that model to users, as you'd write it
+in `Team.objects.filter(<user_via>=user)`. For a `Team` with
+`members = models.ManyToManyField(User)` that's the default, `'members'`.
+For Django's `auth.Group` it's `'user'` (`Group('team', user_via='user')`).
+The router checks `user_via` at startup.
+
+**`Conditional(when, require_roles)`** — rows matching the `when` Q are
+visible only to callers holding one of `require_roles`; other rows are
+unaffected. `Conditional(when=Q(kind='staff_loan'), require_roles=['staff'])`.
 
 - A predicate that crosses an M2M or reverse relation (`Members`, or an
   `Either` that includes one) is applied as a subquery, so it doesn't
   duplicate list rows or break detail lookups.
 - `Members` and `Group` scope reads, and so updates and deletes (only
-  visible rows can be fetched). A create isn't membership-checked, nor is an
-  update that moves a row to another group. Use `Owner`, or `Custom` with a
-  `write_validator`, when writes must be restricted.
+  visible rows can be fetched). They add no write rule: a create isn't
+  membership-checked, nor is an update that moves a row to another group.
+  Use `Owner`, or `Custom` with a `write_validator`, when writes must be
+  restricted.
 - `Conditional` writes are checked after the save, in the same transaction:
   a create or update that would leave the row invisible to the writer is
-  rolled back with a 400.
+  rolled back with a 400. Inside `Either`, the saved row must be visible
+  through the `Either` as a whole.
 
 ---
 
 ## See also
 
-- `docs/security.md` — threat model, sensitive fields, error responses
-- `docs/migration_to_predicates.md` — migrating an existing project
+- [Security](security.md) — threat model, sensitive fields, error responses
+- [Migrating to predicates](migration_to_predicates.md) — migrating an
+  existing project

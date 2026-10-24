@@ -3,6 +3,7 @@
 Instructions for AI coding agents working in projects that use TurboDRF.
 Follow these conventions to configure the framework correctly and avoid
 the security footguns. Human-facing docs live in `README.md` and `docs/`.
+Working on TurboDRF itself (its tests, CI, releases)? See `CONTRIBUTING.md`.
 
 ---
 
@@ -22,24 +23,25 @@ Both are declared on the model. Never bypass them in custom views.
 
 ---
 
-## Build & Test
+## Project setup
 
-```bash
-pip install -e ".[dev]"                # install with dev dependencies (incl pytest-xdist)
-python -m pytest                       # full test suite, parallel by default (-n auto)
-python -m pytest -p no:xdist           # disable parallel for debugging / pdb
-python -m pytest tests/unit -q         # unit only — sub-second
-python -m pytest -k <name>             # single test
-python manage.py turbodrf_check        # report each model's compiled status + tenancy
+```python
+# settings.py
+INSTALLED_APPS = [..., 'rest_framework', 'drf_yasg', 'turbodrf']
+# drf_yasg serves the Swagger / ReDoc pages. Without it, set
+# TURBODRF_ENABLE_DOCS = False (otherwise check warns turbodrf.W001).
+
+# urls.py
+urlpatterns = [path('api/', include('turbodrf.urls'))]
 ```
 
-The test suite runs in parallel by default via `pytest-xdist` (`-n auto`
-in `[tool.pytest.ini_options]`). Each worker gets its own SQLite test
-database and process-local cache, so tests are isolation-safe across
-workers. Disable with `-p no:xdist` when you need pdb / single-threaded
-debugging.
+Users need roles: see [Roles](#roles) below. Without one, every request is
+a 403.
 
-CI runs `pytest`, `black --check`, `flake8`, `isort --check`. Keep them green.
+**Run `python manage.py check` in CI and before every deploy.** The router
+validates the configuration when Django first imports the URLconf, which
+`check` does and `get_wsgi_application()` doesn't; without it a broken
+config deploys and fails on the first request.
 
 ---
 
@@ -53,6 +55,7 @@ class Project(models.Model, TurboDRFMixin):
     workspace = models.ForeignKey('accounts.Workspace', on_delete=models.CASCADE)
     owner = models.ForeignKey(User, null=True, on_delete=models.SET_NULL)
     price = models.DecimalField(max_digits=10, decimal_places=2)
+    archived = models.BooleanField(default=False)
 
     searchable_fields = ['title']        # opt-in: ?search=...
     sensitive_fields = ['price']         # readable only via 'projects.project.price.read'
@@ -60,20 +63,27 @@ class Project(models.Model, TurboDRFMixin):
     @classmethod
     def turbodrf(cls):
         return {
-            'fields': ['title', 'workspace', 'owner', 'price'],
+            'fields': ['id', 'title', 'workspace', 'owner', 'price'],
             'tenant_field': 'workspace',
             'owner_field': 'owner',
             'bypass_owner_roles': ['admin', 'manager'],
         }
 ```
 
-Routes are auto-generated at `/api/projects/` and `/api/projects/{pk}/`. No
-URL or view file needed.
+Routes are auto-generated at `/api/projects/` and `/api/projects/{pk}/` (the
+lowercase model name plus `s`; set `'endpoint'` to change it). No URL or view
+file needed.
 
-### Required keys
+### `fields`
 
-- `fields`: list of field names exposed on the API. Use `'__all__'` only
-  for trusted models — explicit lists are safer.
+Always set `fields` to an explicit list (or a `{'list': [...], 'detail':
+[...]}` dict). It isn't required, but it defaults to `'__all__'`, which
+exposes every column, including ones added later. The primary key renders
+only if listed. A name that doesn't exist on the model raises at startup.
+
+**Spell every key exactly.** `turbodrf()` ignores keys it doesn't know: a
+typo like `'owner_feild'` silently drops the owner rule and the whole tenant
+sees every row. Check the result with `python manage.py turbodrf_check`.
 
 ### Tenancy keys (pick exactly one approach per model)
 
@@ -84,9 +94,15 @@ URL or view file needed.
 | `'tenancy': 'shared'` | Reference data: currencies, country codes |
 | `'visibility': [<predicate>, ...]` | Need OR logic / non-tenant scoping (see Predicates below) |
 
-`owner_field` alone doesn't count as a tenancy decision. `'tenancy'` accepts
-only `'shared'`, which can't be combined with `tenant_field`, `owner_field`
-or `visibility`. An empty `visibility` needs a `tenant_field`.
+`tenant_field` must be a chain of forward foreign keys / one-to-ones that
+ends at `TURBODRF_TENANT_MODEL`. `owner_field` alone doesn't count as a
+tenancy decision, nor does a `visibility` made only of `Owner`-with-bypass
+and `Conditional` predicates. `'tenancy'` accepts only `'shared'`, which
+can't be combined with `tenant_field`, `owner_field` or `visibility`. An
+empty `visibility` needs a `tenant_field`.
+
+The tenant model itself and the user model have their own recipe:
+`docs/tenancy.md`, "Exposing the tenant model and the user model".
 
 ### Within-tenant access (sugar)
 
@@ -95,6 +111,29 @@ or `visibility`. An empty `visibility` needs a `tenant_field`.
 'owner_field': ['owner', 'created_by'],  # any of these → visible
 'bypass_owner_roles': ['admin', 'manager'],        # these roles see all in tenant
 ```
+
+### Custom endpoints
+
+Add endpoints with `@turbodrf_action` and the `'actions'` key. They attach
+to the generated viewset, so `self.get_object()` / `self.get_queryset()`
+apply the same tenant and predicate scoping as the CRUD routes:
+
+```python
+from rest_framework.response import Response
+from turbodrf import turbodrf_action
+
+@turbodrf_action(detail=True, methods=['post'], url_path='archive')
+def archive(self, request, pk=None):
+    project = self.get_object()          # scoped: other tenants' pks 404
+    project.archived = True
+    project.save(update_fields=['archived'])
+    return Response({'status': 'archived'})
+
+# in Project.turbodrf():  'actions': [archive],
+```
+
+A POST action needs the role's `create` permission (GET → `read`, PUT/PATCH →
+`update`, DELETE → `delete`), unless it declares `permission_classes`.
 
 ---
 
@@ -118,20 +157,53 @@ TURBODRF_ROLES = {
 
 # Hard-fail at startup if any model has no tenancy declared.
 # Keep True. Set False ONLY for legacy migration. Hard-fail catches the
-# entire class of "I forgot to scope this model" bugs at import time.
+# entire class of "I forgot to scope this model" bugs at startup.
 TURBODRF_REQUIRE_TENANCY = True
 ```
+
+`TURBODRF_TENANT_USER_FIELD` is required as soon as any model declares a
+`tenant_field`. `request.user.workspace` must return a model instance or an
+integer PK. Strings, dicts, bound methods, and reverse-FK managers all coerce
+to `None` and fail-closed (filter returns zero rows). Pick a real ForeignKey.
+
+Never set `TURBODRF_DISABLE_PERMISSIONS = True` outside local development:
+it lets anonymous callers create, update and delete.
+
+---
+
+## Roles
+
+TurboDRF needs to know each user's roles. Pick one source:
+
+- **Static mode (default):** `user.roles` returns a list of role names. Add a
+  property to a custom user model, or derive it from Django groups:
+
+  ```python
+  # in an AppConfig.ready()
+  User.add_to_class('roles', property(lambda u: [g.name for g in u.groups.all()]))
+  ```
+
+- **Database mode** (`TURBODRF_PERMISSION_MODE = 'database'`): roles come from
+  `UserRole` rows and `user.roles` is ignored; permissions come from
+  `TurboDRFRole` / `RolePermission` rows, validated when saved.
+- **allauth / Keycloak integrations:** TurboDRF installs the `roles` property
+  when the user model doesn't define one. Their middleware classes are
+  deprecated no-ops; don't add them.
+
+Details: `docs/permissions.md`, "Assigning roles to users".
+
+### Permission strings
 
 Permission strings must be `app_label.model_name.action` or
 `app_label.model_name.field.action`, with the exact lowercase labels and a
 concrete or M2M field name (not `owner_id`); the router refuses to boot on
-anything else. A field with a `.read` / `.write` rule on any role needs that
-rule for every role. Anonymous callers on a `public_access` model get
-model-level read plus only what a `guest` role grants.
+anything else.
 
-`request.user.workspace` must return a model instance or an integer PK.
-Strings, dicts, bound methods, and reverse-FK managers all coerce to `None`
-and fail-closed (filter returns zero rows). Pick a real ForeignKey.
+Once any role has a `.read` / `.write` rule for a field, every other role
+loses that access unless granted the same rule. So a role with `.create`
+needs `.write` on every required field that has a write rule, or its POSTs
+fail. Anonymous callers on a `public_access` model get model-level read plus
+only what a `guest` role grants.
 
 ---
 
@@ -148,7 +220,7 @@ return {
         Either(
             Owner('created_by'),
             Members('participants'),       # M2M: user is a participant
-            Group('team'),                 # FK to a team that user belongs to
+            Group('team'),                 # FK to a team whose `members` include the user
         ),
     ],
 }
@@ -156,12 +228,22 @@ return {
 
 | Predicate | Use for |
 |---|---|
-| `Owner(field, bypass=[...])` | Single-owner rows; bypass list of roles see all |
-| `Members(m2m)` | Channels / projects with explicit membership (creates aren't membership-checked) |
-| `Group(fk, user_via='user_set')` | Team-based visibility (creates aren't membership-checked) |
-| `Either(*preds)` | OR composition |
+| `Owner(field_or_fields, bypass=[...])` | Owned rows; a list means any listed column. Bypass roles see all |
+| `Members(m2m_field)` | Channels / projects with explicit membership (no write rule) |
+| `Group(fk, user_via='members')` | Team-based visibility (no write rule). `user_via` is the lookup from the team model to users: `'user'` for `auth.Group` |
+| `Either(*preds)` | OR composition for reads; writes must pass every child |
 | `Conditional(when=Q(...), require_roles=[...])` | "Staff loans visible only to staff role" |
-| `Custom(callable, write_validator=...)` | Last resort — arbitrary Q |
+| `Custom(q_func, write_validator=...)` | Last resort — arbitrary Q. `write_validator` is required |
+
+Several owner columns: use `Owner(['author', 'reviewer'])` (or a list
+`owner_field`), never `Either(Owner('author'), Owner('reviewer'))`.
+
+How `Either` treats writes: every child's write check must pass. `Owner`'s
+check applies to every writer without a bypass role: they can't set an owner
+column to another user, or change one that holds another user. `Custom`
+adds its `write_validator`; `Members`, `Group` and `Conditional` add none.
+On create, `Either` fills a single-column `Owner` child's column with the
+caller.
 
 **Never put `Tenant()` inside `Either(...)`.** It would let OR-composition
 escape the tenant boundary. The framework raises at config time. Use
@@ -171,9 +253,10 @@ the `tenant_field` setting instead.
 
 ## What NEVER to do
 
-1. **Don't add custom `@action` endpoints that call `Model.objects.all()`.**
-   They bypass the predicate stack and tenant filter. Use
-   `self.get_queryset()` (the framework's filtered queryset).
+1. **Don't add endpoints that call `Model.objects.all()`.** They bypass the
+   predicate stack and tenant filter. Use `@turbodrf_action` and
+   `self.get_queryset()` / `self.get_object()` (the framework's filtered
+   queryset).
 
 2. **Don't override `get_queryset()`** in TurboDRF viewsets. The
    framework's implementation applies the tenant boundary and predicate
@@ -231,15 +314,24 @@ In tests use `cache.clear()` in `setUp`.
 
 ## Testing patterns
 
-```python
-from tests.test_app.apps import set_test_brokerage  # in this repo (tenant = Brokerage)
-# In downstream projects: implement an analogous helper that
-# both (a) sets `user._test_brokerage` and (b) registers the user in
-# a class-level dict so DRF's User re-fetch survives.
+Give test users roles the same way production does (group membership, a
+roles field, `UserRole` rows), and set their tenant FK. Then test through
+the API with DRF's `APIClient`:
 
-self.user = User.objects.create_user(...)
-self.user._test_roles = ['member']
-set_test_brokerage(self.user, self.brokerage_a)
+```python
+from django.core.cache import cache
+from rest_framework.test import APIClient
+
+def setUp(self):
+    cache.clear()
+    self.user = User.objects.create_user('alice', workspace=self.workspace_a)
+    self.user.groups.add(self.editors)
+    self.client = APIClient()
+    self.client.force_authenticate(self.user)
+
+def test_other_tenant_is_404(self):
+    other = Project.objects.create(title='x', workspace=self.workspace_b)
+    self.assertEqual(self.client.get(f'/api/projects/{other.pk}/').status_code, 404)
 ```
 
 Field-level perm tests:
@@ -255,11 +347,13 @@ assert snap.can_perform_action('update')
 
 ## Where to look
 
-- `docs/tenancy.md` — full predicate vocabulary, sugar vs power form, startup checks
-- `docs/permissions.md` — RBAC, sensitive fields, field-perm syntax
-- `docs/security.md` — threat model + known limitations
-- `docs/settings_reference.md` — every setting
-- `docs/migration_to_predicates.md` — upgrading existing TurboDRF apps
+- [docs/quickstart.md](docs/quickstart.md) — a working project, step by step
+- [docs/configuration.md](docs/configuration.md) — every `turbodrf()` key, custom endpoints
+- [docs/tenancy.md](docs/tenancy.md) — full predicate vocabulary, sugar vs power form, startup checks
+- [docs/permissions.md](docs/permissions.md) — RBAC, roles, sensitive fields, field-perm syntax
+- [docs/security.md](docs/security.md) — threat model + known limitations
+- [docs/settings_reference.md](docs/settings_reference.md) — every setting
+- [docs/migration_to_predicates.md](docs/migration_to_predicates.md) — upgrading existing TurboDRF apps
 
 ---
 
@@ -268,12 +362,9 @@ assert snap.can_perform_action('update')
 - New TurboDRF models always declare a tenancy key (`tenant_field`,
   `visibility`, or `'shared'`). `TURBODRF_REQUIRE_TENANCY=True` enforces
   this at startup.
-- Run `python manage.py turbodrf_check` before committing — it reports
-  each model's compiled status (and why an opted-in model isn't compiled),
-  its list fields, and its resolved tenancy. It doesn't run the startup
-  gates or fail on problems; building the router (e.g. running the test
-  suite) does.
-- Keep `tests/test_app/models.py` in sync when adding new
-  framework-level fields; downstream apps mirror its patterns.
+- Run `python manage.py check` before committing: it builds the router and
+  runs every startup gate. Then `python manage.py turbodrf_check`, which
+  reports each model's compiled status (and why an opted-in model isn't
+  compiled), its list fields, and its resolved tenancy; it only reports.
 - Preserve fail-closed defaults: when in doubt about a permission edge
   case, deny.

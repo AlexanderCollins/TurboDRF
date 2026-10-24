@@ -6,6 +6,13 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -27,12 +34,14 @@ jobs:
             django-version: "6.0"
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v6
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
       with:
         python-version: ${{ matrix.python-version }}
+        cache: pip
+        cache-dependency-path: pyproject.toml
 
     - name: Install dependencies
       run: |
@@ -44,6 +53,7 @@ jobs:
       run: |
         pytest -v --cov=turbodrf --cov-report=term --cov-report=json
 
+    # The README's coverage badge reads this gist (no commits to main).
     - name: Extract coverage percentage
       if: matrix.python-version == '3.13' && matrix.django-version == '5.2'
       run: |
@@ -51,9 +61,9 @@ jobs:
         echo "COVERAGE=$COVERAGE" >> $GITHUB_ENV
         echo "Coverage: $COVERAGE%"
 
-    - name: Create coverage badge
+    - name: Update coverage badge
       if: matrix.python-version == '3.13' && matrix.django-version == '5.2' && github.ref == 'refs/heads/main'
-      uses: schneegans/dynamic-badges-action@v1.7.0
+      uses: schneegans/dynamic-badges-action@28b0fa8bdeb46170ac397105ece0c1fe58f68910  # v1.9.0
       with:
         auth: ${{ secrets.GIST_SECRET }}
         gistID: ${{ secrets.GIST_ID }}
