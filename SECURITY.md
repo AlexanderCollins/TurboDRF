@@ -50,12 +50,12 @@ the subject so it surfaces ahead of routine triage.
 ## Supported versions
 
 Security fixes go into the latest minor release line only (currently
-0.6.x). Older lines don't get patches: upgrade, following the release notes
+0.7.x). Older lines don't get patches: upgrade, following the release notes
 in [`CHANGELOG.md`](CHANGELOG.md).
 
 | Version | Supported |
 |---------|-----------|
-| Latest minor (0.6.x today) | ✅ |
+| Latest minor (0.7.x today) | ✅ |
 | Older minors | ❌ — upgrade |
 
 ## Threat model

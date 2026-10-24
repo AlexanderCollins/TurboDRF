@@ -14,6 +14,7 @@ recursive-exclude * *.py[co]
 recursive-exclude * .DS_Store
 
 prune example_project
+prune website
 prune docs
 prune .github
 prune venv

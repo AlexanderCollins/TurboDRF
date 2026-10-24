@@ -1,5 +1,179 @@
 # Changelog
 
+## 0.7.0 — Full audit: write rules that hold, tighter filters, faster requests
+
+A second full review (every module, every test, the docs against the code)
+found the issues below; each is fixed with regression tests. Many fixes turn a
+silent misconfiguration into a startup error or tighten what a caller can do,
+so read **Upgrading** first.
+
+### Upgrading
+
+**New startup errors** (`ImproperlyConfigured`; tenancy is checked in
+`AppConfig.ready()`, so on every `manage.py` command — run `manage.py check`
+in CI):
+
+- Unknown `turbodrf()` keys. A typo such as `owner_feild` used to be ignored,
+  leaving rows unscoped. `sensitive_fields` is a class attribute, not a key.
+- A `fields` entry that isn't a field, `@property` or `__` path through
+  relations, one that ends on a reverse one-to-one (list a field on the
+  related model instead), and a `lookup_field` that isn't a unique column.
+- A `tenant_field` that doesn't lead to the tenant: every hop must be a
+  forward ForeignKey / one-to-one named by the relation (not `<fk>_id`), and
+  the last must point at `TURBODRF_TENANT_MODEL`. A `tenant_field` with
+  `TURBODRF_TENANT_USER_FIELD` unset, and a `TURBODRF_TENANT_MODEL` that
+  doesn't resolve.
+- With `TURBODRF_REQUIRE_TENANCY`: a `visibility` list without a
+  `tenant_field` whose predicates can all lift the restriction (an `Owner`
+  with bypass roles, a `Conditional`, or an `Either` of them). Add the
+  `tenant_field`.
+- An `Owner` column that isn't a ForeignKey / one-to-one to the user model, a
+  `Group` whose `<field>__<user_via>` doesn't reach users (`auth.Group` takes
+  `user_via='user'`), and a role value that isn't a string or list.
+- Invalid config on a model with `enabled: False` (it used to be skipped), and
+  two models routed to the same `endpoint`.
+
+**Behaviour changes:**
+
+- Inside `Either`, every child's write check applies, and `Owner` children
+  auto-fill on create. A non-bypass caller can't change or clear an owner
+  column that holds another user.
+- Generated viewsets have no `queryset` attribute (it held every tenant's
+  rows); use `self.get_queryset()` in custom actions.
+- Nested filters need their path in `fields`: configuring `author__name` no
+  longer makes every column of the author filterable. The only M2M filter is
+  `?tags=<pk>`; `__in`, `__isnull`, `__exact` and `_or` on an M2M are ignored.
+  A filter value the field can't hold is a 400. `?ordering=` takes concrete,
+  single-valued columns only. `?search=` with more than 20 terms, or a term
+  over `TURBODRF_MAX_FILTER_VALUE_LENGTH`, matches nothing.
+- A `@property` that returns a model instance, a manager or a lazy query is
+  left out and logged (it used to 500, or leak). A `property_relations` hop
+  needs model-level read on its target.
+- A bare M2M or reverse relation in `fields` renders only rows the caller can
+  see; reverse relations are read-only. An M2M update keeps the links the
+  caller can't see.
+- In bypassed permission modes (`TURBODRF_DISABLE_PERMISSIONS`,
+  `TURBODRF_USE_DEFAULT_PERMISSIONS`), related fields accept and list only
+  rows the caller can see.
+- 404 bodies read "Not found." with code `not_found` (no model name). OPTIONS
+  has no `tenancy` block and lists only the actions the endpoint routes.
+- A create missing a required column the caller can't set (`.create` without
+  that field's `.write`) is a 400 naming the field, not a 500.
+- `@turbodrf_action` raises `TypeError` for arguments it would ignore
+  (`serializer_class=`, `queryset=`). A string `user.roles` is one role.
+- `RolePermission.save()` raises `ValidationError` for a rule that can't
+  match (wrong-case labels, unknown field or action).
+- `AllAuthRoleMiddleware` and `KeycloakRoleMiddleware` are deprecated no-ops:
+  remove them from `MIDDLEWARE`. A user model's own `roles` now applies on
+  every request.
+- `turbodrf_benchmark` requires `--user <username>`.
+- Removed: `turbodrf/user_extensions.py`, `TurboDRFMixin.get_field_type()`,
+  `turbodrf.exceptions.NoRoleAssigned`,
+  `turbodrf.validation.path_traverses_predicate_target`, and the unused
+  tenancy names in `turbodrf.settings`.
+
+### Security
+
+- **`Either` let one child override another's write check.** It passed a
+  write as soon as one child accepted it, so `Owner`'s rule never held inside
+  `Either`: a member could create rows owned by someone else, or a
+  participant reassign `created_by`. Every child's check now applies.
+- **A co-owner could take a row over** by setting the other owner column to
+  themselves. `Owner` also skipped every check with no authenticated user,
+  and its direct columns when another path had `__` in it.
+- **Nested filters could probe unexposed columns** (`?target__seen_at__year=`)
+  on a first-segment check, through reverse hops too, and any column in
+  bypass mode. The whole path must now be configured.
+- **A lazy query nested in a `@property` result escaped the sandbox** and was
+  evaluated unscoped by the JSON encoder. Results become plain data inside
+  the sandbox. Columns loaded by model hooks (`post_init`, a saved original
+  value) are dropped before the property runs, and a hop needs read on its
+  target model and a readable join column.
+- **Bypass roles saw every tenant through `visibility`** without a
+  `tenant_field` (the hole 0.6.0 closed for a bare `owner_field`).
+- **Disabled models read as unscoped** to FK-injection checks, nested values
+  and filters. Tenancy is now registered for every TurboDRF model at startup.
+- **A hand-written `TurboDRFViewSet` subclass had no tenant boundary.** It now
+  gets its model's, or no rows.
+- **The bare M2M and reverse relations rendered unscoped pks** on the
+  serializer path, and bypassed permission modes didn't scope related fields
+  at all (browsable-API dropdowns listed other tenants' rows).
+- **PATCH / PUT responses rendered nested values the caller can't see**,
+  computed for the row before the write.
+- **An FK's column name (`?deal__assigned_broker_id=`) skipped the field's
+  read rule and the sensitive deny-list.**
+- **The co-tenant check** (a write can't name another tenant's user or tenant
+  row) now covers FKs to the tenant model and predicate-only hosts.
+- **`?ordering=<m2m>` and M2M lookups JOINed hidden targets**, repeating rows
+  and leaking hidden links.
+- **With `UNAUTHENTICATED_USER = None`**, anonymous callers on a
+  `public_access` model got the unfiltered serializer.
+- **Permission cache keys:** in database mode the anonymous key ignored role
+  versions; keys now cover the model's `sensitive_fields` and
+  `public_access`; an evicted invalidation counter no longer revives stale
+  snapshots; a stale `TurboDRFRole` can't move its version back.
+- **The OpenAPI schema documented columns the API doesn't serve** for a
+  single-key `fields` dict.
+- **drf-api-tracking logged secrets in clear:** the sensitive-fields setting
+  replaced the built-in deny-list, and bodies rejected before parsing were
+  logged raw.
+- **The role middlewares shadowed the user model's `roles`** on session
+  requests only. Keycloak: a non-finite `auth_time` passed the role-age check.
+
+### Fixed
+
+- An integer tenant (`TURBODRF_TENANT_USER_FIELD` returning a pk) made every
+  write a 500.
+- A target predicate ORing across a to-many relation (`Either(Owner,
+  Members)`) duplicated rows: writes naming a visible row failed.
+- `?fields=` selects the same keys on the compiled list as on detail.
+- 500s: a `Custom` predicate returning `Q(Exists(...))`; a multipart create
+  over 2.5 MB; unparseable `_or` filter values and DurationField filters; a
+  searchable field ending on a relation; a `@property` returning a model
+  instance.
+- `__range` was ignored or mis-split; a PUT without the tenant FK was a 400.
+- OPTIONS on a detail route described the list fields, and `"__all__"`
+  dropped M2M fields in OPTIONS, the schema and the serializer factory.
+- `Owner(bypass='admin')` and `Conditional(require_roles='staff')` took a
+  string as a set of characters; auto-detection picked one of two equally
+  short tenant paths instead of reporting the ambiguity.
+- The schema documented every path twice and used OpenAPI 3's `nullable` in a
+  Swagger 2 document; `@swagger_auto_schema(request_body=...)` is honoured.
+- `turbodrf_check`, `turbodrf_explain` and `turbodrf_benchmark` reported
+  things the router and API don't do; they now use the same resolution.
+- The allauth role helpers ignored the role mapping; Sentry's middleware ran
+  2–3 queries on every request.
+- `'searchable_fields': []` in the config now turns search off.
+
+### Performance
+
+- Every request imported `django.contrib.postgres.fields` (a failing import
+  without psycopg, retried each time) for every field, three times: about
+  two-thirds of a list request. Filter fields are now computed once per
+  request.
+- Roles and permission snapshots are looked up once per request instead of
+  per field, filter hop and search field (database mode: 34 → 6 queries for a
+  20-row list). The query count no longer grows with fields, filters or roles.
+- The compiled list uses one visibility flag per relation and counts without
+  the nested-value JOINs; serializer-path M2M fields load in one query per
+  page (17 queries for 3 rows before).
+- A 20-row compiled list went from 8.7 ms to 2.5 ms per request (SQLite).
+
+### Docs, CI and packaging
+
+- The docs are published at <https://turbodrf.com/docs/>; installation and
+  quick start are Markdown and the single source. The README quick start
+  works (it returned 403 on every request).
+- `Either`, `Members`, `Group` and `Conditional` are documented, with
+  `Owner(['author', 'reviewer'])` for multiple owners; `AGENTS.md` is for
+  downstream projects and `CONTRIBUTING.md` for contributors.
+- Publishing runs the tests and lint first, checks the tag against the
+  version and runs `twine check`. Actions are pinned to commit SHAs; lint
+  tools are pinned in the `dev` extra.
+- Removed broken tooling (release scripts, `tox.ini`, the badge-committing
+  workflow, a stray `pytest.ini `); `example_project/` is one small working
+  example.
+
 ## 0.6.1
 
 - **Django 6.0+: models with an M2M list field weren't compiled.** Django 6.0
