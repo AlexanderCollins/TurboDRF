@@ -2,7 +2,5 @@ node_modules/
 dist/
 .astro/
 tools/.venv/
-tools/video/frames/
 tools/**/__pycache__/
 .DS_Store
-tools/video/still-*.png

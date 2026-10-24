@@ -145,7 +145,7 @@ body {
   border-radius: 1.25rem;
 }
 
-/* A window around a video or code: a soft frame with a mint edge light. */
+/* A window around code or a response: a soft frame with a mint edge light. */
 .frame {
   border-radius: 1rem;
   border: 1px solid color-mix(in oklab, var(--mint) 24%, transparent);
@@ -167,7 +167,7 @@ body {
 .frame-bar i:nth-child(1) { background: #fb7185; opacity: .85; }
 .frame-bar i:nth-child(2) { background: #f4c97a; opacity: .85; }
 .frame-bar i:nth-child(3) { background: #3ee6a0; opacity: .85; }
-.frame video, .frame img { display: block; width: 100%; height: auto; }
+.frame img { display: block; width: 100%; height: auto; }
 
 /* Code blocks from Shiki (docs) and from the site's own <Code> uses. */
 pre.astro-code {

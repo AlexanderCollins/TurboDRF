@@ -20,18 +20,14 @@ infra/deploy.sh    # apply the AWS stacks, upload dist/, invalidate CloudFront
   (`src/lib/rewrite-doc-links.mjs`). Edit the docs in `../docs`, never here.
 - **Every API response on the site is real.** `tools/demo` is a small TurboDRF project;
   `tools/demo/capture.py` runs it against in-memory SQLite, makes each request the site
-  shows and writes `src/data/demo.json`. The role switcher, the "Built to say no" console,
-  the benchmark and the videos all read that file, and the code samples are the demo's
-  own source (`?raw` imports). Re-run it after a TurboDRF change:
+  shows and writes `src/data/demo.json`. The home page's model view and permission
+  matrix read that file (`src/lib/showcase.ts`), and the code shown is the demo's own
+  source (`?raw` imports). Re-run it after a TurboDRF change:
   `cd tools/demo && ../../../venv/bin/python capture.py`.
-- **Videos** (`public/video/*.{mp4,webm,webp}`) are drawn frame by frame by
-  `tools/video/render.py` (Pillow + Pygments, encoded with ffmpeg) from `demo.json`:
-  `tools/.venv/bin/python tools/video/render.py`. `--still` writes one frame per clip
-  for a quick look.
 - **Social cards and icons**: `tools/og/render.py` (Playwright) draws `public/og/*.jpg`
   from `tools/og/template.html`, and the favicons from `public/brand/icon.svg`.
 
-`tools/.venv` holds the Python tools (`playwright pillow pygments numpy`, then
+`tools/.venv` holds the Python tools (`playwright pillow`, then
 `playwright install chromium`).
 
 ## Deploy
