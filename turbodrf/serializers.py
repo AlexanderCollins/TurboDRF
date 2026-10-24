@@ -1,7 +1,7 @@
 import hashlib
 import logging
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from rest_framework import serializers
 from rest_framework.relations import ManyRelatedField, RelatedField
 
@@ -226,6 +226,29 @@ def _autofill_predicate_writes(
     return validated_data
 
 
+def _require_unwritable_columns(model, validated_data):
+    """After a failed insert: if the create left out a column the database
+    requires, the caller couldn't set it (a role with ``.create`` but not that
+    field's ``.write``, or a column missing from ``fields``), since DRF already
+    requires the ones it accepts. Raise a 400 naming it instead of the
+    IntegrityError."""
+    if not isinstance(validated_data, dict):
+        return
+    missing = {
+        field.name: ["This field is required, but you can't set it through this API."]
+        for field in model._meta.concrete_fields
+        if not field.null
+        and not field.primary_key
+        and not getattr(field, "auto_now", False)
+        and not getattr(field, "auto_now_add", False)
+        and field.get_default() is None
+        and field.name not in validated_data
+        and field.attname not in validated_data
+    }
+    if missing:
+        raise serializers.ValidationError(missing)
+
+
 def _check_fk_injection_writes(model, validated_data, request, tenant_field):
     """Layer 3: FK / M2M injection + co-tenant checks. Returns a
     ``{field: [errors]}`` dict ({} when every provided target is allowed).
@@ -236,10 +259,11 @@ def _check_fk_injection_writes(model, validated_data, request, tenant_field):
     Layer 3a: every provided FK / M2M target must be visible under the related
       model's tenant boundary + predicate stack (as through its own endpoint;
       an anonymous caller can't reach a tenant-scoped target).
-    Layer 3b: when the host is tenant-scoped, a target of the tenant model must
-      be the caller's tenant, and a target with a tenant attribute (via
-      TURBODRF_TENANT_USER_FIELD) must share the caller's tenant — catches
-      cross-tenant User-FK assignment (User typically has no predicates).
+    Layer 3b: when the host is scoped (a tenant_field, or predicates alone), a
+      target of the tenant model must be the caller's tenant, and a target with
+      a tenant attribute (via TURBODRF_TENANT_USER_FIELD) must share the
+      caller's tenant — catches cross-tenant User-FK and Members assignment
+      (User typically has no predicates).
     Layer 3c: unified error text (same whether the target doesn't exist or just
       isn't visible) so an attacker can't enumerate other tenants' PKs.
 
@@ -247,6 +271,7 @@ def _check_fk_injection_writes(model, validated_data, request, tenant_field):
     """
     from django.conf import settings as django_settings
 
+    from .predicates import get_predicates
     from .validation import scoped_target_queryset
 
     fk_errors = {}
@@ -254,9 +279,9 @@ def _check_fk_injection_writes(model, validated_data, request, tenant_field):
         return fk_errors
 
     tenant_user_field = getattr(django_settings, "TURBODRF_TENANT_USER_FIELD", None)
-    co_tenant = bool(tenant_user_field and tenant_field)
+    co_tenant = bool(tenant_user_field and (tenant_field or get_predicates(model)))
     tenant_pk = _caller_tenant_pk(request) if co_tenant else None
-    tenant_model = _tenant_model(model, tenant_field) if co_tenant else None
+    tenant_model = _tenant_model(model, tenant_field or "") if co_tenant else None
 
     relations = [f for f in model._meta.fields if f.many_to_one or f.one_to_one] + list(
         model._meta.many_to_many
@@ -1025,7 +1050,11 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         validated_data = _apply_predicate_writes(model, validated_data, None, request)
 
         with transaction.atomic():
-            instance = super().create(validated_data)
+            try:
+                instance = super().create(validated_data)
+            except IntegrityError:
+                _require_unwritable_columns(model, validated_data)
+                raise
             _verify_written_row(model, instance, request)
         return instance
 

@@ -196,8 +196,8 @@ class Command(BaseCommand):
             self.stdout.write(
                 self.style.ERROR(
                     "  Tenancy: NOT DECLARED — router will refuse to "
-                    "register this model. Add 'tenant_field', "
-                    "'visibility', or 'tenancy': 'shared'." + owner_note
+                    "register this model. Add 'tenant_field' (or "
+                    "'tenancy': 'shared' for reference data)." + owner_note
                 )
             )
             return

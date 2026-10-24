@@ -86,14 +86,71 @@ def _is_unique_alone(model, field):
     ) or any(tuple(t) == name for t in model._meta.unique_together)
 
 
+# Every key turbodrf() may return. Anything else is a typo that would silently
+# drop what it meant to configure ('owner_feild' would leave rows unscoped).
+_CONFIG_KEYS = frozenset(
+    {
+        "actions",
+        "bypass_owner_roles",
+        "compiled",
+        "enabled",
+        "endpoint",
+        "fields",
+        "full_clean",
+        "http_methods",
+        "lookup_field",
+        "owner_field",
+        "property_relations",
+        "public_access",
+        "read_only",
+        "searchable_fields",
+        "tenancy",
+        "tenant_field",
+        "unscoped_properties",
+        "visibility",
+    }
+)
+
+
+def _validate_config_keys(model, config):
+    unknown = sorted(set(config) - _CONFIG_KEYS)
+    if not unknown:
+        return
+    hint = ""
+    if "sensitive_fields" in unknown:
+        hint = " 'sensitive_fields' is a class attribute on the model, not a key."
+    raise ImproperlyConfigured(
+        f"{model.__name__}.turbodrf() has unknown keys {unknown}.{hint} "
+        f"Valid keys: {', '.join(sorted(_CONFIG_KEYS))}."
+    )
+
+
+def _ends_on_reverse_one_to_one(model, path):
+    """True if ``path``'s last hop is a reverse one-to-one: rendered bare, it
+    would show the related row's pk without that row's own scope."""
+    current = model
+    field = None
+    for part in path.split("__"):
+        try:
+            field = current._meta.get_field(part)
+        except FieldDoesNotExist:
+            return False
+        current = getattr(field, "related_model", None) or current
+    return bool(
+        field and field.one_to_one and field.auto_created and not field.concrete
+    )
+
+
 def _validate_fields_and_lookup(model, config):
     """Refuse to boot on a ``fields`` entry or ``lookup_field`` the model
     doesn't have. Either one failed every request with a 500 instead: a
     ``fields`` typo only logged "Could not compile …" (and nothing at all with
     ``compiled: False``)."""
+    _validate_config_keys(model, config)
+    names = _configured_field_names(model, config)
     bad = [
         name
-        for name in _configured_field_names(model, config)
+        for name in names
         if not isinstance(name, str) or not _field_path_resolves(model, name)
     ]
     if bad:
@@ -101,6 +158,13 @@ def _validate_fields_and_lookup(model, config):
             f"{model.__name__}.turbodrf() 'fields' lists {bad}, which "
             f"{model.__name__} doesn't have. Each entry must be a model field, "
             f"a @property, or a '__' path through relations."
+        )
+    reverse = [name for name in names if _ends_on_reverse_one_to_one(model, name)]
+    if reverse:
+        raise ImproperlyConfigured(
+            f"{model.__name__}.turbodrf() 'fields' lists {reverse}, which end on "
+            f"a reverse one-to-one relation. List a field on the related model "
+            f"instead (e.g. '{reverse[0]}__name')."
         )
 
     lookup = config.get("lookup_field")
