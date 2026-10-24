@@ -24,7 +24,11 @@ from turbodrf.models import RolePermission, TurboDRFRole, UserRole
 User = get_user_model()
 
 
-@override_settings(TURBODRF_PERMISSION_MODE="database")
+# The rows here name models that aren't installed ("books.book"); RolePermission
+# rejects those unless TURBODRF_ALLOW_UNKNOWN_PERMISSIONS is set.
+@override_settings(
+    TURBODRF_PERMISSION_MODE="database", TURBODRF_ALLOW_UNKNOWN_PERMISSIONS=True
+)
 class TestDatabasePermissionModels(TestCase):
     """Test the database models for roles and permissions."""
 
@@ -285,7 +289,10 @@ class TestPermissionSnapshot(TestCase):
 
 
 @override_settings(
-    TURBODRF_PERMISSION_MODE="database", TURBODRF_DISABLE_PERMISSIONS=False
+    TURBODRF_PERMISSION_MODE="database",
+    TURBODRF_DISABLE_PERMISSIONS=False,
+    # The rows target a mock model ("testapp.testmodel"), not an installed one.
+    TURBODRF_ALLOW_UNKNOWN_PERMISSIONS=True,
 )
 class TestDatabasePermissionsIntegration(TestCase):
     """Integration tests for database permissions with viewsets."""

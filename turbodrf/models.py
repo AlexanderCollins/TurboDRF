@@ -7,7 +7,7 @@ runtime permission changes without code deployment.
 
 from django.conf import settings
 from django.contrib.auth.models import Group
-from django.db import models
+from django.db import models, transaction
 
 
 def _get_permission_check_constraint():
@@ -87,10 +87,34 @@ class TurboDRFRole(models.Model):
         return self.name
 
     def save(self, *args, **kwargs):
-        """Increment version on save for cache invalidation."""
-        if self.pk:  # Only increment for updates, not creates
-            self.version += 1
-        super().save(*args, **kwargs)
+        """Increment version on save for cache invalidation.
+
+        An update bumps the stored version in the database (``F() + 1``, as
+        ``RolePermission`` does) and never writes the in-memory one: a stale
+        instance would move the version backwards, and permission-cache keys
+        built from (name, version) would bring back a revoked permission's
+        cached snapshot."""
+        if self._state.adding and (
+            self.pk is None
+            or kwargs.get("force_insert")
+            or not type(self)._base_manager.filter(pk=self.pk).exists()
+        ):
+            super().save(*args, **kwargs)
+            return
+        update_fields = kwargs.get("update_fields")
+        if update_fields is None:
+            update_fields = [
+                f.name
+                for f in self._meta.concrete_fields
+                if not f.primary_key and f.name != "version"
+            ]
+        kwargs["update_fields"] = [f for f in update_fields if f != "version"]
+        with transaction.atomic(using=kwargs.get("using")):
+            super().save(*args, **kwargs)
+            type(self)._base_manager.filter(pk=self.pk).update(
+                version=models.F("version") + 1
+            )
+        self.refresh_from_db(fields=["version"])
 
 
 class RolePermission(models.Model):
@@ -218,8 +242,85 @@ class RolePermission(models.Model):
         else:
             return f"{self.app_label}.{self.model_name}.{self.action}"
 
+    def clean(self):
+        """Reject a rule that can't match anything.
+
+        Rules are matched exactly against a model's ``app_label`` and
+        ``model_name`` and a concrete or M2M field name, as in static mode,
+        whose boot gate rejects the same strings. A field rule that matches
+        nothing fails open: the field it was meant to restrict stays readable
+        and writable. A model that isn't loaded is accepted only with
+        ``TURBODRF_ALLOW_UNKNOWN_PERMISSIONS = True``, as in static mode.
+        """
+        import difflib
+
+        from django.apps import apps
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        loaded = [m for models_ in apps.all_models.values() for m in models_.values()]
+        model = next(
+            (
+                m
+                for m in loaded
+                if (m._meta.app_label, m._meta.model_name)
+                == (self.app_label, self.model_name)
+            ),
+            None,
+        )
+        if model is None:
+            wanted = (str(self.app_label).lower(), str(self.model_name).lower())
+            match = next(
+                (
+                    m
+                    for m in loaded
+                    if (m._meta.app_label.lower(), m._meta.model_name) == wanted
+                ),
+                None,
+            )
+            if match is not None:
+                errors["model_name"] = (
+                    f"Write the model as {match._meta.app_label}."
+                    f"{match._meta.model_name}: permission rules are matched "
+                    f"exactly."
+                )
+            elif not getattr(settings, "TURBODRF_ALLOW_UNKNOWN_PERMISSIONS", False):
+                errors["model_name"] = (
+                    f"No model {self.app_label}.{self.model_name} is installed "
+                    f"(app label and lowercase model name)."
+                )
+        elif self.field_name is not None:
+            # Field rules apply to concrete and M2M fields, by name (not an
+            # FK's attname such as "related_id").
+            names = {f.name for f in model._meta.fields} | {
+                f.name for f in model._meta.many_to_many
+            }
+            if self.field_name not in names:
+                close = difflib.get_close_matches(
+                    self.field_name, sorted(names), n=3, cutoff=0.6
+                )
+                hint = f" Close matches: {close}." if close else ""
+                errors["field_name"] = (
+                    f"{model._meta.label} has no field {self.field_name!r}.{hint}"
+                )
+        if self.action is not None and self.action not in dict(self.ACTION_CHOICES):
+            errors["action"] = (
+                f"Action must be one of {sorted(dict(self.ACTION_CHOICES))}."
+            )
+        if self.permission_type is not None and self.permission_type not in dict(
+            self.PERMISSION_TYPE_CHOICES
+        ):
+            errors["permission_type"] = (
+                f"Permission type must be one of "
+                f"{sorted(dict(self.PERMISSION_TYPE_CHOICES))}."
+            )
+        if errors:
+            raise ValidationError(errors)
+
     def save(self, *args, **kwargs):
-        """Update role version on permission change for cache invalidation."""
+        """Validate the rule (see ``clean``), then update the role version on
+        permission change for cache invalidation."""
+        self.clean()
         super().save(*args, **kwargs)
         # Increment role version to invalidate caches
         if self.role:
