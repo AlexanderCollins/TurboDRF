@@ -250,7 +250,9 @@ class ValidatePredicateWriteSafetyTests(TestCase):
             msg = str(cm.exception)
             self.assertIn("Custom", msg)
             self.assertIn("write_validator", msg)
-            self.assertIn("Either(Owner, Custom)", msg)
+            # Either now runs every child's check, so the message is about the
+            # Custom's own rule, not about Either overriding Owner.
+            self.assertIn("filters reads only", msg)
 
     def test_either_owner_custom_without_write_validator_raises(self):
         """The Either(Owner, Custom) pattern for "owner OR external grant"

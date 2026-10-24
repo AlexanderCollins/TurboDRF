@@ -34,10 +34,12 @@ def get_user_tenant(user):
     # method, related manager) would either crash Django's ORM at
     # SQL-compile time or — worse — silently match unrelated rows. Falling
     # back to None fail-closes downstream filters.
-    if tenant is None:
+    # An unsaved instance (pk None) can't scope a query (Django 5.2 raises), and
+    # a bool is an int to Python but never a tenant key.
+    if tenant is None or isinstance(tenant, bool):
         return None
     if hasattr(tenant, "pk"):
-        return tenant
+        return tenant if tenant.pk is not None else None
     if isinstance(tenant, int):
         return tenant
     return None
@@ -56,6 +58,29 @@ def _authed_user(request):
 def _no_match_q():
     """Q that matches zero rows. Used for fail-closed."""
     return Q(pk__in=[])
+
+
+def _role_set(roles, what):
+    """``roles`` as a set of role names. A bare string is one role, not the set
+    of its characters (``bypass='admin'`` would have bypassed for roles 'a',
+    'd', ...)."""
+    if roles is None:
+        return set()
+    if isinstance(roles, str):
+        return {roles}
+    try:
+        return set(roles)
+    except TypeError:
+        raise ImproperlyConfigured(
+            f"{what} must be a role name or a list of role names; got "
+            f"{type(roles).__name__}."
+        )
+
+
+def _current_pk(instance, field_name):
+    """The pk an owner FK of ``instance`` holds now (None if unset), read from
+    the column so the related user isn't loaded."""
+    return getattr(instance, instance._meta.get_field(field_name).attname, None)
 
 
 class Predicate:
@@ -135,6 +160,11 @@ class Owner(Predicate):
 
     `field` may be a single column or list of columns (multi-owner case — any
     matching column grants visibility). Bypass roles see all rows in tenant.
+
+    Writes (non-bypass callers): an owner column can be set only to the caller,
+    can't be cleared, and can't be changed while it holds another user — so a
+    co-owner can't take the row over. Only direct columns are checked; a
+    ``__`` path is a read rule.
     """
 
     def __init__(self, field, bypass=None):
@@ -144,7 +174,7 @@ class Owner(Predicate):
             self.fields = list(field)
             if not self.fields:
                 raise ImproperlyConfigured("Owner requires at least one field.")
-        self.bypass = set(bypass or [])
+        self.bypass = _role_set(bypass, "Owner bypass")
 
     def q(self, request, user_roles):
         if user_roles and (user_roles & self.bypass):
@@ -171,21 +201,28 @@ class Owner(Predicate):
         return validated_data
 
     def validate_write(self, validated_data, instance, request):
-        if any("__" in f for f in self.fields):
+        provided = [f for f in self.fields if "__" not in f and f in validated_data]
+        if not provided:
             return []
         user = _authed_user(request)
         if user is None:
-            return []
+            return [f"Cannot set {f}: no authenticated user." for f in provided]
         from .backends import get_user_roles
 
         if set(get_user_roles(user)) & self.bypass:
             return []
         errors = []
-        for f in self.fields:
-            if f in validated_data:
-                value_pk = getattr(validated_data[f], "pk", validated_data[f])
-                if value_pk != user.pk:
-                    errors.append(f"Cannot set {f} to a different user.")
+        for f in provided:
+            value_pk = getattr(validated_data[f], "pk", validated_data[f])
+            current_pk = _current_pk(instance, f) if instance is not None else None
+            if current_pk is not None and current_pk != user.pk:
+                errors.append(
+                    f"Cannot change {f}: the row is assigned to another user."
+                )
+            elif value_pk is None:
+                errors.append(f"Cannot clear {f}.")
+            elif value_pk != user.pk:
+                errors.append(f"Cannot set {f} to a different user.")
         return errors
 
 
@@ -195,8 +232,11 @@ class Either(Predicate):
     Read filter: OR of children's Q. A child that places no restriction (an
     empty ``Q()``, e.g. an Owner bypass role) makes the whole Either
     unrestricted — ``Q() | Q(x)`` would otherwise collapse to ``Q(x)``.
-    Write validation: passes if ANY child passes.
-    Auto-fill: not applied (ambiguous).
+    Write validation: EVERY child's check runs and any objection blocks the
+    write. A child with no write rule (Members, Group) raises none, so an
+    Owner child's rule holds inside the Either. (Passing when one child
+    passed let a Members branch override Owner.)
+    Auto-fill: every child's, so an Owner child fills its column on create.
     """
 
     def __init__(self, *predicates):
@@ -218,14 +258,16 @@ class Either(Predicate):
             combined = child_q if combined is None else combined | child_q
         return combined if combined is not None else Q()
 
-    def validate_write(self, validated_data, instance, request):
-        all_errors = []
+    def auto_fill(self, validated_data, request):
         for pred in self.predicates:
-            errors = pred.validate_write(validated_data, instance, request)
-            if not errors:
-                return []
-            all_errors.extend(errors)
-        return all_errors
+            validated_data = pred.auto_fill(validated_data, request)
+        return validated_data
+
+    def validate_write(self, validated_data, instance, request):
+        errors = []
+        for pred in self.predicates:
+            errors.extend(pred.validate_write(validated_data, instance, request))
+        return list(dict.fromkeys(errors))
 
 
 class Custom(Predicate):
@@ -309,7 +351,11 @@ class Group(Predicate):
     """Advanced: user must belong to the group/team that owns the row.
 
     ``field`` is the FK on the row to the group/team.
-    ``user_via`` is the reverse-M2M name from group/team to user.
+    ``user_via`` is the lookup from the group/team to its users, as a query
+    would spell it: an M2M field name (``members``) or a reverse relation's
+    query name (``user`` for ``User.groups``, not the ``user_set``
+    accessor). The router checks ``<field>__<user_via>`` reaches the user
+    model at startup.
 
     Scopes reads, and so updates and deletes. A create (or an update that
     moves the row to another group) is not membership-checked; use ``Custom``
@@ -342,7 +388,7 @@ class Conditional(Predicate):
         if not isinstance(when, Q):
             raise ImproperlyConfigured("Conditional `when` must be a Q object.")
         self.when = when
-        self.require_roles = set(require_roles or [])
+        self.require_roles = _role_set(require_roles, "Conditional require_roles")
 
     def q(self, request, user_roles):
         if user_roles and (user_roles & self.require_roles):
@@ -368,17 +414,15 @@ def parse_config(config):
     Recognized keys:
       - 'tenancy': 'shared'         → (None, [])
       - 'tenant_field': str         → tenant_field setting (NOT a predicate)
-      - 'owner_field': str|list     → Owner / Either(Owner,...)  predicate
+      - 'owner_field': str|list     → one Owner predicate (a list → over
+        every column)
       - 'bypass_owner_roles': list  → applied to Owner predicates
       - 'visibility': [Predicate..] → power form. Tenant() inside is
         EXTRACTED to the tenant_field setting (with deprecation warning).
         Tenant() inside an Either raises — would let OR-composition
         escape the tenant boundary.
     """
-    import logging
     import warnings
-
-    logging.getLogger(__name__)
 
     if not isinstance(config, dict):
         raise ImproperlyConfigured(
@@ -525,19 +569,39 @@ def _reject_tenant_inside_either(predicate):
 
 def has_tenancy_declaration(config):
     """True if config declares how its rows are scoped across tenants: a
-    ``tenant_field``, a non-empty ``visibility``, or ``tenancy: 'shared'``.
+    ``tenant_field``, ``tenancy: 'shared'``, or a ``visibility`` list that
+    restricts every caller to their own rows.
 
     ``owner_field`` alone doesn't count: it scopes rows within a tenant, and
-    its bypass roles would see every tenant's rows. Any other ``tenancy``
+    its bypass roles would see every tenant's rows. Nor does a ``visibility``
+    list (without a ``tenant_field``) whose predicates can all lift the
+    restriction — an ``Owner`` with bypass roles, a ``Conditional``, or an
+    ``Either`` with such a child — for the same reason. Any other ``tenancy``
     value is a typo, not a declaration.
     """
     if not isinstance(config, dict):
         return False
-    return (
-        config.get("tenancy") == "shared"
-        or config.get("tenant_field") is not None
-        or bool(config.get("visibility"))
-    )
+    if config.get("tenancy") == "shared" or config.get("tenant_field") is not None:
+        return True
+    visibility = config.get("visibility")
+    if not isinstance(visibility, (list, tuple)):
+        return False
+    # The list is AND'd: one predicate that always restricts is enough.
+    return any(_always_restricts(p) for p in visibility)
+
+
+def _always_restricts(predicate):
+    """True if ``predicate`` restricts every caller to rows tied to them,
+    whatever their roles. ``Custom`` (and unknown subclasses) count: their
+    rule is the developer's. A top-level ``Tenant`` becomes the tenant
+    boundary."""
+    if isinstance(predicate, Owner):
+        return not predicate.bypass
+    if isinstance(predicate, Conditional):
+        return False
+    if isinstance(predicate, Either):
+        return all(_always_restricts(p) for p in predicate.predicates)
+    return isinstance(predicate, Predicate)
 
 
 # ---------------------------------------------------------------------------
@@ -579,21 +643,13 @@ def validate_predicate_write_safety(model):
     """Refuse to boot if a Custom predicate is registered without an
     explicit ``write_validator``.
 
-    The bug class this protects against:
-
-    ``Custom`` predicates default to ``validate_write → []`` (no errors,
-    write allowed). When wrapped in ``Either(Owner, Custom)`` — the
-    common pattern for "owner OR external grant" — the Either combinator
-    passes if any child returns no errors. So a no-op ``Custom``
-    silently overrides ``Owner``'s careful checks: any caller whose role
-    has the model-level write permission can bypass owner enforcement
-    via the Custom branch, regardless of whether the Custom predicate
-    was meant to enforce writes or not.
-
-    This is the "5-line fix" footgun documented in the security audit:
-    a Custom predicate intended for read-only role grants (e.g.
-    legacy_contact) can become a write hole the moment its role is
-    granted any write permission.
+    A ``Custom``'s ``q_func`` filters reads only. Without a
+    ``write_validator`` a write isn't checked against it: a caller with the
+    model-level write permission can create rows, or move visible rows,
+    outside the rule (as with ``Members`` / ``Group``). Inside
+    ``Either(Owner, Custom)`` this no longer weakens ``Owner`` — ``Either``
+    runs every child's check — but the Custom's own rule still isn't applied
+    to writes, and the developer should say so.
 
     Detection is fully static: walk every model's predicate stack
     (recursing into Either), find any ``Custom`` whose
@@ -601,9 +657,9 @@ def validate_predicate_write_safety(model):
 
     Resolution (raised in the error message):
 
-      * Pass ``write_validator=lambda d, i, r: []`` if the predicate is
-        intentionally read-only (writes pass through this branch).
       * Pass ``write_validator=my_check`` to enforce writes for real.
+      * Pass ``write_validator=lambda d, i, r: []`` to declare that this
+        rule doesn't restrict writes (other predicates still apply).
       * Set ``TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE = True`` to bypass the
         gate (logs a warning; for migrations only).
     """
@@ -623,16 +679,17 @@ def validate_predicate_write_safety(model):
     message = (
         f"{model.__name__} has Custom predicate(s) without an explicit "
         f"write_validator:\n{descriptions}\n\n"
-        f"By default, Custom.validate_write returns [] (no errors), "
-        f"meaning writes pass through. Inside Either(Owner, Custom) "
-        f"this silently overrides Owner's enforcement — any caller with "
-        f"the model-level write permission can bypass owner checks via "
-        f"the Custom branch.\n\n"
+        f"A Custom's q_func filters reads only. Without a write_validator, "
+        f"writes aren't checked against it: any caller with the model-level "
+        f"write permission can create rows, or move rows, outside the "
+        f"rule.\n\n"
         f"Fix one of:\n"
-        f"  • Pass write_validator=lambda d, i, r: [] if the predicate "
-        f"is intentionally read-only and writes should pass through.\n"
-        f"  • Pass write_validator=my_check to enforce writes — return "
-        f"a list of error strings to block, [] to allow.\n"
+        f"  • Pass write_validator=my_check to enforce the rule on writes — "
+        f"return a list of error strings to block, [] to allow. Inside "
+        f"Either(...) every child's check runs, and any error blocks the "
+        f"write.\n"
+        f"  • Pass write_validator=lambda d, i, r: [] if this rule shouldn't "
+        f"restrict writes (other predicates, such as Owner, still apply).\n"
         f"  • Set TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE=True to bypass "
         f"this gate (NOT recommended; logs a warning)."
     )

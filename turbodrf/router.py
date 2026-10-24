@@ -6,6 +6,7 @@ and registers all models with TurboDRFMixin.
 """
 
 from django.apps import apps
+from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
 from django.urls import re_path
 from rest_framework.routers import DefaultRouter
 
@@ -33,6 +34,93 @@ _CRUD_WRITE_ACTIONS = frozenset({"create", "update", "partial_update", "destroy"
 # hits this once with the real TURBODRF_ROLES; tests with partial role
 # overrides won't trip the guard against the model's static bypass list.
 _bypass_roles_validated = False
+
+
+def _field_path_resolves(model, path):
+    """True if ``path`` names something the serializer can render: a model
+    field or attribute (``@property``), or a ``__`` path whose hops before the
+    last are relations."""
+    parts = path.split("__")
+    current = model
+    for i, part in enumerate(parts):
+        last = i == len(parts) - 1
+        try:
+            field = current._meta.get_field(part)
+        except FieldDoesNotExist:
+            return last and bool(part) and hasattr(current, part)
+        if not last:
+            current = getattr(field, "related_model", None)
+            if current is None:
+                return False
+    return True
+
+
+def _configured_field_names(model, config):
+    """Every name in the model's ``fields`` config ('__all__' adds none)."""
+    fields = config.get("fields", "__all__")
+    if fields == "__all__":
+        return []
+    if isinstance(fields, dict):
+        names = []
+        for key in ("list", "detail"):
+            value = fields.get(key, [])
+            if value != "__all__":
+                names.extend(value)
+        return names
+    if isinstance(fields, str):
+        raise ImproperlyConfigured(
+            f"{model.__name__}.turbodrf() 'fields' must be a list, a "
+            f"{{'list': [...], 'detail': [...]}} dict or '__all__'; got "
+            f"{fields!r}."
+        )
+    return list(fields)
+
+
+def _is_unique_alone(model, field):
+    """True if ``field`` alone identifies a row."""
+    if field.unique:
+        return True
+    name = (field.name,)
+    return any(
+        tuple(c.fields) == name for c in model._meta.total_unique_constraints
+    ) or any(tuple(t) == name for t in model._meta.unique_together)
+
+
+def _validate_fields_and_lookup(model, config):
+    """Refuse to boot on a ``fields`` entry or ``lookup_field`` the model
+    doesn't have. Either one failed every request with a 500 instead: a
+    ``fields`` typo only logged "Could not compile …" (and nothing at all with
+    ``compiled: False``)."""
+    bad = [
+        name
+        for name in _configured_field_names(model, config)
+        if not isinstance(name, str) or not _field_path_resolves(model, name)
+    ]
+    if bad:
+        raise ImproperlyConfigured(
+            f"{model.__name__}.turbodrf() 'fields' lists {bad}, which "
+            f"{model.__name__} doesn't have. Each entry must be a model field, "
+            f"a @property, or a '__' path through relations."
+        )
+
+    lookup = config.get("lookup_field")
+    if lookup is None or lookup == "pk":
+        return
+    try:
+        field = model._meta.get_field(lookup) if isinstance(lookup, str) else None
+    except FieldDoesNotExist:
+        field = None
+    if field is None or not getattr(field, "concrete", False) or field.many_to_many:
+        raise ImproperlyConfigured(
+            f"{model.__name__}.turbodrf() 'lookup_field' {lookup!r} is not a "
+            f"column of {model.__name__}."
+        )
+    if not _is_unique_alone(model, field):
+        raise ImproperlyConfigured(
+            f"{model.__name__}.turbodrf() 'lookup_field' {lookup!r} isn't unique, "
+            f"so a detail URL could match several rows. Use a field with "
+            f"unique=True (or a single-field UniqueConstraint)."
+        )
 
 
 class TurboDRFRouter(DefaultRouter):
@@ -89,30 +177,29 @@ class TurboDRFRouter(DefaultRouter):
 
         The method:
         1. Finds all models inheriting from TurboDRFMixin
-        2. Checks if the model is enabled (via turbodrf() config)
-        3. Validates field nesting depth
-        4. Resolves tenancy (sugar → predicates, auto-detection, hard-fail)
+        2. Resolves and registers every one's tenancy (sugar → predicates,
+           auto-detection), enabled or not
+        3. Checks if the model is enabled (via turbodrf() config)
+        4. Validates fields, lookup_field and the tenancy hard-fail
         5. Creates a dynamic ViewSet for the model
         6. Registers the ViewSet with the appropriate endpoint
 
         Models can customize their endpoint name via the 'endpoint' key
         in their turbodrf() configuration. If not specified, the endpoint
-        defaults to the pluralized model name.
+        defaults to the pluralized model name. URL names are prefixed with the
+        model name (with the endpoint when another app's model of the same
+        name took it first).
         """
         import logging
 
         from django.conf import settings as django_settings
-        from django.core.exceptions import ImproperlyConfigured
 
-        from .predicates import (
-            Owner,
-            has_tenancy_declaration,
-            register_predicates,
-            register_tenant_field,
-        )
+        from .predicates import Owner, has_tenancy_declaration
         from .properties import validate_property_config
-        from .tenancy import resolve_tenancy_for_model
+        from .tenancy import _register_tenancy
         from .validation import validate_nesting_depth
+
+        global _bypass_roles_validated
 
         logger = logging.getLogger(__name__)
 
@@ -121,193 +208,191 @@ class TurboDRFRouter(DefaultRouter):
         autodetect = getattr(django_settings, "TURBODRF_AUTODETECT_TENANT", False)
         known_roles = set(getattr(django_settings, "TURBODRF_ROLES", {}).keys())
 
-        for model in apps.get_models():
-            if issubclass(model, TurboDRFMixin):
-                config = model.turbodrf()
+        # Read each model's config once for every pass below.
+        models = [m for m in apps.get_models() if issubclass(m, TurboDRFMixin)]
+        configs = {model: model.turbodrf() for model in models}
+        enabled = [m for m in models if configs[m].get("enabled", True)]
 
-                if config.get("enabled", True):
-                    # Validate nesting depth for configured fields
-                    fields = config.get("fields", [])
-                    if isinstance(fields, dict):
-                        # Check both list and detail fields
-                        all_fields = []
-                        all_fields.extend(fields.get("list", []))
-                        all_fields.extend(fields.get("detail", []))
-                        fields = all_fields
-                    elif fields == "__all__":
-                        fields = []  # Skip validation for __all__
+        # ---------------------------------------------------------------
+        # Resolve and register tenancy for EVERY model, enabled or not: a
+        # disabled model is still a FK / nested-field / filter target, and
+        # those checks read its scoping from the registry. Returns
+        # (tenant_field, predicates, autodetected) per model. Tenant is a
+        # SETTING separate from the predicate algebra so OR-composition
+        # cannot escape it.
+        # ---------------------------------------------------------------
+        resolved = _register_tenancy(models, configs)
 
-                    # Validate each field
-                    for field in fields:
-                        try:
-                            validate_nesting_depth(field)
-                        except Exception as e:
-                            logger.warning(
-                                f"Model {model.__name__} field '{field}' "
-                                f"validation failed: {str(e)}"
-                            )
+        for model in enabled:
+            config = configs[model]
 
-                    # property_relations / unscoped_properties must name
-                    # real properties and loadable relation paths.
-                    validate_property_config(model)
-
-                    # ---------------------------------------------------
-                    # Resolve tenancy: returns (tenant_field, predicates,
-                    # autodetected). Tenant is a SETTING separate from the
-                    # predicate algebra so OR-composition cannot escape it.
-                    # ---------------------------------------------------
-                    tenant_field, predicates, autodetected = resolve_tenancy_for_model(
-                        model,
-                        config,
-                        tenant_model_setting,
-                        autodetect=autodetect,
+            # Validate nesting depth for configured fields
+            for field in _configured_field_names(model, config):
+                try:
+                    validate_nesting_depth(field)
+                except Exception as e:
+                    logger.warning(
+                        f"Model {model.__name__} field '{field}' "
+                        f"validation failed: {str(e)}"
                     )
 
-                    # Within-tenant predicates (owner_field) don't count: a
-                    # bypass role would see every tenant's rows.
-                    if (
-                        require_tenancy
-                        and tenant_model_setting is not None
-                        and tenant_field is None
-                        and not has_tenancy_declaration(config)
-                        and not autodetected
-                    ):
-                        raise ImproperlyConfigured(
-                            f"{model.__name__}.turbodrf() declares no tenancy "
-                            f"and no tenant FK could be auto-detected to "
-                            f"{tenant_model_setting}. Add one of: "
-                            f"'tenant_field': '<path>', "
-                            f"'visibility': [...], or "
-                            f"'tenancy': 'shared' (for reference data). An "
-                            f"'owner_field' alone scopes rows within a tenant, "
-                            f"not across tenants. "
-                            f"Set TURBODRF_REQUIRE_TENANCY=False to disable "
-                            f"this check."
-                        )
+            # Every configured field and the lookup_field must exist.
+            _validate_fields_and_lookup(model, config)
 
-                    # Validate bypass roles against TURBODRF_ROLES.
-                    # Runs once per process at first init. Subsequent
-                    # inits (typically under override_settings in tests)
-                    # skip this — the real config has already been
-                    # checked, and partial role overrides shouldn't
-                    # spuriously fail the typo guard.
-                    global _bypass_roles_validated
-                    if known_roles and not _bypass_roles_validated:
-                        for pred in _walk_predicates(predicates):
-                            if isinstance(pred, Owner) and pred.bypass:
-                                unknown = pred.bypass - known_roles
-                                if unknown:
-                                    raise ImproperlyConfigured(
-                                        f"{model.__name__}.turbodrf() declares "
-                                        f"bypass_owner_roles={sorted(pred.bypass)} "
-                                        f"but {sorted(unknown)} are not in "
-                                        f"TURBODRF_ROLES. Typo or stale config?"
-                                    )
+            # property_relations / unscoped_properties must name
+            # real properties and loadable relation paths.
+            validate_property_config(model)
 
-                    register_tenant_field(model, tenant_field)
-                    register_predicates(model, predicates)
-                    if autodetected:
-                        logger.info(
-                            f"Auto-detected tenant path for {model.__name__}: "
-                            f"{tenant_field}"
-                        )
+            tenant_field, predicates, autodetected = resolved[model]
 
-                    # Get custom endpoint or use default
-                    endpoint = config.get("endpoint", f"{model._meta.model_name}s")
+            # Within-tenant predicates don't count: owner_field, or a
+            # visibility list whose bypass roles / Conditional can lift the
+            # restriction, would let some callers see every tenant's rows.
+            if (
+                require_tenancy
+                and tenant_model_setting is not None
+                and tenant_field is None
+                and not has_tenancy_declaration(config)
+            ):
+                # Auto-detection runs for the sugar form only, when enabled.
+                detected = (
+                    " and no tenant FK could be auto-detected"
+                    if autodetect and config.get("visibility") is None
+                    else ""
+                )
+                raise ImproperlyConfigured(
+                    f"{model.__name__}.turbodrf() declares no tenant "
+                    f"boundary{detected}. Add 'tenant_field': '<path to "
+                    f"{tenant_model_setting}>', or 'tenancy': 'shared' for "
+                    f"reference data. An 'owner_field' alone scopes rows within "
+                    f"a tenant, not across tenants; so does a 'visibility' list "
+                    f"without a 'tenant_field' unless one of its predicates "
+                    f"restricts every caller (an Owner without bypass roles, "
+                    f"Members, Group or Custom). "
+                    f"Set TURBODRF_REQUIRE_TENANCY=False to disable "
+                    f"this check."
+                )
 
-                    # Get lookup field if specified
-                    lookup_field = config.get("lookup_field", None)
-
-                    # Build viewset attributes
-                    viewset_attrs = {
-                        "model": model,
-                        "queryset": model._default_manager.all(),
-                        "_predicates": predicates,
-                        "_tenant_field": tenant_field,
-                        "__module__": model.__module__,
-                        "__doc__": (
-                            f"Auto-generated ViewSet for {model.__name__} model."
-                        ),
-                    }
-
-                    # Add lookup_field if specified
-                    if lookup_field:
-                        viewset_attrs["lookup_field"] = lookup_field
-
-                    # Restrict HTTP methods: `read_only: True` (list/retrieve
-                    # only) or an explicit `http_methods` allow-list. Disallowed
-                    # verbs return 405. A read-only resource still serves its
-                    # declared actions on their own verbs (e.g. a POST action);
-                    # its CRUD write routes stay unrouted (see get_method_map).
-                    read_only = config.get("read_only", False)
-                    http_methods = config.get("http_methods")
-                    if read_only:
-                        methods = ["get", "head", "options"]
-                        for action_func in config.get("actions") or []:
-                            for method in getattr(action_func, "mapping", None) or {}:
-                                if method not in methods:
-                                    methods.append(method)
-                        viewset_attrs["http_method_names"] = methods
-                        viewset_attrs["_read_only"] = True
-                    elif http_methods:
-                        methods = [m.lower() for m in http_methods]
-                        for always in ("head", "options"):
-                            if always not in methods:
-                                methods.append(always)
-                        viewset_attrs["http_method_names"] = methods
-
-                    # Custom endpoints: attach @turbodrf_action-decorated
-                    # handlers from the config to the generated viewset. They
-                    # inherit get_object()/get_queryset() tenant + predicate
-                    # scoping like the CRUD routes. Reject any handler whose name
-                    # collides with a TurboDRFViewSet method/attribute — silently
-                    # overwriting e.g. get_queryset/authorize/scope would replace
-                    # the row-scoping chokepoint.
-                    reserved_names = set(dir(TurboDRFViewSet))
-                    for action_func in config.get("actions") or []:
-                        action_name = getattr(action_func, "__name__", None)
-                        if not action_name:
-                            continue
-                        if action_name in reserved_names:
+            # Validate bypass roles against TURBODRF_ROLES.
+            # Runs once per process at first init. Subsequent
+            # inits (typically under override_settings in tests)
+            # skip this — the real config has already been
+            # checked, and partial role overrides shouldn't
+            # spuriously fail the typo guard.
+            if known_roles and not _bypass_roles_validated:
+                for pred in _walk_predicates(predicates):
+                    if isinstance(pred, Owner) and pred.bypass:
+                        unknown = pred.bypass - known_roles
+                        if unknown:
                             raise ImproperlyConfigured(
-                                f"{model.__name__} turbodrf() action "
-                                f"'{action_name}' collides with a TurboDRFViewSet "
-                                f"method/attribute — rename the handler function."
+                                f"{model.__name__}.turbodrf() declares "
+                                f"bypass_owner_roles={sorted(pred.bypass)} "
+                                f"but {sorted(unknown)} are not in "
+                                f"TURBODRF_ROLES. Typo or stale config?"
                             )
-                        viewset_attrs[action_name] = action_func
 
-                    # Create a custom viewset for this model
-                    viewset_class = type(
-                        f"{model.__name__}ViewSet",
-                        (TurboDRFViewSet,),
-                        viewset_attrs,
+            if autodetected:
+                logger.info(
+                    f"Auto-detected tenant path for {model.__name__}: "
+                    f"{tenant_field}"
+                )
+
+            # Get custom endpoint or use default
+            endpoint = config.get("endpoint", f"{model._meta.model_name}s")
+
+            # Get lookup field if specified
+            lookup_field = config.get("lookup_field", None)
+
+            # Build viewset attributes. No class-level `queryset`: it would be
+            # every tenant's rows (a custom action reading `self.queryset`
+            # bypassed scoping). Rows come from get_queryset() only.
+            viewset_attrs = {
+                "model": model,
+                "_predicates": predicates,
+                "_tenant_field": tenant_field,
+                "__module__": model.__module__,
+                "__doc__": (f"Auto-generated ViewSet for {model.__name__} model."),
+            }
+
+            # Add lookup_field if specified
+            if lookup_field:
+                viewset_attrs["lookup_field"] = lookup_field
+
+            # Restrict HTTP methods: `read_only: True` (list/retrieve
+            # only) or an explicit `http_methods` allow-list. Disallowed
+            # verbs return 405. A read-only resource still serves its
+            # declared actions on their own verbs (e.g. a POST action);
+            # its CRUD write routes stay unrouted (see get_method_map).
+            read_only = config.get("read_only", False)
+            http_methods = config.get("http_methods")
+            if read_only:
+                methods = ["get", "head", "options"]
+                for action_func in config.get("actions") or []:
+                    for method in getattr(action_func, "mapping", None) or {}:
+                        if method not in methods:
+                            methods.append(method)
+                viewset_attrs["http_method_names"] = methods
+                viewset_attrs["_read_only"] = True
+            elif http_methods:
+                methods = [m.lower() for m in http_methods]
+                for always in ("head", "options"):
+                    if always not in methods:
+                        methods.append(always)
+                viewset_attrs["http_method_names"] = methods
+
+            # Custom endpoints: attach @turbodrf_action-decorated
+            # handlers from the config to the generated viewset. They
+            # inherit get_object()/get_queryset() tenant + predicate
+            # scoping like the CRUD routes. Reject any handler whose name
+            # collides with a TurboDRFViewSet method/attribute — silently
+            # overwriting e.g. get_queryset/authorize/scope would replace
+            # the row-scoping chokepoint.
+            reserved_names = set(dir(TurboDRFViewSet))
+            for action_func in config.get("actions") or []:
+                action_name = getattr(action_func, "__name__", None)
+                if not action_name:
+                    continue
+                if action_name in reserved_names:
+                    raise ImproperlyConfigured(
+                        f"{model.__name__} turbodrf() action "
+                        f"'{action_name}' collides with a TurboDRFViewSet "
+                        f"method/attribute — rename the handler function."
                     )
+                viewset_attrs[action_name] = action_func
 
-                    # Register the viewset
-                    self.register(
-                        endpoint, viewset_class, basename=model._meta.model_name
+            # Create a custom viewset for this model
+            viewset_class = type(
+                f"{model.__name__}ViewSet",
+                (TurboDRFViewSet,),
+                viewset_attrs,
+            )
+
+            # Register the viewset
+            self.register(
+                endpoint,
+                viewset_class,
+                basename=self._route_basename(model, endpoint),
+            )
+
+            # Compile read path (on by default, opt out with compiled=False)
+            if config.get("compiled", True):
+                from .compiler import compile_model, register_compiled_plan
+
+                try:
+                    plan = compile_model(model)
+                    if plan is not None:
+                        register_compiled_plan(model, plan)
+                        logger.info(f"Compiled read path for {model.__name__}")
+                except Exception as e:
+                    # If compilation fails, fall back to DRF path silently
+                    logger.warning(
+                        f"Could not compile {model.__name__}: {e}. "
+                        f"Falling back to DRF serializer path."
                     )
-
-                    # Compile read path (on by default, opt out with compiled=False)
-                    if config.get("compiled", True):
-                        from .compiler import compile_model, register_compiled_plan
-
-                        try:
-                            plan = compile_model(model)
-                            if plan is not None:
-                                register_compiled_plan(model, plan)
-                                logger.info(f"Compiled read path for {model.__name__}")
-                        except Exception as e:
-                            # If compilation fails, fall back to DRF path silently
-                            logger.warning(
-                                f"Could not compile {model.__name__}: {e}. "
-                                f"Falling back to DRF serializer path."
-                            )
 
         # Mark bypass-roles validation as complete for this process.
         # Subsequent inits skip the check.
         _bypass_roles_validated = True
-        globals()["_bypass_roles_validated"] = True
 
         # Second pass: validate compiled-path safety. Must run AFTER the
         # main loop so every model's predicates / tenant_field are
@@ -322,29 +407,19 @@ class TurboDRFRouter(DefaultRouter):
         # Third pass: validate searchable_fields safety. Same class of
         # bug as the compiled M2M target bypass — DRF's SearchFilter
         # joins to the target model without applying the target's own
-        # predicates. Runs over every TurboDRF-mixin model regardless
-        # of compile mode.
+        # predicates. Runs over every enabled TurboDRF-mixin model
+        # regardless of compile mode.
         from .validation import validate_searchable_fields_safety
 
-        for model in apps.get_models():
-            if not issubclass(model, TurboDRFMixin):
-                continue
-            if not model.turbodrf().get("enabled", True):
-                continue
+        for model in enabled:
             validate_searchable_fields_safety(model)
 
         # Fourth pass: validate Custom predicate write safety. A Custom
-        # without a write_validator returns [] from validate_write,
-        # silently letting writes through Either(Owner, Custom) and
-        # bypassing Owner's enforcement. See
-        # predicates.validate_predicate_write_safety for the full rule.
+        # without a write_validator doesn't check writes against its read
+        # rule. See predicates.validate_predicate_write_safety.
         from .predicates import validate_predicate_write_safety
 
-        for model in apps.get_models():
-            if not issubclass(model, TurboDRFMixin):
-                continue
-            if not model.turbodrf().get("enabled", True):
-                continue
+        for model in enabled:
             validate_predicate_write_safety(model)
 
         # Fifth pass: validate every TURBODRF_ROLES permission string
@@ -353,6 +428,30 @@ class TurboDRFRouter(DefaultRouter):
         from .predicates import validate_permission_strings
 
         validate_permission_strings()
+
+    def _route_basename(self, model, endpoint):
+        """URL-name prefix for ``model``: its model name, or — when another
+        app's model of the same name already has it — its (distinct)
+        endpoint. Two models routed to one endpoint raise: the second would
+        be unreachable, and DRF refuses a duplicate basename."""
+        for prefix, viewset, _basename in self.registry:
+            if prefix == endpoint:
+                raise ImproperlyConfigured(
+                    f"{model._meta.label} and {viewset.model._meta.label} both "
+                    f"route to '{endpoint}/'. Set a distinct 'endpoint' in one "
+                    f"of their turbodrf() configs."
+                )
+        basename = model._meta.model_name
+        if self.is_already_registered(basename):
+            basename = endpoint
+        if self.is_already_registered(basename):
+            raise ImproperlyConfigured(
+                f"{model._meta.label}'s routes would be named "
+                f"'{basename}-list' / '{basename}-detail', which another model "
+                f"already uses. Set a distinct 'endpoint' in its turbodrf() "
+                f"config."
+            )
+        return basename
 
     def get_method_map(self, viewset, method_map):
         """Bind HTTP methods to viewset actions, leaving the CRUD write
