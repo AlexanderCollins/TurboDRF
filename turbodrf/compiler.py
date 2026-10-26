@@ -755,7 +755,7 @@ def _compile_model(model):
 
     # Strip sensitive fields
 
-    from .validation import is_field_path_sensitive
+    from .validation import is_field_path_sensitive, is_reverse_one_to_one
 
     list_fields = [f for f in list_fields if not is_field_path_sensitive(f)]
 
@@ -829,7 +829,7 @@ def _compile_model(model):
                 fk_annotations[output_key] = F(field_name)
 
                 # Ensure base FK field is in simple_fields (for the raw ID)
-                if base not in simple_fields:
+                if base not in simple_fields and not is_reverse_one_to_one(model, base):
                     simple_fields.append(base)
             else:
                 raise ImproperlyConfigured(

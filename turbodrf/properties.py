@@ -336,7 +336,7 @@ def _hop_queryset(field, target, request, columns):
     single = _single_valued(field)
     manager = target._base_manager if single else target._default_manager
     scoped = scoped_target_queryset(target, request, base_manager=single)
-    qs = manager.all() if scoped is None else manager.filter(pk__in=scoped.values("pk"))
+    qs = manager.all() if scoped is None else scoped
     return qs.only(target._meta.pk.name, *columns)
 
 

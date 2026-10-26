@@ -308,8 +308,9 @@ bypass-role users if Tenant were a peer predicate.
 
 Every hop must be a forward `ForeignKey` or `OneToOneField`, named by the
 field (`workspace`, not `workspace_id`), and the last must point at
-`TURBODRF_TENANT_MODEL` (when it's set). A hop through an M2M or reverse
-relation is refused at startup.
+`TURBODRF_TENANT_MODEL` (when it's set) by its primary key. A hop through an
+M2M or reverse relation, or a last hop with `to_field`, is refused at
+startup.
 
 The framework auto-fills a direct `tenant_field` on create, rejects writes
 that try to set it to a different tenant (400), and AND's it onto every
@@ -355,7 +356,8 @@ Either(Owner('owner'), Members('shared_with'))
   on the caller (an `Owner` whose bypass role they hold, say) makes the whole
   `Either` unrestricted.
 - **Writes** must pass every child's write check. `Owner`'s checks apply to
-  every writer, including users who see the row through another child; a
+  every writer, including users who see the row through another child (an
+  `Owner` over a `__` path re-checks the saved row, as `Conditional` does); a
   `Custom` adds its `write_validator`; `Members`, `Group` and `Conditional`
   add no write rule (`Conditional` still re-checks the saved row, see
   [Advanced predicates](#advanced-predicates)).
