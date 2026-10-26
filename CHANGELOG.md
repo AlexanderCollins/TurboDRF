@@ -1,5 +1,66 @@
 # Changelog
 
+## 0.8.1 — Row-scope edge cases, faster scoped queries
+
+A review of 0.8.0 found five defects in less common configurations and four
+places where scoped queries did more work than they needed to at scale. The
+platform scope came through unchanged.
+
+### Upgrading
+
+- A `tenant_field` whose last hop has `to_field` now raises
+  `ImproperlyConfigured` at startup. Point that FK at the tenant's primary key.
+- A nested path through a reverse one-to-one (`'twin__name'`) no longer
+  renders the bare `twin` key, which held the related row's pk.
+- The browsable API's dropdowns label each option with the value the field
+  renders (usually the pk) instead of `str(row)`.
+- Permission cache keys change form, so cached snapshots are rebuilt once
+  after the upgrade.
+
+### Security
+
+- **`to_field` tenant FK.** With an integer tenant
+  (`TURBODRF_TENANT_USER_FIELD` returning a pk), the tenant filter compared
+  the pk with the `to_field` column, and a create wrote the pk into it. A
+  tenant whose code equalled another tenant's pk read and wrote that tenant's
+  rows. Such a `tenant_field` is now refused at startup.
+- **FK to a proxy of the tenant model.** The co-tenant check compared model
+  classes with `is`, so an FK to a proxy skipped it and a write could point
+  at another tenant's row. Proxies are now compared by their concrete model.
+- **Reverse one-to-one base.** `fields: ['twin__name']` added `twin` (the
+  related row's pk) to the output even when that row was hidden from the
+  caller. Listing `twin` bare was already a startup error.
+- **Browsable API dropdown labels** came from `str(row)`, which could show
+  columns of the target the role can't read.
+- **`Owner` over a `__` path** (`Owner('project__owner')`) had no write
+  check: a writer could create or move a row into a colleague's scope. The
+  saved row is now re-checked, as for `Conditional`; a write that leaves it
+  invisible to the writer is rolled back with a 400.
+
+### Performance
+
+- A predicate that crosses an M2M or reverse relation (`Members`, `Group`, or
+  an `Either` that includes one) built its `pk__in` subquery over every
+  tenant's rows. It now starts from the tenant-filtered queryset.
+- Nested to-many reads and `property_relations` hops use the scoped target
+  queryset directly instead of wrapping it in another `pk__in`, which led
+  Postgres to a slow plan. `scoped_target_queryset` keeps the tenant filter
+  outside its predicate subquery.
+- An FK or M2M write no longer loads each target's tenant when the target has
+  a `tenant_field` of its own (its scope check already covers it): one query
+  fewer per M2M id.
+- Permission cache keys fold in a digest of the role configuration, computed
+  once per request. With a large `TURBODRF_ROLES` map the whole map was
+  repr'd for every key.
+
+### Docs and tests
+
+- performance.md: index `(tenant FK, id)` on large tenant-scoped tables.
+- Stale docstrings fixed (permission modes, the `Tenant` predicate, the
+  default endpoint name, the schema view's permissions).
+- The concurrent FK-injection test, skipped since May 2026 as flaky, runs
+  again: every attempt is refused.
+
 ## 0.8.0 — Platform scope: a staff API across tenants
 
 TurboDRF could only serve tenant-scoped requests, so an operator's own staff

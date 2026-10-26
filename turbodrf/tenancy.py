@@ -64,7 +64,7 @@ def find_tenant_path(model, tenant_model, max_depth=4):
     if tenant_model is None:
         return None
     if model is tenant_model:
-        return None  # caller decides what to do (e.g. 'tenancy': 'self')
+        return None  # the tenant model itself: see docs/tenancy.md
 
     # Level-by-level BFS over paths: a model is expanded only at the depth it
     # is first reached, but along every path that reaches it at that depth.
@@ -155,13 +155,16 @@ def validate_field_path(model, path):
 
 def _validate_tenant_path(model, path, tenant_model_setting=None):
     """Validate a ``tenant_field`` path: every hop a forward ForeignKey /
-    one-to-one, named by field name (not ``<fk>_id``), ending at
-    ``TURBODRF_TENANT_MODEL`` when that is set.
+    one-to-one, named by field name (not ``<fk>_id``), the last one
+    referencing the tenant's primary key, ending at ``TURBODRF_TENANT_MODEL``
+    when that is set.
 
     A hop through an M2M or reverse relation duplicates list rows and makes
     detail lookups raise ``MultipleObjectsReturned``. A path ending anywhere
     but the tenant model compares the caller's tenant pk with another table's
-    keys, and matches unrelated rows.
+    keys, and matches unrelated rows. So does a last hop with ``to_field``: an
+    integer tenant (TURBODRF_TENANT_USER_FIELD may return one) is compared
+    with, and written into, that column.
     """
     validate_field_path(model, path)
     current = model
@@ -179,6 +182,14 @@ def _validate_tenant_path(model, path, tenant_model_setting=None):
                 f"name the relation {field.name!r}, not its column {part!r}."
             )
         current = field.related_model
+    if not field.target_field.primary_key:
+        raise ImproperlyConfigured(
+            f"{model.__name__}.turbodrf() declares tenant_field {path!r}, but "
+            f"{field.model.__name__}.{field.name} references "
+            f"{current.__name__}.{field.target_field.name}. The last hop of a "
+            f"tenant_field must reference the tenant's primary key (drop "
+            f"to_field)."
+        )
     tenant_model = _resolve_tenant_model(tenant_model_setting)
     if (
         tenant_model is not None
@@ -348,8 +359,8 @@ def _validate_predicate_paths(model, predicate):
     raised FieldError on every request). Custom / Conditional are the
     caller's responsibility.
 
-    Tenant is no longer accepted in the predicate algebra — it's a setting,
-    validated separately by _validate_tenant_path() in the caller.
+    The tenant boundary is a setting (``tenant_field``), validated
+    separately by _validate_tenant_path() in the caller.
     """
     from .predicates import Either, Group, Members, Owner
 

@@ -182,7 +182,10 @@ and configuration reference.
   another user, or change an owner column whose current value is another
   user. With a multi-column `owner_field` this covers every listed column, so
   a co-owner can't take over the other column. The owner is auto-filled on
-  create only; an update leaves it as is.
+  create only; an update leaves it as is. An owner reached through a `__`
+  path (`Owner('project__owner')`) is checked after the save, in the same
+  transaction: a write that would leave the row invisible to the writer (a
+  task moved onto someone else's project) is rolled back with a 400.
 - **`Either` writes** — a write must pass every child's write check, so the
   `Owner` check above holds for users who see a row through another branch
   (`Members`, `Group`, `Custom`).
