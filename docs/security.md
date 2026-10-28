@@ -214,8 +214,8 @@ A nested field (`author__name`) reads a column of another model. Its value
 renders only when every JOIN target along the path is visible to the caller
 through that target's own endpoint (its `tenant_field` and predicates).
 Otherwise the value is `null`. The parent row stays listed: only the nested
-value is withheld. This is the same on detail, uncompiled and compiled lists,
-the browsable API, and create/update responses.
+value is withheld. This is the same on lists, detail, the browsable API, and
+create/update responses.
 
 For M2M fields, targets the caller can't see are left out of the array, and
 a sub-field that crosses a further hop (`tags__folder__name`) is `null` where
@@ -223,94 +223,14 @@ that hop's target is out of scope.
 
 Filtering or searching on a nested path can't match an out-of-scope target
 either (see [URL-driven JOIN scoping](#url-driven-join-scoping) and
-[Search field target bypass](#search-field-target-bypass)).
+[Search over related fields](#search-over-related-fields)).
 
 Only `tenant_field` and predicates scope these JOINs. A default-manager filter
 such as soft delete doesn't: like Django's own FK access, a nested FK value
 reads the related row through the base manager. (M2M arrays follow the
 target's default manager.)
 
-## Compiled M2M target bypass
-
-The compiled read path (default for all models) renders nested many-to-many
-arrays via a separate two-query merge: one query for the parent rows, a
-second on the M2M through-table joining to the **target** model. If that
-join ran unscoped, a model nesting an M2M whose target carries its own
-visibility rules (predicates or tenant_field) would render rows the caller
-could not see by hitting the target's own endpoint. Two layers prevent it:
-
-1. **Request-time scoping** — the merge's second query is filtered to
-   targets visible via the target's own endpoint
-   (`scoped_target_queryset` in `views._compiled_list`), and a sub-field
-   that crosses a further hop renders `null` where that hop is out of scope.
-   This matches the serializer path (`serializers.py`) and holds even when
-   the startup gate below is bypassed.
-2. **The startup gate** — unsafe parent/target pairings are refused at
-   boot, so misconfigurations surface at deploy time.
-
-### Startup gate
-
-The router refuses to boot if any compiled model nests an M2M into a
-target that has registered predicates, or into a tenanted target while the
-parent itself is shared. Every further hop a sub-field crosses
-(`tags__folder__name`) is checked the same way. Detection is fully static —
-done at router init in `compiler.validate_compiled_path_safety()` after
-every model's predicates are registered. The error message names the
-specific parent/target pair and lists the available fixes.
-
-Safe targets (the gate allows them): pure reference / lookup tables with
-no predicates and no tenant_field — `Tag`, `Category`, `Status` and the
-like. The gate fires only when the target itself has row-level rules.
-
-### Fixes
-
-If the gate fires on your model, choose one:
-
-- **Drop the M2M nesting** from the parent's `turbodrf()` `fields` list.
-  The M2M can still be reached via the target's own endpoint, where its
-  predicates apply.
-- **Set `'compiled': False`** on the parent model's `turbodrf()` config.
-  The serializer path applies the same request-time scoping, and the gate
-  only checks compiled models.
-- **Strip the target's row-level rules** if and only if it is genuinely
-  public reference data with no per-row visibility — same intent as
-  `'tenancy': 'shared'`.
-- **`TURBODRF_ALLOW_UNSAFE_COMPILED_M2M = True`** bypasses the gate
-  entirely. Logs a loud warning per offending model. Request-time scoping
-  still applies. Intended for migrations; not recommended otherwise.
-
-## Compiled FK annotation bypass
-
-Compiled FK annotations (e.g. `'fields': ['title', 'author__name']`)
-emit `F('author__name')` in `.values()`, generating a SQL JOIN to the
-target. At request time, each annotation whose path crosses a target with a
-`tenant_field` or predicates is wrapped in a `CASE`: the value renders only
-where every JOIN target is visible to the caller, and is `null` elsewhere.
-The row stays listed (see
-[Nested fields across scoped relations](#nested-fields-across-scoped-relations)).
-
-### Startup gate
-
-`compiler.validate_compiled_path_safety()` walks both `m2m_specs` AND
-every `fk_annotation` path on each compiled plan. For the FK case it
-walks every model along the JOIN chain (not just the leaf) and refuses
-to boot if any link has registered predicates or shows tenant drift
-from the parent.
-
-### Fixes
-
-- **Drop the FK path** from the parent's `turbodrf()` `fields` list.
-  The related field can still be exposed via the target's own
-  endpoint.
-- **Set `'compiled': False`** on the parent model. The serializer path
-  applies the same scoping (out-of-scope nested values render `null`).
-- **Strip the target's row-level rules** if and only if it is genuinely
-  public reference data.
-- **`TURBODRF_ALLOW_UNSAFE_COMPILED_FK = True`** bypasses the gate
-  entirely. Logs a loud warning. Request-time scoping still applies.
-  Migrations only; not recommended.
-
-## Search field target bypass
+## Search over related fields
 
 The same JOIN pattern applies to DRF's `SearchFilter` when
 `searchable_fields` contains a `__`-traversed path (e.g.
@@ -326,27 +246,6 @@ reverse relations: a scope in a separate `filter()` is a separate JOIN, where
 one visible sibling would satisfy the scope while the term matched a hidden
 row.
 
-### Startup gate
-
-The router refuses to boot if any TurboDRF model declares
-`searchable_fields` with a `__`-path that walks through a model with
-its own predicates, or out of a shared parent into a tenanted target.
-Detection runs in the third pass of `discover_models()`, after every
-model's predicates have registered. Each step of the traversal chain
-is checked, not just the leaf — so `author__profile__bio` blocks if
-either Author or Profile has its own rules.
-
-### Fixes
-
-- **Use only flat fields on the parent model** in `searchable_fields`.
-  Search by indexed columns on the parent itself; expose related
-  search via separate endpoints on the target.
-- **Strip the target's row-level rules** if and only if it is genuinely
-  public reference data.
-- **`TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS = True`** bypasses the gate
-  entirely. Logs a loud warning per offending entry. Request-time scoping
-  still applies. Migrations only; not recommended.
-
 ## Custom predicate write safety
 
 A `Custom` predicate's write rule is its `write_validator`. Inside
@@ -355,24 +254,15 @@ add restrictions to the `Owner` rules on another branch; it can't lift them.
 (In 0.6.x and earlier, `Either` passed a write when any one child passed,
 so a `Custom` that objected to nothing overrode `Owner`.)
 
-A `Custom` without a `write_validator` still says nothing about writes, and
+A `Custom` without a `write_validator` would say nothing about writes, and
 it's easy to forget that a role it admits may later gain write actions. So
-every `Custom` must state its write rule.
+`Custom(...)` raises `ImproperlyConfigured` when it's created without one.
+Pass one of:
 
-### Startup gate
-
-`predicates.validate_predicate_write_safety` walks every model's
-predicate stack (recursing into `Either`) and refuses to start if any
-`Custom` is registered without an explicit `write_validator`.
-
-### Resolution
-
-When the gate fires you have three options:
-
-- **Pass `write_validator=lambda d, i, r: []`** if the predicate adds no
+- **`write_validator=lambda d, i, r: []`** if the predicate adds no
   write rule: the users it admits can edit rows they see, subject to the
   other predicates (inside `Either`, `Owner`'s checks still apply).
-- **Pass `write_validator=my_check`** to restrict writes. The function
+- **`write_validator=my_check`** to restrict writes. The function
   receives `(validated_data, instance, request)` and returns a list of error
   strings (empty = allow, non-empty = block). Use it for predicates meant
   for read-only role grants:
@@ -386,9 +276,6 @@ When the gate fires you have three options:
 
   Custom(q_func=my_q, write_validator=block_role_writes)
   ```
-
-- **Set `TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE = True`** to bypass the
-  gate entirely. Logs a warning. Migrations only; not recommended.
 
 ## Permission string typo gate
 
@@ -433,9 +320,7 @@ Filter URL params that traverse `__`-paths (e.g.
 `?author__email=foo`, `?bank_account__deal__brokerage=42`) generate
 SQL JOINs to the target model. The parent's tenant + predicate scope
 already restricts which parent rows return, but the JOIN itself does
-not apply the target's own `tenant_field` or registered predicates —
-same bug class as the compiled M2M / search-field bypasses, but
-URL-driven so it cannot be statically gated at startup.
+not apply the target's own `tenant_field` or registered predicates.
 
 ### Runtime JOIN scoping
 
@@ -444,11 +329,10 @@ filter with a target-scoping subquery built by
 `validation.build_traversal_scope_q()`. For each model along the JOIN
 chain that has registered predicates or a `tenant_field`, an AND
 clause of the form
-`<prefix>__in=<TargetModel>._base_manager.filter(<target_q>).values("pk")` is
-added to the queryset. The `target_q` mirrors the target view's tenant_q +
-predicate_q construction (see
-`views.py:_get_tenant_q` / `_get_predicate_q`), so the JOIN can never
-return rows outside the target's tenant boundary or predicates.
+`<prefix>__in=<visible target pks>` is added to the queryset, the visible
+rows being the target's tenant boundary and predicates as its own endpoint
+applies them (`validation.scoped_target_queryset`), so the JOIN can never
+return rows outside them.
 
 The subquery uses the target's **base** manager, as Django's own JOINs
 and FK descriptors do (the serializer path renders the same related row).
@@ -465,9 +349,8 @@ is kept: each step is `<prefix>__isnull=True OR <prefix>__in=...`
 when the relation can be empty. An empty relation joins nothing, so it
 can't reveal a target row; a relation pointing at an out-of-scope
 target is still excluded. The same scope decides whether a nested FK
-value renders on either read path (the value is `null` where the scope
-fails; the row stays), and is applied inside search over `__`-path
-`searchable_fields`.
+value renders (the value is `null` where the scope fails; the row stays),
+and is applied inside search over `__`-path `searchable_fields`.
 
 `?ordering=fk__field` is handled separately: `ordering_fields` is a flat
 list of concrete, single-valued columns from the configured fields (with
@@ -476,13 +359,6 @@ role-based permissions, those the caller can read), and DRF's
 `?ordering=<fk>` orders by the stored FK column; ordering by the field
 itself would sort by the target's `Meta.ordering` through an unscoped JOIN.
 The primary key is appended as a tie-breaker.
-
-### Kill switch
-
-- **`TURBODRF_ALLOW_UNSAFE_FILTER_TRAVERSAL = True`** disables the
-  request-time scoping of filter params. Filter `__`-paths then JOIN
-  without target scoping (search and nested values stay scoped).
-  Migrations only; not recommended.
 
 ## Platform scope
 

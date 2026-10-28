@@ -104,7 +104,7 @@ _CONFIG_KEYS = frozenset(
     {
         "actions",
         "bypass_owner_roles",
-        "compiled",
+        "compiled",  # no effect since 0.8.2, accepted so old configs boot
         "enabled",
         "endpoint",
         "fields",
