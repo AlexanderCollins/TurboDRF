@@ -38,11 +38,10 @@ def _preserve_registries():
     """Router init / registry patches mutate module-level state shared by the
     whole worker. Snapshot and restore it."""
     import turbodrf.router as router_mod
-    from turbodrf import compiler, predicates
+    from turbodrf import predicates
 
     preds = dict(predicates._model_predicates)
     tenants = dict(predicates._model_tenant_fields)
-    plans = dict(compiler._compiled_plans)
     flag = router_mod._bypass_roles_validated
     try:
         yield
@@ -51,8 +50,6 @@ def _preserve_registries():
         predicates._model_predicates.update(preds)
         predicates._model_tenant_fields.clear()
         predicates._model_tenant_fields.update(tenants)
-        compiler._compiled_plans.clear()
-        compiler._compiled_plans.update(plans)
         router_mod._bypass_roles_validated = flag
 
 
@@ -465,21 +462,6 @@ class TestFkInjectionOnUnscopedHost(_TwoTenants):
                 format="json",
             )
         self.assertEqual(r.status_code, 400, getattr(r, "data", r))
-
-
-# ---------------------------------------------------------------------------
-# 10. TURBODRF_MAX_NESTING_DEPTH is not enforced on the compiled plan (the
-#     router only logs a warning). Docs: configuration.md "Maximum nesting
-#     depth is 3"; settings_reference "Maximum __ depth for nested fields".
-# ---------------------------------------------------------------------------
-class TestNestingDepthCompiled(TestCase):
-    @override_settings(TURBODRF_MAX_NESTING_DEPTH=0)
-    def test_compiled_plan_drops_over_depth_fields(self):
-        from tests.test_app.models import CompiledSampleModel
-        from turbodrf.compiler import compile_model
-
-        plan = compile_model(CompiledSampleModel)
-        self.assertNotIn("related_name", plan.fk_annotations)
 
 
 # ---------------------------------------------------------------------------

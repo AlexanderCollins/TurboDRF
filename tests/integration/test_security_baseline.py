@@ -623,7 +623,7 @@ class TestCustomPredicateRisks(TestCase):
         """No request → no_match (typical for schema gen / programmatic use)."""
         from turbodrf.predicates import Custom
 
-        c = Custom(q_func=lambda r, u: Q())
+        c = Custom(q_func=lambda r, u: Q(), write_validator=lambda d, i, r: [])
         self.assertEqual(c.q(request=None, user_roles=set()), Q(pk__in=[]))
 
     def test_custom_q_returned_verbatim_with_request(self):
@@ -632,34 +632,13 @@ class TestCustomPredicateRisks(TestCase):
 
         from turbodrf.predicates import Custom
 
-        c = Custom(q_func=lambda r, u: Q(public=True))
+        c = Custom(
+            q_func=lambda r, u: Q(public=True), write_validator=lambda d, i, r: []
+        )
         req = Mock()
         req.user = Mock()
         result = c.q(request=req, user_roles=set())
         self.assertEqual(result, Q(public=True))
-
-    def test_custom_returning_empty_q_optionally_warns(self):
-        """Custom returning Q() means 'no within-tenant restriction'. Tenant
-        boundary still applies separately. With
-        TURBODRF_LOG_UNRESTRICTED_CUSTOM=True a warning fires."""
-        from rest_framework.test import APIRequestFactory
-
-        from turbodrf.predicates import Custom
-
-        c = Custom(q_func=lambda r, u: Q())
-        factory = APIRequestFactory()
-        req = factory.get("/")
-        req.user = User.objects.create_user(username="vc", password="x")
-
-        self.assertEqual(c.q(req, set()), Q())
-
-        with override_settings(TURBODRF_LOG_UNRESTRICTED_CUSTOM=True):
-            with self.assertLogs("turbodrf.predicates", level="WARNING") as cm:
-                c.q(req, set())
-            self.assertTrue(
-                any("empty Q" in msg for msg in cm.output),
-                "Warning should fire when TURBODRF_LOG_UNRESTRICTED_CUSTOM=True",
-            )
 
 
 # ============================================================================
@@ -904,20 +883,9 @@ class TestSensitiveDenyListNested(TestCase):
 
 
 class TestParseConfigInvariants(TestCase):
-    """Tenant is a setting and cannot be OR-composed away by an
-    Either(Owner, Tenant) trick — Tenant() is rejected inside Either at
-    config time. Also: parse_config refuses to mix sugar (tenant_field=)
-    with power-form (visibility=) keys."""
-
-    def test_tenant_inside_either_raises_at_config_time(self):
-        from django.core.exceptions import ImproperlyConfigured
-
-        from turbodrf.predicates import Either, Owner, Tenant, parse_config
-
-        bad_config = {"visibility": [Either(Owner("u", bypass=["admin"]), Tenant("t"))]}
-        with self.assertRaises(ImproperlyConfigured) as ctx:
-            parse_config(bad_config)
-        self.assertIn("Either", str(ctx.exception))
+    """Tenant is a setting, applied outside the predicate algebra.
+    parse_config refuses to mix owner sugar with power-form (visibility=)
+    keys."""
 
     def test_mixing_owner_sugar_and_visibility_raises(self):
         """`owner_field` / `bypass_owner_roles` sugar conflicts with
@@ -937,9 +905,8 @@ class TestParseConfigInvariants(TestCase):
             )
         self.assertIn("Cannot mix", str(cm.exception))
 
-        # tenant_field + visibility is the canonical power-form pairing —
-        # the deprecated `Tenant() inside visibility` form told users to
-        # use this combination. Should NOT raise.
+        # tenant_field + visibility is the canonical power-form pairing.
+        # Should NOT raise.
         tf, preds = parse_config(
             {
                 "tenant_field": "brokerage",
@@ -990,110 +957,6 @@ class TestCompiledRegression(TestCase):
     not bypass the FK gate; anon users with a configured 'guest' role must
     receive a snapshot; M2M filtering must support per-nested-field perms."""
 
-    @override_settings(
-        TURBODRF_ROLES={
-            "limited_viewer_v3": [
-                "test_app.compiledarticle.read",
-                "test_app.compiledarticle.title.read",
-                "test_app.compiledarticle.author.read",
-                "test_app.relatedmodel.read",
-                "test_app.relatedmodel.name.read",
-            ],
-            "_marker_v3": ["test_app.relatedmodel.description.read"],
-        }
-    )
-    def test_compiled_path_strips_nested_fk_lacking_target_perm(self):
-        from rest_framework.test import APIRequestFactory
-
-        from tests.test_app.models import CompiledArticle
-        from turbodrf.compiler import get_compiled_plan
-        from turbodrf.views import TurboDRFViewSet
-
-        u = User.objects.create_user(username="lv_v3", password="x")
-        u._test_roles = ["limited_viewer_v3"]
-
-        plan = get_compiled_plan(CompiledArticle)
-        if plan is None:
-            self.skipTest("compiled plan not registered for CompiledArticle")
-
-        viewset = type(
-            "VS",
-            (TurboDRFViewSet,),
-            {"model": CompiledArticle, "_predicates": [], "_tenant_field": None},
-        )()
-        factory = APIRequestFactory()
-        req = factory.get("/")
-        req.user = u
-        viewset.request = req
-
-        allowed_fk = viewset._filter_compiled_fk_annotations(plan, req)
-        if allowed_fk is None:
-            self.skipTest("no permission system applies — legacy path")
-
-        if "author_description" in plan.fk_annotations:
-            self.assertNotIn(
-                "author_description",
-                allowed_fk,
-                "REGRESSION: compiled path includes author_description for "
-                "user lacking relatedmodel.description.read.",
-            )
-        if "author_name" in plan.fk_annotations:
-            self.assertIn("author_name", allowed_fk)
-
-    def test_fields_param_intersects_with_fk_gate(self):
-        """?fields=author_email submitted by a user without target perm must
-        NOT bypass the FK annotation gate."""
-        from rest_framework.test import APIRequestFactory
-
-        from tests.test_app.models import CompiledArticle
-        from turbodrf.compiler import get_compiled_plan
-        from turbodrf.views import TurboDRFViewSet
-
-        plan = get_compiled_plan(CompiledArticle)
-        if plan is None:
-            self.skipTest("no compiled plan")
-
-        with override_settings(
-            TURBODRF_ROLES={
-                "lv_compiled": [
-                    "test_app.compiledarticle.read",
-                    "test_app.compiledarticle.title.read",
-                    "test_app.compiledarticle.author.read",
-                    "test_app.relatedmodel.read",
-                    "test_app.relatedmodel.name.read",
-                ],
-                "_marker_compiled": [
-                    "test_app.relatedmodel.description.read",
-                ],
-            }
-        ):
-            cache.clear()
-            u = User.objects.create_user(username="lvc", password="x")
-            u._test_roles = ["lv_compiled"]
-
-            viewset = type(
-                "VS",
-                (TurboDRFViewSet,),
-                {
-                    "model": CompiledArticle,
-                    "_predicates": [],
-                    "_tenant_field": None,
-                },
-            )()
-            factory = APIRequestFactory()
-            req = factory.get("/?fields=author_description")
-            req.user = u
-            req.query_params = req.GET
-            viewset.request = req
-
-            allowed = viewset._filter_compiled_fk_annotations(plan, req)
-            if allowed is not None and "author_description" in plan.fk_annotations:
-                self.assertNotIn(
-                    "author_description",
-                    allowed,
-                    "VULNERABILITY: ?fields=author_description bypasses FK gate.",
-                )
-
     def test_anon_with_guest_role_gets_snapshot(self):
         """Anon users get a snapshot if a 'guest' role is configured."""
         from django.contrib.auth.models import AnonymousUser
@@ -1138,21 +1001,6 @@ class TestCompiledRegression(TestCase):
                 "REGRESSION: anon-guest snapshot includes 'price' despite "
                 "guest having no price.read permission.",
             )
-
-    def test_compiler_m2m_filter_uses_per_nested_perm(self):
-        """apply_to_queryset must accept allowed_m2m_subfields for per-nested
-        M2M permission filtering."""
-        from inspect import signature
-
-        from turbodrf.compiler import CompiledQueryPlan
-
-        sig = signature(CompiledQueryPlan.apply_to_queryset)
-        self.assertIn(
-            "allowed_m2m_subfields",
-            sig.parameters,
-            "apply_to_queryset must accept allowed_m2m_subfields for per-nested "
-            "M2M permission filtering",
-        )
 
     def test_m2m_render_does_not_apply_target_predicates(self):
         """M2M nested render uses `manager.all()` without applying target

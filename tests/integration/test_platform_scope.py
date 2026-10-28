@@ -235,28 +235,6 @@ class TestAcrossTenants(_PlatformBase):
             {(self.acme_job.pk, "Acme"), (self.globex_job.pk, "Globex")},
         )
 
-    def test_list_uses_the_compiled_path(self):
-        from turbodrf.compiler import is_compiled
-        from turbodrf.scope import PLATFORM as SCOPE
-        from turbodrf.scope import use_scope
-        from turbodrf.views import TurboDRFViewSet
-
-        with use_scope(SCOPE):
-            self.assertTrue(is_compiled(PlatformJob))
-        self.assertFalse(is_compiled(PlatformJob))  # no tenant endpoint
-        with mock.patch.object(
-            TurboDRFViewSet,
-            "_compiled_list",
-            autospec=True,
-            side_effect=TurboDRFViewSet._compiled_list,
-        ) as spy:
-            rows = _rows(self.client.get("/console-api/jobs/"))
-        spy.assert_called_once()
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(
-            {r["account_name"] for r in rows}, {"Acme main", "Globex main"}
-        )
-
     def test_detail_of_another_tenants_row(self):
         response = self.client.get(f"/console-api/jobs/{self.globex_job.pk}/")
         self.assertEqual(response.status_code, 200)

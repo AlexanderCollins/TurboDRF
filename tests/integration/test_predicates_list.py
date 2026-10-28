@@ -1,10 +1,5 @@
-"""
-Verify that predicate-based row scoping works with the compiled read path
-(.values() + F() annotations bypassing DRF serializers).
-
-Predicates apply via get_queryset() which runs BEFORE the compiler's
-.values() call — so scoping flows through naturally to both code paths.
-"""
+"""Predicate-based row scoping on list requests: predicates apply in
+get_queryset(), before anything is rendered."""
 
 from decimal import Decimal
 

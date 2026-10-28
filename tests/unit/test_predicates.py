@@ -14,7 +14,7 @@ Covers each predicate class in isolation:
 from unittest.mock import Mock
 
 from django.db.models import Q
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from turbodrf.predicates import (
     Conditional,
@@ -23,7 +23,6 @@ from turbodrf.predicates import (
     Group,
     Members,
     Owner,
-    Tenant,
     has_tenancy_declaration,
     parse_config,
 )
@@ -47,86 +46,6 @@ def _make_user(user_id=1, brokerage=None, roles=()):
     user.brokerage = brokerage
     user.roles = list(roles)
     return user
-
-
-class TestTenantPredicate(TestCase):
-    @override_settings(TURBODRF_TENANT_USER_FIELD="brokerage")
-    def test_q_returns_user_tenant_filter(self):
-        user = _make_user(brokerage=42)
-        req = _make_request(user)
-        pred = Tenant("brokerage")
-        q = pred.q(req, user_roles=set())
-        self.assertEqual(q, Q(brokerage=42))
-
-    @override_settings(TURBODRF_TENANT_USER_FIELD="brokerage")
-    def test_q_returns_no_match_when_no_tenant(self):
-        user = _make_user(brokerage=None)
-        req = _make_request(user)
-        pred = Tenant("brokerage")
-        q = pred.q(req, user_roles=set())
-        self.assertEqual(q, Q(pk__in=[]))
-
-    @override_settings(TURBODRF_TENANT_USER_FIELD="brokerage")
-    def test_q_unauthenticated_returns_no_match(self):
-        user = Mock()
-        user.is_authenticated = False
-        req = _make_request(user, authenticated=False)
-        pred = Tenant("brokerage")
-        q = pred.q(req, user_roles=set())
-        self.assertEqual(q, Q(pk__in=[]))
-
-    @override_settings(TURBODRF_TENANT_USER_FIELD="brokerage")
-    def test_auto_fill_sets_tenant(self):
-        user = _make_user(brokerage=42)
-        req = _make_request(user)
-        pred = Tenant("brokerage")
-        result = pred.auto_fill({"title": "Hello"}, req)
-        self.assertEqual(result, {"title": "Hello", "brokerage": 42})
-
-    @override_settings(TURBODRF_TENANT_USER_FIELD="brokerage")
-    def test_auto_fill_overwrites_user_value(self):
-        # Defense in depth: even if client provides wrong tenant, auto_fill
-        # overwrites with the correct one.
-        user = _make_user(brokerage=42)
-        req = _make_request(user)
-        pred = Tenant("brokerage")
-        result = pred.auto_fill({"title": "X", "brokerage": 99}, req)
-        self.assertEqual(result["brokerage"], 42)
-
-    @override_settings(TURBODRF_TENANT_USER_FIELD="brokerage")
-    def test_auto_fill_skips_nested_paths(self):
-        user = _make_user(brokerage=42)
-        req = _make_request(user)
-        pred = Tenant("deal__brokerage")
-        result = pred.auto_fill({"title": "X"}, req)
-        self.assertNotIn("deal__brokerage", result)
-        self.assertNotIn("brokerage", result)
-
-    @override_settings(TURBODRF_TENANT_USER_FIELD="brokerage")
-    def test_validate_write_rejects_wrong_tenant(self):
-        user = _make_user(brokerage=42)
-        req = _make_request(user)
-        pred = Tenant("brokerage")
-        errors = pred.validate_write({"brokerage": 99}, None, req)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("different tenant", errors[0])
-
-    @override_settings(TURBODRF_TENANT_USER_FIELD="brokerage")
-    def test_validate_write_accepts_correct_tenant(self):
-        user = _make_user(brokerage=42)
-        req = _make_request(user)
-        pred = Tenant("brokerage")
-        errors = pred.validate_write({"brokerage": 42}, None, req)
-        self.assertEqual(errors, [])
-
-    @override_settings(TURBODRF_TENANT_USER_FIELD="brokerage")
-    def test_validate_write_skips_nested(self):
-        # We can't validate writes on chained paths
-        user = _make_user(brokerage=42)
-        req = _make_request(user)
-        pred = Tenant("deal__brokerage")
-        errors = pred.validate_write({"deal__brokerage": 99}, None, req)
-        self.assertEqual(errors, [])
 
 
 class TestOwnerPredicate(TestCase):
@@ -279,7 +198,7 @@ class TestCustomPredicate(TestCase):
         def fn(request, roles):
             return Q(visibility="public")
 
-        pred = Custom(fn)
+        pred = Custom(fn, write_validator=lambda d, i, r: [])
         q = pred.q(req, user_roles=set())
         self.assertEqual(q, Q(visibility="public"))
 
@@ -294,6 +213,19 @@ class TestCustomPredicate(TestCase):
         errors = pred.validate_write({"x": 1}, None, _make_request(_make_user()))
         self.assertEqual(errors, ["nope"])
         self.assertEqual(called, [{"x": 1}])
+
+    def test_write_validator_is_required(self):
+        """A q_func filters reads only: without a write_validator any writer
+        could create or move rows outside the rule."""
+        from django.core.exceptions import ImproperlyConfigured
+
+        def staff_rows(request, roles):
+            return Q(visibility="staff")
+
+        with self.assertRaises(ImproperlyConfigured) as cm:
+            Custom(staff_rows)
+        self.assertIn("staff_rows", str(cm.exception))
+        self.assertIn("write_validator", str(cm.exception))
 
 
 class TestSugarParser(TestCase):
@@ -349,64 +281,10 @@ class TestSugarParser(TestCase):
         self.assertIsInstance(preds[0], Owner)
         self.assertEqual(preds[0].bypass, {"admin", "manager"})
 
-    def test_visibility_power_form_extracts_tenant_to_setting(self):
-        """Tenant() inside visibility is extracted to tenant_field setting
-        with deprecation warning. Other predicates stay in the list."""
-        import warnings
-
-        with warnings.catch_warnings(record=True) as captured:
-            warnings.simplefilter("always")
-            tf, preds = parse_config(
-                {"visibility": [Tenant("brokerage"), Owner("assigned_to")]}
-            )
-        self.assertEqual(tf, "brokerage")
-        self.assertEqual(len(preds), 1)
-        self.assertIsInstance(preds[0], Owner)
-        self.assertTrue(
-            any(issubclass(w.category, DeprecationWarning) for w in captured),
-            "Should warn when Tenant() used inside visibility",
-        )
-
     def test_visibility_with_owner_only(self):
         tf, preds = parse_config({"visibility": [Owner("assigned_to")]})
         self.assertIsNone(tf)
         self.assertEqual(len(preds), 1)
-
-    def test_tenant_inside_either_rejected(self):
-        """Tenant inside Either is a config error.
-
-        A developer writing `Either(Owner_with_bypass, Tenant)` for a
-        'manager sees all in tenant OR own deals' use case would silently
-        get cross-tenant access because `Q() OR anything == Q()`. The
-        framework rejects the configuration at startup so this can't
-        happen."""
-        with self.assertRaises(Exception) as cm:
-            parse_config(
-                {
-                    "visibility": [
-                        Either(
-                            Owner("assigned_to", bypass=["manager"]),
-                            Tenant("brokerage"),
-                        ),
-                    ]
-                }
-            )
-        self.assertIn("Tenant", str(cm.exception))
-        self.assertIn("Either", str(cm.exception))
-
-    def test_tenant_inside_nested_either_rejected(self):
-        """Walk recursively into nested Either."""
-        with self.assertRaises(Exception):
-            parse_config(
-                {
-                    "visibility": [
-                        Either(
-                            Owner("a"),
-                            Either(Tenant("brokerage"), Owner("b")),
-                        ),
-                    ]
-                }
-            )
 
     def test_visibility_validates_predicate_instances(self):
         with self.assertRaises(Exception):
@@ -459,7 +337,7 @@ class TestPredicateDefensiveBranches(TestCase):
 
     def test_custom_non_callable_raises(self):
         with self.assertRaises(Exception):
-            Custom(q_func=42)
+            Custom(q_func=42, write_validator=lambda d, i, r: [])
 
     def test_conditional_non_q_when_raises(self):
         with self.assertRaises(Exception):
@@ -492,6 +370,7 @@ class TestPredicateDefensiveBranches(TestCase):
         c = Custom(
             q_func=lambda r, u: Q(),
             auto_filler=lambda data, request: {**data, "added": "yes"},
+            write_validator=lambda d, i, r: [],
         )
         result = c.auto_fill({"x": 1}, Mock())
         self.assertEqual(result, {"x": 1, "added": "yes"})
@@ -499,7 +378,7 @@ class TestPredicateDefensiveBranches(TestCase):
     def test_custom_without_auto_filler_returns_unchanged(self):
         from django.db.models import Q
 
-        c = Custom(q_func=lambda r, u: Q())
+        c = Custom(q_func=lambda r, u: Q(), write_validator=lambda d, i, r: [])
         data = {"x": 1}
         self.assertEqual(c.auto_fill(data, None), data)
 
@@ -513,15 +392,6 @@ class TestPredicateDefensiveBranches(TestCase):
         o = Owner("x", bypass=["admin"])
         q = o.q(Mock(), {"admin"})
         self.assertEqual(q, Q())
-
-    def test_tenant_validate_write_no_user(self):
-        """Tenant.validate_write returns auth error when no user."""
-        from turbodrf.predicates import Tenant
-
-        t = Tenant("brokerage")
-        errors = t.validate_write({"brokerage": 1}, None, None)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("no authenticated user", errors[0])
 
     def test_clear_predicates_resets_registries(self):
         from turbodrf.predicates import (
