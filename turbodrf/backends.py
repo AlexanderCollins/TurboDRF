@@ -119,7 +119,7 @@ def get_permission_mode() -> str:
     Get the current permission mode from settings.
 
     Returns:
-        str: One of 'static', 'django', or 'database'
+        str: 'static' or 'database'
     """
     return getattr(settings, "TURBODRF_PERMISSION_MODE", "static")
 
@@ -563,10 +563,15 @@ def get_cache_key(user, model) -> Optional[str]:
     # role->permission map.
     user_roles = get_user_roles(user)
 
-    # The role configuration; bumped by invalidate_user_permissions(): a new
-    # generation is a new key.
+    # The role configuration (as a digest, computed once per request: a large
+    # role map is slow to repr, and every key folds it in); bumped by
+    # invalidate_user_permissions(): a new generation is a new key.
     sig = (
-        _memoised(("roles_signature", scope), None, _roles_signature),
+        _memoised(
+            ("roles_signature", scope),
+            None,
+            lambda: hashlib.sha256(repr(_roles_signature()).encode()).hexdigest(),
+        ),
         _memoised(
             ("generations", user_id),
             None,

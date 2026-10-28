@@ -828,6 +828,30 @@ class TestNestedFk(ParityHarness):
             )
         )
 
+    def test_reverse_one_to_one_base_is_not_rendered(self):
+        # twin_row's pk belongs to the other row, which may be hidden from
+        # the caller. Listed bare it's a startup error; as a nested path's
+        # base it isn't rendered either, on any path.
+        result = self.parity(
+            ParityTarget,
+            TARGET_URL,
+            "rev-o2o-base",
+            fields=["id", "name", "twin_row__char"],
+            user=self.reader,
+        )
+        self.assertParity(result)
+        rows = []
+        for status, body in (result.compiled, result.serializer):
+            self.assertEqual(status, 200)
+            rows.extend(self._rows(body))
+        for status, body in result.details.values():
+            self.assertEqual(status, 200)
+            rows.append(body)
+        self.assertTrue(rows and result.details)
+        for row in rows:
+            self.assertNotIn("twin_row", row)
+            self.assertIn("twin_row_char", row)
+
 
 # ---------------------------------------------------------------------------
 # M2M

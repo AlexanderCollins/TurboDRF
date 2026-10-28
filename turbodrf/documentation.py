@@ -94,7 +94,8 @@ def get_turbodrf_schema_view(
         - Version: Customizable via version parameter
         - Generator: RoleBasedSchemaGenerator for permission filtering
         - public=False: each endpoint's permission check runs for the caller
-        - Permissions: AllowAny (filtering happens at schema level)
+        - Permissions: the router's gate, else AllowAny (filtering happens at
+          schema level)
 
         Set TURBODRF_ENABLE_DOCS = False in settings to disable documentation.
 

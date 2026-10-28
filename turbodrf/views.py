@@ -59,7 +59,9 @@ class Authorization:
         ``Either`` ORing one with another column) is applied as a ``pk__in``
         subquery: a direct JOIN returns a row once per matching related row,
         duplicating list rows, inflating counts and making ``get_object()``
-        raise MultipleObjectsReturned."""
+        raise MultipleObjectsReturned. The subquery starts from the
+        tenant-filtered queryset, so it reads one tenant's rows, not the
+        table's."""
         if self.tenant_q is not None:
             queryset = queryset.filter(self.tenant_q)
         if self.predicate_q is not None:
@@ -67,9 +69,7 @@ class Authorization:
                 queryset.model, self.predicate_q
             ):
                 queryset = queryset.filter(
-                    pk__in=queryset.model._base_manager.filter(self.predicate_q).values(
-                        "pk"
-                    )
+                    pk__in=queryset.filter(self.predicate_q).values("pk")
                 )
             else:
                 queryset = queryset.filter(self.predicate_q)
@@ -1006,8 +1006,12 @@ class TurboDRFViewSet(*_viewset_bases):
                     simple_fields.append(field)
 
             # Add base fields for nested fields if not already present
+            from .validation import is_reverse_one_to_one
+
             for base_field in nested_fields:
-                if base_field not in simple_fields:
+                if base_field not in simple_fields and not is_reverse_one_to_one(
+                    self.model, base_field
+                ):
                     simple_fields.append(base_field)
 
             fields_to_use = simple_fields

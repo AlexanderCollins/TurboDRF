@@ -421,7 +421,7 @@ def scoped_target_queryset(target_model, request, base_manager=False):
         for pred in predicates:
             target_q &= pred.q(request, roles)
         if target_q:
-            return manager.filter(pk__in=qs.filter(target_q).values("pk"))
+            return qs.filter(pk__in=qs.filter(target_q).values("pk"))
 
     return qs
 
@@ -534,6 +534,18 @@ def is_field_path_sensitive(field_path):
         if segment in sensitive:
             return True
     return False
+
+
+def is_reverse_one_to_one(model, name):
+    """True if ``name`` on ``model`` is a reverse one-to-one. Rendered bare it
+    shows the related row's pk without that row's own scope, so it's neither
+    listed (a startup error) nor added as the base of a nested path like
+    ``twin__name``."""
+    try:
+        field = model._meta.get_field(name)
+    except FieldDoesNotExist:
+        return False
+    return bool(field.one_to_one and field.auto_created and not field.concrete)
 
 
 def is_field_visible_to_user(model, field_path, user, use_cache=True):

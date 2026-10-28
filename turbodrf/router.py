@@ -465,8 +465,7 @@ class TurboDRFRouter(DefaultRouter):
     This will automatically create endpoints for all TurboDRF-enabled models:
         - /api/books/ and /api/books
         - /api/authors/ and /api/authors
-        - /api/categories/ and /api/categories
-        etc.
+        etc. (the lowercase model name plus "s"; set 'endpoint' to change it).
 
     Platform scope (an operator's own staff, across tenants)::
 
