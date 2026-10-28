@@ -839,11 +839,9 @@ class TurboDRFViewSet(*_viewset_bases):
 
     def _configured_nested_paths(self):
         """Every ``__`` field path in the model's config (list and detail)."""
-        from .mixins import _resolve_configured_fields
-
-        fields = _resolve_configured_fields(
-            self.model, "list"
-        ) + _resolve_configured_fields(self.model, "detail")
+        fields = self._configured_view_fields("list") + self._configured_view_fields(
+            "detail"
+        )
         return [f for f in dict.fromkeys(fields) if isinstance(f, str) and "__" in f]
 
     def _single_valued_prefix(self, path):
@@ -1076,25 +1074,10 @@ class TurboDRFViewSet(*_viewset_bases):
         return attach_snapshot_to_request(request, self.model)
 
     def _configured_base_fields(self):
-        """Base names of every field the model's ``turbodrf()`` config exposes
-        (list and detail; ``"__all__"`` means every concrete and M2M field),
-        plus the pk."""
-        from .mixins import _model_config
-
-        config = _model_config(self.model) if hasattr(self.model, "turbodrf") else {}
-        fields = config.get("fields", "__all__")
-        if isinstance(fields, dict):
-            groups = [fields.get("list", []), fields.get("detail", [])]
-        else:
-            groups = [fields]
-        names = {self.model._meta.pk.name}
-        for group in groups:
-            if group == "__all__":
-                names.update(f.name for f in self.model._meta.fields)
-                names.update(f.name for f in self.model._meta.many_to_many)
-            else:
-                names.update(f.split("__")[0] for f in group)
-        return names
+        """Base names of every configured field (list and detail), plus the
+        pk."""
+        paths = self._configured_paths()
+        return {self.model._meta.pk.name} | {f.split("__")[0] for f in paths}
 
     def _configured_paths(self):
         """Every configured field path (list and detail)."""

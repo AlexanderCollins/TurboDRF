@@ -14,7 +14,7 @@ from django.urls import re_path
 from rest_framework.permissions import BasePermission, OperationHolderMixin
 from rest_framework.routers import DefaultRouter
 
-from .mixins import TurboDRFMixin
+from .mixins import TurboDRFMixin, _resolve_configured_fields
 from .scope import (
     PLATFORM,
     SCOPES,
@@ -204,25 +204,6 @@ def _validate_fields_and_lookup(model, config, where=None):
         )
 
 
-def _resolved_field_groups(model, config):
-    """``(list fields, detail fields)`` of a config, ``'__all__'`` expanded to
-    every concrete and many-to-many field (as mixins._resolve_configured_fields
-    resolves it)."""
-    fields = config.get("fields", "__all__")
-    if isinstance(fields, dict):
-        list_fields = fields.get("list", fields.get("detail", []))
-        detail_fields = fields.get("detail", list_fields)
-    else:
-        list_fields = detail_fields = fields
-    every = [f.name for f in model._meta.fields] + [
-        f.name for f in model._meta.many_to_many
-    ]
-    return tuple(
-        every if group == "__all__" else list(group or [])
-        for group in (list_fields, detail_fields)
-    )
-
-
 def _unreachable_hop(model, path, bare_relation_ok=True):
     """``(hop, target model)`` of the first relation along ``path`` into a
     model the platform scope can't reach (scope.platform_reachable), else
@@ -307,8 +288,10 @@ def _validate_platform_block(model, config, tenant_field):
         )
     _validate_fields_and_lookup(model, block, where)
 
-    list_fields, detail_fields = _resolved_field_groups(model, block)
-    configured = set(list_fields) | set(detail_fields)
+    detail_fields = _resolve_configured_fields(model, "detail", block)
+    configured = set(_resolve_configured_fields(model, "list", block)) | set(
+        detail_fields
+    )
     for path in sorted(p for p in configured if isinstance(p, str)):
         found = _unreachable_hop(model, path)
         if found:

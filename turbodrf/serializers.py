@@ -1556,11 +1556,10 @@ class TurboDRFSerializerFactory:
 
         permitted = []
 
-        # "__all__" is every concrete and many-to-many field, as on the views.
         if fields == "__all__":
-            fields = [f.name for f in model._meta.fields] + [
-                f.name for f in model._meta.many_to_many
-            ]
+            from .mixins import _all_fields
+
+            fields = _all_fields(model)
 
         for field in fields:
             # Strip sensitive fields at every segment of the path (I-2 fix),

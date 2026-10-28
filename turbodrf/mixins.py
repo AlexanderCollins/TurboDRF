@@ -43,7 +43,15 @@ def get_searchable_fields(model):
     return list(getattr(model, "searchable_fields", None) or [])
 
 
-def _resolve_configured_fields(model, view_type="list"):
+def _all_fields(model):
+    """What ``'__all__'`` means: every concrete field plus every forward
+    many-to-many field; no reverse relations."""
+    return [f.name for f in model._meta.fields] + [
+        f.name for f in model._meta.many_to_many
+    ]
+
+
+def _resolve_configured_fields(model, view_type="list", config=None):
     """The fields ``model``'s ``turbodrf()`` config exposes for ``view_type``.
 
     The one resolution of the ``fields`` config, shared by the API, the
@@ -60,17 +68,18 @@ def _resolve_configured_fields(model, view_type="list"):
 
     Returns a new list of the configured names (``__`` paths and property
     names included). Sensitive-field and permission filtering happen later,
-    per caller.
+    per caller. ``config`` is the config to read (a platform block, say);
+    by default the one the current scope serves.
     """
-    fields = _model_config(model).get("fields", "__all__")
+    if config is None:
+        config = _model_config(model)
+    fields = config.get("fields", "__all__")
     if isinstance(fields, dict):
         list_fields = fields.get("list", fields.get("detail", []))
         detail_fields = fields.get("detail", list_fields)
         fields = list_fields if view_type == "list" else detail_fields
     if fields == "__all__":
-        return [f.name for f in model._meta.fields] + [
-            f.name for f in model._meta.many_to_many
-        ]
+        return _all_fields(model)
     if isinstance(fields, str):
         return [fields]
     return list(fields or [])
