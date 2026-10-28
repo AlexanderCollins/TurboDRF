@@ -243,9 +243,8 @@ and listing close matches.
 
 TurboDRF checks the configuration at startup and raises a directed
 `ImproperlyConfigured` error on a problem: tenancy declarations, unknown
-`turbodrf()` keys, compiled-path and search-field joins into
-predicate-bearing targets, `Custom` without `write_validator`, permission
-string typos, and more (see [Hard-fail-at-startup](#hard-fail-at-startup)).
+`turbodrf()` keys, fields that don't exist, `Custom` without
+`write_validator`, permission string typos, and more (see [Hard-fail-at-startup](#hard-fail-at-startup)).
 Tenancy errors raise when Django starts; the rest when Django first imports
 your URLconf. Run `python manage.py check` in CI and before each deploy: it
 imports the URLconf, so it runs them all. (`get_wsgi_application()` doesn't,
@@ -367,9 +366,6 @@ Either(Owner('owner'), Members('shared_with'))
 In the example, a user in `shared_with` can edit the row's other fields but
 can't change `owner`.
 
-⚠ `Tenant(...)` cannot appear inside `Either` — the framework rejects this
-configuration at startup. Use the `tenant_field` setting at the top level.
-
 ### `Custom(q_func, write_validator=None, auto_filler=None)` — escape hatch
 
 ```python
@@ -385,11 +381,9 @@ required (see [Step 6](#step-6-always-write-a-write_validator));
 `auto_filler(validated_data, request)` optionally returns the data to create
 with.
 
-A `Custom` predicate that returns `Q()` unconditionally just means "no
-within-tenant restriction" — the tenant boundary still applies separately,
-so this is safe. TurboDRF logs a warning each time a `Custom` returns an
-empty `Q`, to surface accidental `Q()` returns; set
-`TURBODRF_LOG_UNRESTRICTED_CUSTOM = False` (default `True`) to silence it.
+A `Custom` predicate that returns `Q()` just means "no within-tenant
+restriction" for that caller; the tenant boundary still applies separately.
+A `q_func` that returns anything but a `Q` raises `TypeError`.
 
 ---
 
@@ -425,8 +419,7 @@ return {
 `tenant_field` is a setting, not a predicate, and is allowed alongside
 `visibility`. `owner_field` / `bypass_owner_roles` are sugar that compiles
 to predicates — those *do* conflict with `visibility` (pick one or the
-other). Tenant inside `visibility` is supported but deprecated; use the
-`tenant_field` setting instead.
+other).
 
 A misspelt key such as `'owner_feild'` raises `ImproperlyConfigured` at
 startup. After changing a model's scoping, run
@@ -569,9 +562,9 @@ a 404), and a role granted `accounts.workspace.update` can rename it.
 Creating and deleting tenants usually belongs to a signup or admin flow, not
 the API; use `'read_only': True` to drop the PATCH as well.
 
-With a predicate on the tenant model, the startup gate refuses compiled
-models that nest its fields (`'workspace__name'`). Read those from
-`/api/workspaces/{id}/`, or set `'compiled': False` on the nesting model.
+With a predicate on the tenant model, a nested field into it
+(`'workspace__name'`) renders `null` where the caller can't see that
+workspace.
 
 **The user model.** The mixin goes on the model class, so this needs a
 custom user model (`AUTH_USER_MODEL`):

@@ -33,7 +33,6 @@ from turbodrf.predicates import (
     Members,
     Owner,
     Predicate,
-    Tenant,
     _no_match_q,
     clear_predicates,
     get_predicates,
@@ -41,6 +40,7 @@ from turbodrf.predicates import (
     has_tenancy_declaration,
     parse_config,
     register_predicates,
+    tenant_q,
 )
 
 User = get_user_model()
@@ -201,45 +201,6 @@ class SecurityBase(TestCase):
 # ============================================================================
 
 
-class TestTenantPredicate(SecurityBase):
-    def test_tenant_weird_field_paths_never_widen(self):
-        """Various semantically-bogus field paths (empty, chained, non-FK,
-        through-user) must never accidentally match the victim deal. Either
-        raise (fail closed) or filter out the victim row."""
-        for field in ("", "brokerage__pk", "title", "assigned_broker__pk"):
-            t = Tenant(field=field)
-            try:
-                q = t.q(self._request_stub(), set())
-                qs = Deal.objects.filter(q)
-                self.assertNotIn(
-                    self.victim_deal.pk,
-                    [d.pk for d in qs],
-                    f"victim leaked with field={field!r}",
-                )
-            except Exception:
-                # raising is acceptable — fail closed
-                pass
-
-    def test_tenant_resolved_column_and_standard_fk(self):
-        """Both 'brokerage' (FK) and 'brokerage_id' (resolved column) must
-        scope to attacker tenant and exclude victim."""
-        for field in ("brokerage", "brokerage_id"):
-            t = Tenant(field=field)
-            q = t.q(self._request_stub(), set())
-            qs = Deal.objects.filter(q)
-            self.assertNotIn(self.victim_deal.pk, [d.pk for d in qs])
-            for d in qs:
-                self.assertEqual(d.brokerage_id, self.brokerage_attacker.pk)
-
-    def test_tenant_q_when_user_tenant_is_none_returns_no_match(self):
-        """Tenant.q with user.brokerage=None must fail closed."""
-        nuser = User.objects.create_user(username="notenant")
-        t = Tenant(field="brokerage")
-        q = t.q(self._request_stub(user=nuser), set())
-        qs = Deal.objects.filter(q)
-        self.assertEqual(qs.count(), 0)
-
-
 # ============================================================================
 # 2. Owner predicate
 # ============================================================================
@@ -305,7 +266,10 @@ class TestComposition(SecurityBase):
     def test_either_with_one_match_all_child_does_not_break_tenant(self):
         """Either(Custom(Q()), Owner('assigned_broker')) → match-all within
         tenant. Tenant Q layer still binds at the API layer."""
-        e = Either(Custom(q_func=lambda r, u: Q()), Owner("assigned_broker"))
+        e = Either(
+            Custom(q_func=lambda r, u: Q(), write_validator=lambda d, i, r: []),
+            Owner("assigned_broker"),
+        )
         restore = self._swap_predicates(Deal, [e])
         try:
             r = self.client.get("/api/deals/")
@@ -398,7 +362,9 @@ class TestCustomPredicate(SecurityBase):
             # Custom returning non-Q (None) must not silently widen
             lambda r, u: None,
         ]:
-            restore = self._swap_predicates(Deal, [Custom(q_func=q_func)])
+            restore = self._swap_predicates(
+                Deal, [Custom(q_func=q_func, write_validator=lambda d, i, r: [])]
+            )
             try:
                 r = self.client.get("/api/deals/")
                 self._api_no_leak(r)
@@ -418,7 +384,9 @@ class TestCustomPredicate(SecurityBase):
                 pass
             return Q()
 
-        restore = self._swap_predicates(Deal, [Custom(q_func=mutator)])
+        restore = self._swap_predicates(
+            Deal, [Custom(q_func=mutator, write_validator=lambda d, i, r: [])]
+        )
         try:
             r = self.client.get("/api/deals/")
             self._api_no_leak(r)
@@ -457,7 +425,11 @@ class TestCustomPredicate(SecurityBase):
             vd["brokerage"] = self.brokerage_victim
             return vd
 
-        bad = Custom(q_func=lambda r, u: Q(), auto_filler=filler)
+        bad = Custom(
+            q_func=lambda r, u: Q(),
+            auto_filler=filler,
+            write_validator=lambda d, i, r: [],
+        )
         restore = self._swap_predicates(Deal, [bad])
         try:
             r = self.client.post(
@@ -501,8 +473,7 @@ class TestParseConfigAndRegistration(SecurityBase):
 
     def test_tenant_field_alongside_visibility_is_allowed(self):
         """tenant_field is a setting (not a predicate) and composes
-        cleanly with visibility=[...] — this is the canonical power-form
-        pairing now that Tenant() inside visibility is deprecated."""
+        cleanly with visibility=[...] — the canonical power-form pairing."""
         tf, preds = parse_config(
             {
                 "tenant_field": "brokerage",
@@ -673,14 +644,19 @@ class TestTwoLayerAndCorners(SecurityBase):
             self.assertNotIn(self.victim_deal.pk, ids)
 
     def test_predicates_with_no_request_or_anon_return_no_match(self):
-        """Owner / Tenant / Custom — for None request or anon user, all
-        return _no_match_q() (fail closed)."""
+        """Owner / the tenant boundary / Custom — for None request or anon
+        user, all return _no_match_q() (fail closed)."""
         self.assertEqual(
             Owner("assigned_broker").q(self._request_stub(authed=False), set()),
             _no_match_q(),
         )
-        self.assertEqual(Tenant(field="brokerage").q(None, set()), _no_match_q())
-        self.assertEqual(Custom(q_func=lambda r, u: Q()).q(None, set()), _no_match_q())
+        self.assertEqual(tenant_q("brokerage", None), _no_match_q())
+        self.assertEqual(
+            Custom(q_func=lambda r, u: Q(), write_validator=lambda d, i, r: []).q(
+                None, set()
+            ),
+            _no_match_q(),
+        )
         self.assertEqual(
             Owner("assigned_broker", bypass={"manager"}).q(None, set()), _no_match_q()
         )

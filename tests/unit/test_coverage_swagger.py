@@ -25,7 +25,7 @@ from turbodrf.views import TurboDRFViewSet
 
 User = get_user_model()
 
-# Test roles matching the test_app models, used to patch turbodrf.settings.TURBODRF_ROLES
+# Test roles matching the test_app models
 # (swagger.py and metadata.py import directly from turbodrf.settings, not django.conf.settings)
 _TEST_ROLES = getattr(django_settings, "TURBODRF_ROLES", {})
 
@@ -70,7 +70,7 @@ class TestRoleBasedSchemaGeneratorHelpers(TestCase):
         self.assertIsNone(RoleBasedSchemaGenerator._requested_role(req))
 
     def test_configured_fields_list_and_detail(self):
-        from turbodrf.swagger import _configured_fields
+        from turbodrf.mixins import _resolve_configured_fields as _configured_fields
 
         self.assertEqual(
             _configured_fields(SampleModel, "list"),
@@ -490,7 +490,7 @@ class TestTurboDRFMetadata(TestCase):
         viewset.kwargs = {}
         return viewset
 
-    @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
+    @override_settings(TURBODRF_ROLES=_TEST_ROLES)
     def test_metadata_with_user_having_roles(self):
         request = self.factory.options("/api/samplemodels/")
         request.user = MagicMock()
@@ -506,7 +506,7 @@ class TestTurboDRFMetadata(TestCase):
         self.assertFalse(result["actions"]["create"])
         self.assertFalse(result["actions"]["destroy"])
 
-    @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
+    @override_settings(TURBODRF_ROLES=_TEST_ROLES)
     def test_metadata_with_admin_roles(self):
         request = self.factory.options("/api/samplemodels/")
         request.user = MagicMock()
@@ -520,7 +520,7 @@ class TestTurboDRFMetadata(TestCase):
         self.assertTrue(result["actions"]["update"])
         self.assertTrue(result["actions"]["destroy"])
 
-    @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
+    @override_settings(TURBODRF_ROLES=_TEST_ROLES)
     def test_metadata_detail_view_type(self):
         request = self.factory.options("/api/samplemodels/1/")
         request.user = MagicMock()
@@ -532,7 +532,7 @@ class TestTurboDRFMetadata(TestCase):
         fields = result["model"]["fields"]
         self.assertIn("description", fields)
 
-    @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
+    @override_settings(TURBODRF_ROLES=_TEST_ROLES)
     def test_metadata_field_info_max_length(self):
         request = self.factory.options("/api/samplemodels/")
         request.user = MagicMock()
@@ -572,7 +572,7 @@ class TestTurboDRFMetadata(TestCase):
             ]
         }
         with (
-            patch("turbodrf.settings.TURBODRF_ROLES", roles_with_choice),
+            override_settings(TURBODRF_ROLES=roles_with_choice),
             patch(
                 "django.conf.settings.TURBODRF_ROLES", roles_with_choice, create=True
             ),
@@ -615,7 +615,7 @@ class TestTurboDRFMetadata(TestCase):
         result = metadata.determine_metadata(request, view)
         self.assertEqual(result["model"]["fields"]["nonexistent"]["type"], "unknown")
 
-    @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
+    @override_settings(TURBODRF_ROLES=_TEST_ROLES)
     def test_metadata_user_without_roles(self):
         request = self.factory.options("/api/samplemodels/")
         request.user = MagicMock(spec=[])  # no .roles attribute
@@ -626,7 +626,7 @@ class TestTurboDRFMetadata(TestCase):
         self.assertFalse(result["actions"]["list"])
         self.assertFalse(result["actions"]["create"])
 
-    @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
+    @override_settings(TURBODRF_ROLES=_TEST_ROLES)
     def test_metadata_nested_field(self):
         request = self.factory.options("/api/samplemodels/")
         request.user = MagicMock()
@@ -652,7 +652,7 @@ class TestTurboDRFMetadata(TestCase):
         self.assertNotIn("model", result)
         self.assertNotIn("actions", result)
 
-    @patch("turbodrf.settings.TURBODRF_ROLES", _TEST_ROLES)
+    @override_settings(TURBODRF_ROLES=_TEST_ROLES)
     def test_metadata_read_write_permissions(self):
         request = self.factory.options("/api/samplemodels/")
         request.user = MagicMock()

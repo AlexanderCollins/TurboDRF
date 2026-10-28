@@ -47,7 +47,12 @@ from drf_yasg.generators import EndpointEnumerator, OpenAPISchemaGenerator
 from drf_yasg.inspectors import NotHandled, PaginatorInspector, SwaggerAutoSchema
 from drf_yasg.utils import no_body
 
-from .backends import RoleOnlyIdentity
+from .backends import (
+    RoleOnlyIdentity,
+    build_permission_snapshot,
+    request_snapshot_key,
+)
+from .mixins import _resolve_configured_fields
 from .scope import PLATFORM, TENANT, current_scope, use_scope
 
 logger = logging.getLogger(__name__)
@@ -73,17 +78,6 @@ _SCHEMA_USER_ATTR = "_turbodrf_schema_user"
 _UNSET = object()
 
 
-class _RoleScopedUser(RoleOnlyIdentity):
-    """Permission-only identity carrying a subset of the caller's roles.
-
-    Used to build the schema for ``?role=<r>``. It holds ONLY a role list:
-    no primary key (so permission snapshots for it are never cached) and it
-    is only ever handed to the permission snapshot builder and the serializer
-    factory's field check — never to the ORM. The real request user still
-    drives the endpoint permission check and FK queryset scoping.
-    """
-
-
 def _turbodrf_model(view):
     """Return the model behind a TurboDRF viewset instance, else None."""
     from .views import TurboDRFViewSet
@@ -107,31 +101,6 @@ def _schema_user(view, request=None):
     if req is None:
         return None
     return getattr(req, "user", None)
-
-
-def _snapshot_for(user, model):
-    from .backends import build_permission_snapshot
-
-    return build_permission_snapshot(
-        user, model, use_cache=not isinstance(user, _RoleScopedUser)
-    )
-
-
-def _request_snapshot_key(model):
-    # Same key backends.attach_snapshot_to_request uses for its per-request
-    # snapshot cache (scope included).
-    from .backends import request_snapshot_key
-
-    return request_snapshot_key(model)
-
-
-def _configured_fields(model, kind):
-    """The model's configured fields for ``kind`` ('list' or 'detail'),
-    resolved exactly as TurboDRFViewSet.get_serializer_class does (see
-    turbodrf.mixins._resolve_configured_fields)."""
-    from .mixins import _resolve_configured_fields
-
-    return _resolve_configured_fields(model, kind)
 
 
 def _serializer_context(view):
@@ -323,7 +292,7 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
                     else:
                         self.current_role = requested
                         if held != {requested}:
-                            self._scoped_user = _RoleScopedUser([requested])
+                            self._scoped_user = RoleOnlyIdentity([requested])
 
         schema = super().get_schema(request, public)
         _prune_unreachable_definitions(schema)
@@ -360,16 +329,16 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
                 # snapshot so the view's own filter/ordering parameter lists
                 # match the selected role too.
                 view_request._turbodrf_snapshots = {
-                    _request_snapshot_key(model): self._snapshot(view, model)
+                    request_snapshot_key(model): self._snapshot(view, model)
                 }
         return view
 
     def _snapshot(self, view, model):
         user = _schema_user(view)
-        key = (id(user), _request_snapshot_key(model))
+        key = (id(user), request_snapshot_key(model))
         if key not in self._snapshots:
             # Keep the user referenced so its id can't be reused meanwhile.
-            self._snapshots[key] = (user, _snapshot_for(user, model))
+            self._snapshots[key] = (user, build_permission_snapshot(user, model))
         return self._snapshots[key][1]
 
     def should_include_endpoint(self, path, method, view, public):
@@ -575,11 +544,11 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
         from .serializers import TurboDRFSerializerFactory
 
         if action == "list":
-            fields, view_type = _configured_fields(model, "list"), "list"
+            fields, view_type = _resolve_configured_fields(model, "list"), "list"
         elif action in _WRITE_ACTIONS:
-            fields, view_type = _configured_fields(model, "detail"), "detail"
+            fields, view_type = _resolve_configured_fields(model, "detail"), "detail"
         else:
-            fields, view_type = _configured_fields(model, "detail"), "retrieve"
+            fields, view_type = _resolve_configured_fields(model, "detail"), "retrieve"
 
         user = _schema_user(self.view, self.request)
         serializer_class = TurboDRFSerializerFactory.create_serializer(
@@ -587,7 +556,7 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
             fields,
             user,
             view_type=view_type,
-            snapshot=_snapshot_for(user, model),
+            snapshot=build_permission_snapshot(user, model),
         )
         return serializer_class(context=_serializer_context(self.view))
 
@@ -615,7 +584,7 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
         # Writes use the detail fields, as the API does ("__all__" includes
         # forward M2M fields).
         fields = []
-        for name in _configured_fields(model, "detail"):
+        for name in _resolve_configured_fields(model, "detail"):
             # Strip nested fields (`__` paths) — DRF ModelSerializer can't
             # use them in Meta.fields, and only the base FK is writable.
             base = name.split("__")[0]
@@ -647,7 +616,7 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
                 fields,
                 user,
                 view_type="write",
-                snapshot=_snapshot_for(user, model),
+                snapshot=build_permission_snapshot(user, model),
             )
 
         base_meta = base_class.Meta

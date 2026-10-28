@@ -3,6 +3,7 @@ model, an Owner over a ``__`` path on writes, and the browsable API's
 dropdown labels."""
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -17,11 +18,14 @@ from tests.test_app.models import (
     BankAccount,
     Brokerage,
     Deal,
+    ParityAllTypes,
+    ParityTarget,
     RelatedModel,
     SampleModel,
     Transaction,
 )
 from turbodrf.predicates import (
+    Custom,
     Owner,
     _model_predicates,
     _model_tenant_fields,
@@ -220,3 +224,53 @@ class TestBrowsableDropdownLabels(TestCase):
         html = page.content.decode()
         self.assertIn(f'<option value="{related.pk}"', html)
         self.assertNotIn("SECRET_NAME_XYZ", html)
+
+
+class TestReverseOneToOneBase(TestCase):
+    """A nested path through a reverse one-to-one (``twin_row__char``) renders
+    the related value, never the bare ``twin_row`` key: that pk belongs to
+    the other row, which may be hidden from the caller (listing ``twin_row``
+    bare is a startup error)."""
+
+    def test_base_is_not_rendered(self):
+        cache.clear()
+        target = ParityTarget.objects.create(name="t")
+        ParityAllTypes.objects.create(char="twin-of-t", twin=target)
+        config = {**ParityTarget.turbodrf(), "fields": ["id", "name", "twin_row__char"]}
+        client = APIClient()
+        with patch.object(ParityTarget, "turbodrf", classmethod(lambda cls: config)):
+            rows = client.get("/api/paritytargets/").json()["data"]
+            detail = client.get(f"/api/paritytargets/{target.pk}/").json()
+        self.assertTrue(rows)
+        for row in [*rows, detail]:
+            self.assertNotIn("twin_row", row)
+            self.assertIn("name", row)
+
+
+class TestExpressionValueAcrossToMany(TestCase):
+    """A predicate whose value crosses a to-many relation (an F() over
+    ``watchers``) joins one row per related row: the scope must still list
+    each row once."""
+
+    def test_target_rows_are_not_repeated(self):
+        from django.db.models import F, Q
+
+        from tests.test_app.models import ScopeBoard
+        from turbodrf.validation import scoped_target_queryset
+
+        cache.clear()
+        _test_user_brokerages.clear()
+        firm = Brokerage.objects.create(name="A")
+        user = User.objects.create_user(username="w")
+        set_test_brokerage(user, firm)
+        board = ScopeBoard.objects.create(title="b", brokerage=firm, owner=user)
+        board.watchers.add(
+            user, *(User.objects.create_user(username=f"w{i}") for i in range(2))
+        )
+        every_watcher = Custom(
+            q_func=lambda r, roles: Q(pk__lte=F("watchers__pk") + 10**9),
+            write_validator=lambda d, i, r: [],
+        )
+        with _Predicates(ScopeBoard, [every_watcher]):
+            rows = scoped_target_queryset(ScopeBoard, SimpleNamespace(user=user))
+            self.assertEqual(list(rows.values_list("pk", flat=True)), [board.pk])

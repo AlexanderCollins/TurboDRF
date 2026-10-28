@@ -254,10 +254,6 @@ instead: the writer must still see it. `Custom` adds its `write_validator`; `Mem
 On create, `Either` fills a single-column `Owner` child's column with the
 caller.
 
-**Never put `Tenant()` inside `Either(...)`.** It would let OR-composition
-escape the tenant boundary. The framework raises at config time. Use
-the `tenant_field` setting instead.
-
 ---
 
 ## Platform scope (staff across tenants)
@@ -410,7 +406,6 @@ assert snap.can_perform_action('update')
   this at startup.
 - Run `python manage.py check` before committing: it builds the router and
   runs every startup gate. Then `python manage.py turbodrf_check`, which
-  reports each model's compiled status (and why an opted-in model isn't
-  compiled), its list fields, and its resolved tenancy; it only reports.
+  reports each model's list fields and resolved tenancy; it only reports.
 - Preserve fail-closed defaults: when in doubt about a permission edge
   case, deny.

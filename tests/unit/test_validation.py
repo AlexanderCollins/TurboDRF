@@ -9,20 +9,15 @@ from django.test import TestCase, override_settings
 from tests.test_app.models import (
     CompiledArticle,
     RelatedModel,
-    SampleModel,
 )
 from turbodrf.predicates import (
     Custom,
-    Either,
-    Owner,
     register_predicates,
     register_tenant_field,
     validate_permission_strings,
-    validate_predicate_write_safety,
 )
 from turbodrf.validation import (
     build_traversal_scope_q,
-    validate_searchable_fields_safety,
 )
 
 
@@ -41,120 +36,6 @@ class _RegistrySnapshot:
         _model_predicates.update(self._saved_p)
         _model_tenant_fields.clear()
         _model_tenant_fields.update(self._saved_t)
-
-
-# ---------------------------------------------------------------------------
-# validate_searchable_fields_safety
-# ---------------------------------------------------------------------------
-
-
-class ValidateSearchableFieldsSafetyTests(TestCase):
-    def test_no_searchable_fields_attr_is_noop(self):
-        class NoSearch:
-            pass
-
-        validate_searchable_fields_safety(NoSearch)
-
-    def test_empty_searchable_fields_is_noop(self):
-        class EmptySearch:
-            searchable_fields = []
-
-        validate_searchable_fields_safety(EmptySearch)
-
-    def test_flat_paths_pass(self):
-        """SampleModel has flat searchable_fields — no __-traversal."""
-        with _RegistrySnapshot():
-            validate_searchable_fields_safety(SampleModel)
-
-    def test_unresolvable_path_silently_skipped(self):
-        """Unresolvable __-path is dropped at request time; gate skips it."""
-
-        original = getattr(CompiledArticle, "searchable_fields", None)
-        try:
-            CompiledArticle.searchable_fields = ["does_not_exist__name"]
-            with _RegistrySnapshot():
-                validate_searchable_fields_safety(CompiledArticle)
-        finally:
-            if original is None:
-                if hasattr(CompiledArticle, "searchable_fields"):
-                    delattr(CompiledArticle, "searchable_fields")
-            else:
-                CompiledArticle.searchable_fields = original
-
-    def test_traversal_to_safe_target_passes(self):
-        """CompiledArticle.author -> RelatedModel (no predicates) — safe."""
-        original = getattr(CompiledArticle, "searchable_fields", None)
-        try:
-            CompiledArticle.searchable_fields = ["author__name"]
-            with _RegistrySnapshot():
-                validate_searchable_fields_safety(CompiledArticle)
-        finally:
-            if original is None:
-                if hasattr(CompiledArticle, "searchable_fields"):
-                    delattr(CompiledArticle, "searchable_fields")
-            else:
-                CompiledArticle.searchable_fields = original
-
-    def test_prefixed_traversal_to_predicate_bearing_target_raises(self):
-        """A ^ / = / @ prefix isn't part of the path: with it attached the
-        lookup failed and the unsafe entry was skipped."""
-        original = getattr(CompiledArticle, "searchable_fields", None)
-        try:
-            for entry in ("^author__name", "=author__name", "@author__name"):
-                CompiledArticle.searchable_fields = [entry]
-                with self.subTest(entry=entry), _RegistrySnapshot():
-                    register_predicates(
-                        RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))]
-                    )
-                    with self.assertRaises(ImproperlyConfigured):
-                        validate_searchable_fields_safety(CompiledArticle)
-        finally:
-            if original is None:
-                if hasattr(CompiledArticle, "searchable_fields"):
-                    delattr(CompiledArticle, "searchable_fields")
-            else:
-                CompiledArticle.searchable_fields = original
-
-    def test_traversal_to_predicate_bearing_target_raises(self):
-        """RelatedModel with predicates → SearchFilter would join unscoped."""
-        original = getattr(CompiledArticle, "searchable_fields", None)
-        try:
-            CompiledArticle.searchable_fields = ["author__name"]
-            with _RegistrySnapshot():
-                register_predicates(
-                    RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))]
-                )
-                with self.assertRaises(ImproperlyConfigured) as cm:
-                    validate_searchable_fields_safety(CompiledArticle)
-                self.assertIn("author__name", str(cm.exception))
-                self.assertIn("RelatedModel", str(cm.exception))
-                self.assertIn(
-                    "docs/security.md#search-field-target-bypass",
-                    str(cm.exception),
-                )
-        finally:
-            if original is None:
-                if hasattr(CompiledArticle, "searchable_fields"):
-                    delattr(CompiledArticle, "searchable_fields")
-            else:
-                CompiledArticle.searchable_fields = original
-
-    def test_kill_switch_bypasses(self):
-        original = getattr(CompiledArticle, "searchable_fields", None)
-        try:
-            CompiledArticle.searchable_fields = ["author__name"]
-            with _RegistrySnapshot():
-                register_predicates(
-                    RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))]
-                )
-                with override_settings(TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS=True):
-                    validate_searchable_fields_safety(CompiledArticle)
-        finally:
-            if original is None:
-                if hasattr(CompiledArticle, "searchable_fields"):
-                    delattr(CompiledArticle, "searchable_fields")
-            else:
-                CompiledArticle.searchable_fields = original
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +62,14 @@ class BuildTraversalScopeQTests(TestCase):
         from django.contrib.auth import get_user_model
 
         with _RegistrySnapshot():
-            register_predicates(RelatedModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
+            register_predicates(
+                RelatedModel,
+                [
+                    Custom(
+                        q_func=lambda r, ur: Q(pk=1), write_validator=lambda d, i, r: []
+                    )
+                ],
+            )
             User = get_user_model()
             user = User(username="probe")
             request = Mock()
@@ -200,77 +88,6 @@ class BuildTraversalScopeQTests(TestCase):
             register_tenant_field(RelatedModel, "name")
             q = build_traversal_scope_q(CompiledArticle, "author__name", request=None)
             self.assertNotEqual(q, Q())
-
-
-# ---------------------------------------------------------------------------
-# validate_predicate_write_safety — Custom-without-write_validator gate
-# ---------------------------------------------------------------------------
-
-
-class ValidatePredicateWriteSafetyTests(TestCase):
-    def test_no_predicates_is_noop(self):
-        with _RegistrySnapshot():
-            validate_predicate_write_safety(SampleModel)
-
-    def test_owner_alone_is_safe(self):
-        with _RegistrySnapshot():
-            register_predicates(SampleModel, [Owner("title")])
-            validate_predicate_write_safety(SampleModel)
-
-    def test_custom_with_write_validator_is_safe(self):
-        with _RegistrySnapshot():
-            register_predicates(
-                SampleModel,
-                [Custom(q_func=lambda r, ur: Q(pk=1), write_validator=lambda *a: [])],
-            )
-            validate_predicate_write_safety(SampleModel)
-
-    def test_custom_without_write_validator_raises(self):
-        with _RegistrySnapshot():
-            register_predicates(SampleModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
-            with self.assertRaises(ImproperlyConfigured) as cm:
-                validate_predicate_write_safety(SampleModel)
-            msg = str(cm.exception)
-            self.assertIn("Custom", msg)
-            self.assertIn("write_validator", msg)
-            # Either now runs every child's check, so the message is about the
-            # Custom's own rule, not about Either overriding Owner.
-            self.assertIn("filters reads only", msg)
-
-    def test_either_owner_custom_without_write_validator_raises(self):
-        """The Either(Owner, Custom) pattern for "owner OR external grant"
-        — Custom defaulting to no-op validate_write silently bypasses
-        Owner's checks under Either."""
-        with _RegistrySnapshot():
-            register_predicates(
-                SampleModel,
-                [Either(Owner("title"), Custom(q_func=lambda r, ur: Q(pk=1)))],
-            )
-            with self.assertRaises(ImproperlyConfigured) as cm:
-                validate_predicate_write_safety(SampleModel)
-            self.assertIn("Either(...)", str(cm.exception))
-
-    def test_either_with_safe_custom_passes(self):
-        with _RegistrySnapshot():
-            register_predicates(
-                SampleModel,
-                [
-                    Either(
-                        Owner("title"),
-                        Custom(
-                            q_func=lambda r, ur: Q(pk=1),
-                            write_validator=lambda *a: ["read-only"],
-                        ),
-                    ),
-                ],
-            )
-            validate_predicate_write_safety(SampleModel)
-
-    def test_kill_switch_bypasses(self):
-        with _RegistrySnapshot():
-            register_predicates(SampleModel, [Custom(q_func=lambda r, ur: Q(pk=1))])
-            with override_settings(TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE=True):
-                validate_predicate_write_safety(SampleModel)
 
 
 # ---------------------------------------------------------------------------

@@ -48,13 +48,7 @@ tenant model, plus (opt-in) auto-detection.
 | `TURBODRF_TENANT_USER_FIELD` | **`None`** | Attribute on `request.user` that resolves to the tenant (e.g. `'workspace'` so `request.user.workspace` returns the tenant). It must return a model instance or an integer pk; anything else counts as no tenant, and tenant-scoped queries match nothing. Required whenever a model declares a `tenant_field`: the router refuses to start without it. | [tenancy.md](tenancy.md#settings) |
 | `TURBODRF_REQUIRE_TENANCY` | **`True`** | Hard-fail at startup if a model has no tenancy decision (`tenant_field`, `'tenancy': 'shared'`, or a `visibility` list with a predicate that restricts every caller; `owner_field` alone doesn't count). Only triggers when `TURBODRF_TENANT_MODEL` is also set. | [tenancy.md](tenancy.md#hard-fail-at-startup) |
 | `TURBODRF_AUTODETECT_TENANT` | **`False`** | Walk the FK graph at startup to find the shortest unique path to the tenant model (needs `TURBODRF_TENANT_MODEL`). Off by default — explicit declarations are easier to reason about. | [tenancy.md](tenancy.md) |
-| `TURBODRF_ALLOW_UNSAFE_COMPILED_M2M` | **`False`** | Bypass the startup gate that blocks compiled-path M2M nesting into predicate-bearing targets. Logs a loud warning per offending model. Request-time scoping of the M2M still applies. Intended for migrations only. | [security.md](security.md#compiled-m2m-target-bypass) |
-| `TURBODRF_ALLOW_UNSAFE_COMPILED_FK` | **`False`** | Bypass the startup gate that blocks compiled-path FK annotations whose JOIN chain crosses a predicate-bearing target. Logs a loud warning per offending pair. Request-time scoping still renders out-of-scope values as `null`. Intended for migrations only. | [security.md](security.md#compiled-fk-annotation-bypass) |
-| `TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS` | **`False`** | Bypass the startup gate that blocks `searchable_fields` paths whose JOIN chain crosses a predicate-bearing target. Logs a loud warning per offending entry. Request-time scoping of the search still applies. Intended for migrations only. | [security.md](security.md#search-field-target-bypass) |
-| `TURBODRF_ALLOW_UNSAFE_FILTER_TRAVERSAL` | **`False`** | Disable the request-time scoping that wraps `__`-path filter URLs with target-model predicate / tenant Q's. When `True`, `?fk__field=...` JOINs without applying the target's own visibility rules. Migrations only; not recommended. | [security.md](security.md#url-driven-join-scoping) |
-| `TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE` | **`False`** | Bypass the startup gate that blocks `Custom` predicates without an explicit `write_validator` (every `Custom` must state its write rule). Migrations only; not recommended. | [security.md](security.md#custom-predicate-write-safety) |
 | `TURBODRF_ALLOW_UNKNOWN_PERMISSIONS` | **`False`** | Skip the startup typo check for permission strings whose `app.model` isn't yet registered (plugin systems, lazy apps). Permissions on registered models are still checked. | [security.md](security.md#permission-string-typo-gate) |
-| `TURBODRF_LOG_UNRESTRICTED_CUSTOM` | **`True`** | When `True` (default), log a warning whenever a `Custom` predicate's `q_func` returns an empty `Q`. Tenant isolation still holds (separate layer), but an empty `Q` usually indicates a developer footgun (`return Q()` as a base case silently disables the within-tenant rule). | — |
 
 ## Documentation (Swagger / OpenAPI)
 
@@ -107,9 +101,8 @@ completeness. The table lists every valid key: any other key raises
 | Key | Default | Purpose | Details |
 |---|---|---|---|
 | `'enabled'` | **`True`** | Whether to register the model as an API endpoint. A disabled model's tenancy is still registered (and checked). | [configuration.md](configuration.md) |
-| `'compiled'` | **`True`** | Serve list views through the compiled `.values()` read path. Set to `False` to use the DRF serializer path. | [performance.md](performance.md) |
 | `'public_access'` | **`False`** | Allow unauthenticated GET / HEAD / OPTIONS. Anonymous callers get model-level read; a field with a read rule on any role needs a `guest` role grant. | [permissions.md](permissions.md#anonymous-callers-and-the-guest-role) |
-| `'fields'` | **`'__all__'`** | Fields to expose; always set it explicitly. List or `{'list': [...], 'detail': [...]}` dict (a dict with only one key uses it for both views). May include model `@property` / computed read fields (read-only on both read paths). An entry that names nothing on the model, or ends on a reverse one-to-one, raises at startup. | [configuration.md](configuration.md) |
+| `'fields'` | **`'__all__'`** | Fields to expose; always set it explicitly. List or `{'list': [...], 'detail': [...]}` dict (a dict with only one key uses it for both views). May include model `@property` / computed read fields (read-only). An entry that names nothing on the model, or ends on a reverse one-to-one, raises at startup. | [configuration.md](configuration.md) |
 | `'property_relations'` | `{}` | `{property: [relation path, ...]}`: the related objects a `@property` reads, loaded within the caller's scope. Properties run in a sandbox and can't query. | [configuration.md](configuration.md#the-property-sandbox) |
 | `'unscoped_properties'` | `[]` | Properties that run outside the sandbox, on the full instance with unrestricted queries. | [configuration.md](configuration.md#the-property-sandbox) |
 | `'endpoint'` | model name + `s` | Custom URL endpoint name. The default is the lowercase model name plus `s`, not a real plural (`categorys`). | [configuration.md](configuration.md) |
@@ -137,7 +130,6 @@ If you start fresh and configure nothing, you get:
   `visibility`; the tenancy startup gate is off until `TURBODRF_TENANT_MODEL`
   is set
 - All integrations **off**
-- Compiled read path **on per-model**
 - Swagger docs **on** at `/swagger/`, scoped to the caller
 - Permission cache TTL **5 minutes** (role changes apply on the next request)
 

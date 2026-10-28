@@ -13,7 +13,6 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.test import override_settings
-from rest_framework.test import APIRequestFactory
 
 from turbodrf.backends import build_permission_snapshot
 from turbodrf.mixins import TurboDRFMixin
@@ -619,78 +618,8 @@ class TestNestedPermissionEdgeCases:
 # ============================================================================
 
 
-@pytest.mark.django_db
-@pytest.mark.skip(
-    reason=(
-        "Test models (Publisher/Author/Book) need migrations - "
-        "functionality covered by other tests"
-    )
-)
-class TestNestedPermissionsInSerializer:
-    """Test that nested permissions integrate correctly with serializers."""
-
-    def setup_method(self):
-        """Set up test data."""
-        from django.core.cache import cache
-
-        cache.clear()
-
-        self.factory = APIRequestFactory()
-        self.publisher = Publisher.objects.create(
-            name="Tech Books Inc", country="USA", revenue=1000000
-        )
-        self.author = Author.objects.create(
-            name="John Doe",
-            email="john@example.com",
-            publisher=self.publisher,
-            salary=50000,
-            ssn="123-45-6789",
-        )
-        self.book = Book.objects.create(
-            title="Django Mastery",
-            author=self.author,
-            price=49.99,
-            isbn="1234567890123",
-        )
-
-    @override_settings(
-        TURBODRF_ROLES={
-            "limited": [
-                "tests.book.read",
-                "tests.author.read",
-                "tests.author.name.read",
-                # No email, no publisher access
-            ],
-        }
-    )
-    def test_serializer_filters_nested_fields_by_permission(self):
-        """Serializer should only include nested fields user has permission for."""
-        from turbodrf.serializers import TurboDRFSerializerFactory
-
-        user = User.objects.create_user(username="limited_user")
-        user._test_roles = ["limited"]
-
-        # Create serializer with nested fields
-        fields = [
-            "title",
-            "author__name",
-            "author__email",
-            "author__publisher__name",
-        ]
-
-        serializer_class = TurboDRFSerializerFactory.create_serializer(
-            model=Book, fields=fields, user=user
-        )
-
-        serializer = serializer_class(instance=self.book)
-        data = serializer.data
-
-        # Should include title and author__name (has permission)
-        assert "title" in data
-        assert "author_name" in data or "author" in data
-
-        # Should NOT include email or publisher (no permission)
-        # Note: This depends on implementation - may silently exclude or return None
+# Should NOT include email or publisher (no permission)
+# Note: This depends on implementation - may silently exclude or return None
 
 
 # ============================================================================
@@ -1033,17 +962,17 @@ class TestManyToManyFieldNesting:
             "tags__name",
             "tags__slug",
         }
-        is_valid = backend._is_valid_filter_field(
+        is_valid = backend._accepted_filter(
             "tags__name", valid_fields, Article, self.user
         )
-        assert is_valid is True
+        assert is_valid is not None
 
         # But viewer CANNOT filter by tags__slug
         # (no explicit permission, no model-level read)
-        is_valid = backend._is_valid_filter_field(
+        is_valid = backend._accepted_filter(
             "tags__slug", valid_fields, Article, self.user
         )
-        assert is_valid is False
+        assert is_valid is None
 
     @override_settings(
         TURBODRF_ROLES={

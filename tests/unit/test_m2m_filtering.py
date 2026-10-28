@@ -5,9 +5,6 @@ Tests that ManyToMany fields are included in filterset_fields
 and can be used for filtering.
 """
 
-from decimal import Decimal
-
-import pytest
 from django.contrib.auth import get_user_model
 from django.db import models
 from django.test import TestCase
@@ -138,74 +135,6 @@ class TestManyToManyFiltering(TestCase):
         filterset_fields = viewset.filterset_fields
 
         self.assertIn("categories", filterset_fields)
-
-
-@pytest.mark.skip(
-    reason=(
-        "ProductCategory table not in migrations - "
-        "use test_nesting_validation.py::TestManyToManyFieldNesting instead"
-    )
-)
-class TestManyToManyFilteringIntegration(TestCase):
-    """Integration tests for M2M filtering with actual filtering."""
-
-    def setUp(self):
-        """Set up test data."""
-        # Create categories
-        self.electronics = ProductCategory.objects.create(
-            name="Electronics", slug="electronics"
-        )
-        self.books = ProductCategory.objects.create(name="Books", slug="books")
-        self.clothing = ProductCategory.objects.create(name="Clothing", slug="clothing")
-
-        # Create products with categories
-        self.laptop = Product.objects.create(title="Laptop", price=Decimal("999.99"))
-        self.laptop.categories.add(self.electronics)
-
-        self.novel = Product.objects.create(title="Novel", price=Decimal("19.99"))
-        self.novel.categories.add(self.books)
-
-        self.tablet = Product.objects.create(title="Tablet", price=Decimal("499.99"))
-        self.tablet.categories.add(self.electronics, self.books)
-
-        self.shirt = Product.objects.create(title="Shirt", price=Decimal("29.99"))
-        self.shirt.categories.add(self.clothing)
-
-    def test_filter_by_m2m_field_id(self):
-        """Test filtering by ManyToMany field ID."""
-        # This would be tested via API if we had the endpoint registered
-        # For now, test that the filterset configuration is correct
-
-        viewset = TurboDRFViewSet()
-        viewset.model = Product
-
-        filterset_fields = viewset.get_filterset_fields()
-
-        # Verify categories can be filtered
-        self.assertIn("categories", filterset_fields)
-        self.assertIn("exact", filterset_fields["categories"])
-
-    def test_m2m_filtering_with_queryset(self):
-        """Test M2M filtering works with queryset."""
-        # Test direct queryset filtering (not through DRF)
-        electronics_products = Product.objects.filter(categories=self.electronics)
-
-        # Should return laptop and tablet
-        self.assertEqual(electronics_products.count(), 2)
-        titles = [p.title for p in electronics_products]
-        self.assertIn("Laptop", titles)
-        self.assertIn("Tablet", titles)
-
-    def test_multiple_m2m_values_filter(self):
-        """Test filtering with multiple M2M values."""
-        # Products in both electronics AND books categories
-        multi_category_products = Product.objects.filter(
-            categories=self.electronics
-        ).filter(categories=self.books)
-
-        # Should only return tablet
-        self.assertEqual(multi_category_products.count(), 1)
-        self.assertEqual(multi_category_products.first().title, "Tablet")
 
 
 class TestManyToManyFieldDetection(TestCase):

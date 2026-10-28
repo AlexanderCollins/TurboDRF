@@ -1,11 +1,132 @@
+import base64
 import hashlib
 import logging
 
-from django.db import IntegrityError, transaction
+from django.core.exceptions import FieldDoesNotExist
+from django.db import IntegrityError, models, transaction
 from rest_framework import serializers
 from rest_framework.relations import ManyRelatedField, RelatedField
 
 logger = logging.getLogger(__name__)
+
+
+# Django model fields whose raw value (as .values() returns it) the JSON
+# encoder renders exactly as their DRF serializer field does: the DRF field's
+# to_representation is str() / int() / float() / bool() of it, or the value
+# itself. Every other field renders through its DRF field: Decimal("0") with
+# decimal_places=8 is "0.00000000", not "0E-8"; datetimes are converted to the
+# current timezone and keep their microseconds; durations are "1 02:00:00", not
+# "93600.0"; DATE_FORMAT / DATETIME_FORMAT / TIME_FORMAT apply; an ArrayField
+# renders each item through its base field.
+_RAW_FIELDS = (
+    models.CharField,
+    models.TextField,
+    models.IntegerField,
+    models.FloatField,
+    models.BooleanField,
+    models.UUIDField,
+    models.GenericIPAddressField,
+    models.JSONField,
+)
+
+_field_representations = {}
+
+
+def _renders_raw(model_field):
+    """True if ``model_field``'s raw value renders as its DRF field renders
+    it. A relation renders its raw target value (PrimaryKeyRelatedField's
+    ``.pk``, SlugRelatedField's ``to_field``). Choices go through DRF's
+    ChoiceField, and a field class from outside Django through the DRF field
+    ModelSerializer picks for it (its value may be any Python object)."""
+    if model_field.is_relation:
+        return True
+    return (
+        isinstance(model_field, _RAW_FIELDS)
+        and not model_field.choices
+        and type(model_field).__module__.startswith("django.")
+    )
+
+
+def _drf_field(model_field):
+    """The DRF field ModelSerializer builds for ``model_field``."""
+    from rest_framework.serializers import ModelSerializer
+
+    field_class, field_kwargs = ModelSerializer().build_standard_field(
+        model_field.name, model_field
+    )
+    return field_class(**field_kwargs)
+
+
+def field_representation(model_field, request=None):
+    """How the serializer path renders a value of ``model_field``, when that
+    differs from the JSON encoder's rendering of the raw value; else ``None``.
+
+    Uses the DRF field ModelSerializer builds for the model field, so a value
+    rendered through it matches a top-level field on the serializer path,
+    settings included (COERCE_DECIMAL_TO_STRING, DATETIME_FORMAT, ...). Used for
+    nested and to-many values. File fields render their URL (absolute when
+    ``request`` is given), binary fields base64.
+    """
+    if model_field is None:
+        return None
+    if isinstance(model_field, models.FileField):
+        return _file_representation(model_field, request)
+    if isinstance(model_field, models.BinaryField):
+        return _binary_representation
+    if _renders_raw(model_field):
+        return None
+    try:
+        return _field_representations[model_field]
+    except KeyError:
+        pass
+    from rest_framework.fields import ModelField
+
+    try:
+        represent = _drf_field(model_field)
+    except Exception:
+        represent = None
+    if isinstance(represent, ModelField):
+        # DRF's fallback for a field it has no mapping for: it renders from
+        # the model instance, not from a value.
+        represent = None
+    if represent is not None:
+        represent = represent.to_representation
+    # None: no DRF field renders the value, which then renders raw.
+    _field_representations[model_field] = represent
+    return represent
+
+
+def _file_representation(model_field, request):
+    drf_field = _drf_field(model_field)
+    # An unbound DRF field reads its context from itself.
+    drf_field._context = {"request": request} if request is not None else {}
+
+    def represent(value):
+        if isinstance(value, str):  # a stored name, not a FieldFile
+            value = model_field.attr_class(None, model_field, value)
+        return drf_field.to_representation(value)
+
+    return represent
+
+
+def _binary_representation(value):
+    # As Django's BinaryField.value_to_string, which DRF's ModelField uses.
+    return base64.b64encode(bytes(value)).decode("ascii")
+
+
+def path_leaf_field(model, path):
+    """The model field a ``__`` path ends on, or ``None`` if it doesn't resolve."""
+    current = model
+    field = None
+    for part in path.split("__"):
+        if current is None:
+            return None
+        try:
+            field = current._meta.get_field(part)
+        except FieldDoesNotExist:
+            return None
+        current = field.related_model if field.is_relation else None
+    return field
 
 
 def _model_has_concrete_field(model, name):
@@ -21,8 +142,6 @@ def _model_has_concrete_field(model, name):
 
 def _related_pk(value):
     """A model instance becomes its pk; any other value is returned as-is."""
-    from django.db import models
-
     if isinstance(value, models.Model):
         return value.pk
     return value
@@ -95,7 +214,6 @@ def _co_tenant_queryset(host, queryset, request):
     so it narrows only the choices an HTML page renders; a write is checked
     value by value in ``_check_fk_injection_writes``."""
     from django.conf import settings as django_settings
-    from django.core.exceptions import FieldDoesNotExist
 
     from .predicates import get_tenant_field
 
@@ -532,8 +650,6 @@ def _platform_value_tenant(target, value, tenant_model, tenant_user_field):
     tenant of its own: a row of the tenant model is its own tenant; a row of
     a tenant-scoped model has its ``tenant_field``'s; a row carrying
     TURBODRF_TENANT_USER_FIELD (typically a user) has that attribute's."""
-    from django.db import models
-
     from .predicates import registered_tenant_field
 
     pk = _related_pk(value)
@@ -573,18 +689,12 @@ def _verify_written_row(model, instance, request):
     """After a write, re-check predicates that can only be judged on the saved
     row (``Conditional``): the row must still be visible to the caller, or the
     write is rolled back. Called inside the write's transaction."""
-    from django.db.models import Q
-
-    from .backends import get_user_roles
-    from .predicates import get_predicates
+    from .predicates import get_predicates, predicates_q
 
     predicates = get_predicates(model)
     if not request or not any(_needs_post_write_check(p) for p in predicates):
         return
-    roles = set(get_user_roles(getattr(request, "user", None)))
-    visible = Q()
-    for pred in predicates:
-        visible &= pred.q(request, roles)
+    visible = predicates_q(predicates, request)
     if not model._base_manager.filter(visible, pk=instance.pk).exists():
         raise serializers.ValidationError(
             {"detail": ["This write would create a row you are not allowed to see."]}
@@ -716,8 +826,6 @@ class TurboDRFSerializer(serializers.ModelSerializer):
 
         # Handle nested fields if they're defined
         if hasattr(self.Meta, "_nested_fields"):
-            from .compiler import field_representation, path_leaf_field
-
             request = self.context.get("request")
             for base_field, nested_fields in self.Meta._nested_fields.items():
                 if self._is_many_to_many_field(instance, base_field):
@@ -746,8 +854,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                                 data[field_name] = None
                                 continue
                             value = self._nested_value(instance, full_field_path, leaf)
-                            # Format as a top-level field of that type renders
-                            # (and as the compiled list does).
+                            # Format as a top-level field of that type renders.
                             represent = field_representation(leaf, request)
                             if represent is not None and value is not None:
                                 value = represent(value)
@@ -765,7 +872,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                             )
 
         # Inject model @property / method fields (read-only), computed in the
-        # caller's sandbox (turbodrf.properties) as on the compiled list.
+        # caller's sandbox (turbodrf.properties).
         property_names = getattr(self.Meta, "_property_fields", [])
         if property_names:
             data.update(self._property_values(instance, property_names))
@@ -843,8 +950,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
     def _nested_value(obj, path, leaf=None):
         """The value at ``path`` from ``obj``. A path ending on an FK /
         one-to-one renders the column the parent stores (the related pk, or
-        the ``to_field`` value), as the compiled path's F() does — without
-        loading the related object."""
+        the ``to_field`` value) without loading the related object."""
         parts = path.split("__")
         if leaf is not None and leaf.concrete and (leaf.many_to_one or leaf.one_to_one):
             parent_parts, last = parts[:-1], leaf.attname
@@ -952,7 +1058,6 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         from django.core.exceptions import ImproperlyConfigured
         from django.db.models import BooleanField, Case, Prefetch, Value, When
 
-        from .compiler import field_representation, path_leaf_field
         from .properties import _single_valued, relation_hops
         from .validation import build_traversal_scope_q, scoped_target_queryset
 
@@ -1048,7 +1153,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         are rendered (for an anonymous caller on a tenant-scoped target, none),
         and a sub-field across a further hop is null where that hop's row is
         out of scope. Each sub-field renders under its path below the
-        relation, as on the compiled path.
+        relation.
         """
         try:
             relation = self._to_many_relations(type(instance)).get(base_field)
@@ -1451,12 +1556,10 @@ class TurboDRFSerializerFactory:
 
         permitted = []
 
-        # "__all__" is every concrete and many-to-many field, as on the views
-        # and the compiled path.
         if fields == "__all__":
-            fields = [f.name for f in model._meta.fields] + [
-                f.name for f in model._meta.many_to_many
-            ]
+            from .mixins import _all_fields
+
+            fields = _all_fields(model)
 
         for field in fields:
             # Strip sensitive fields at every segment of the path (I-2 fix),

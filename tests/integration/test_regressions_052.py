@@ -139,15 +139,8 @@ class TestNullableFkRowsKept(_TenantFixture):
             {self.matched.pk, self.review_1.pk, self.review_2.pk, self.cross.pk},
         )
 
-    def test_non_compiled_path_keeps_null_fk_rows(self):
-        from unittest.mock import patch
-
-        from turbodrf.views import TurboDRFViewSet
-
-        with patch.object(
-            TurboDRFViewSet, "_should_use_compiled_path", return_value=False
-        ):
-            resp = self.client.get(EVENTS_URL, {"search": "needs"})
+    def test_search_keeps_null_fk_rows(self):
+        resp = self.client.get(EVENTS_URL, {"search": "needs"})
         self.assertEqual(
             self._ids(resp), {self.review_1.pk, self.review_2.pk, self.cross.pk}
         )
@@ -263,23 +256,9 @@ class TestCompiledPropertyFields(_TenantFixture):
         for key in ("status_label", "holding_label", "holding_portfolio"):
             self.assertEqual(list_row[key], detail.data[key], key)
 
-    def test_property_sees_model_value_types(self):
-        # Properties run before Decimal -> str coercion, as on an instance.
-        from tests.test_app.models import CompiledSampleModel as M
-        from turbodrf.compiler import compile_model
-
-        related = RelatedModel.objects.create(name="r")
-        M.objects.create(title="t", price="2.50", related=related)
-        plan = compile_model(M)
-        plan.property_fields["doubled"] = lambda self: self.price * 2
-        qs, active = plan.apply_to_queryset(M.objects.all())
-        rows = plan.post_process(list(qs), active)
-        self.assertEqual(str(rows[0]["doubled"]), "5.00")
-        self.assertEqual(rows[0]["price"], "2.50")
-
 
 # ---------------------------------------------------------------------------
-# 8. ?fields= on the compiled list never renders unselected columns
+# 8. ?fields= on a list never renders unselected columns
 # ---------------------------------------------------------------------------
 
 

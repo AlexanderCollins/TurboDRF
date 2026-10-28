@@ -237,7 +237,7 @@ TURBODRF_ROLES = {
         "test_app.holding.read",
         "test_app.portfolio.read",
     ],
-    # Compiled-vs-serializer parity harness (test_parity_compiled_vs_serializer.py). Both roles
+    # The parity models (tests/integration/parity_fixtures.py). Both roles
     # read every parity model; only parity_reader holds the explicit field rules,
     # so parity_limited loses amount, twin, target__amount and tags__weight.
     "parity_reader": [

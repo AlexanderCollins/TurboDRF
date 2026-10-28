@@ -54,11 +54,10 @@ TENANT = dict(TURBODRF_TENANT_MODEL="test_app.Brokerage", TURBODRF_REQUIRE_TENAN
 @contextmanager
 def _preserve_registries():
     import turbodrf.router as router_mod
-    from turbodrf import compiler, predicates
+    from turbodrf import predicates
 
     preds = dict(predicates._model_predicates)
     tenants = dict(predicates._model_tenant_fields)
-    plans = dict(compiler._compiled_plans)
     flag = router_mod._bypass_roles_validated
     try:
         yield
@@ -67,8 +66,6 @@ def _preserve_registries():
         predicates._model_predicates.update(preds)
         predicates._model_tenant_fields.clear()
         predicates._model_tenant_fields.update(tenants)
-        compiler._compiled_plans.clear()
-        compiler._compiled_plans.update(plans)
         router_mod._bypass_roles_validated = flag
 
 
@@ -205,7 +202,7 @@ class TestTenancyDeclaration(SimpleTestCase):
             [Group("team")],
             [Either(Owner("o"), Members("m"))],
             [Owner("o", bypass=["admin"]), Members("m")],
-            [Custom(lambda r, u: Q())],
+            [Custom(lambda r, u: Q(), write_validator=lambda d, i, r: [])],
         ):
             with self.subTest(visibility=repr(visibility)):
                 self.assertTrue(has_tenancy_declaration({"visibility": visibility}))
@@ -473,28 +470,6 @@ class TestFieldsAndLookupAtStartup(SimpleTestCase):
                         {**self.BASE, "fields": ["id"], "lookup_field": lookup},
                     )
                 )
-
-
-# ---------------------------------------------------------------------------
-# Custom write gate: the message no longer recommends a no-op as "safe".
-# ---------------------------------------------------------------------------
-class TestCustomWriteGateMessage(SimpleTestCase):
-    def test_message(self):
-        from turbodrf.predicates import (
-            register_predicates,
-            validate_predicate_write_safety,
-        )
-
-        with _preserve_registries():
-            register_predicates(
-                ScopeLoose, [Either(Owner("owner"), Custom(lambda r, u: Q()))]
-            )
-            with self.assertRaises(ImproperlyConfigured) as cm:
-                validate_predicate_write_safety(ScopeLoose)
-        message = str(cm.exception)
-        self.assertIn("filters reads only", message)
-        self.assertNotIn("intentionally read-only", message)
-        self.assertNotIn("silently overrides", message)
 
 
 # ---------------------------------------------------------------------------

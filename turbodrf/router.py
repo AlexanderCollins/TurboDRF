@@ -14,7 +14,7 @@ from django.urls import re_path
 from rest_framework.permissions import BasePermission, OperationHolderMixin
 from rest_framework.routers import DefaultRouter
 
-from .mixins import TurboDRFMixin
+from .mixins import TurboDRFMixin, _resolve_configured_fields
 from .scope import (
     PLATFORM,
     SCOPES,
@@ -23,7 +23,7 @@ from .scope import (
     platform_reachable,
     use_scope,
 )
-from .views import TurboDRFViewSet
+from .views import _CRUD_WRITE_ACTIONS, TurboDRFViewSet
 
 
 def _walk_predicates(predicates):
@@ -34,10 +34,6 @@ def _walk_predicates(predicates):
         yield p
         if isinstance(p, Either):
             yield from _walk_predicates(p.predicates)
-
-
-# CRUD actions that write. A `read_only: True` resource leaves them unrouted.
-_CRUD_WRITE_ACTIONS = frozenset({"create", "update", "partial_update", "destroy"})
 
 
 # Process-level flag: once the bypass-role validation passes for the real
@@ -108,7 +104,7 @@ _CONFIG_KEYS = frozenset(
     {
         "actions",
         "bypass_owner_roles",
-        "compiled",
+        "compiled",  # no effect since 0.8.2, accepted so old configs boot
         "enabled",
         "endpoint",
         "fields",
@@ -165,10 +161,8 @@ def _ends_on_reverse_one_to_one(model, path):
 
 def _validate_fields_and_lookup(model, config, where=None):
     """Refuse to boot on a ``fields`` entry or ``lookup_field`` the model
-    doesn't have. Either one failed every request with a 500 instead: a
-    ``fields`` typo only logged "Could not compile …" (and nothing at all with
-    ``compiled: False``). ``where`` names the config in errors (a platform
-    block)."""
+    doesn't have. Either one would fail every request with a 500 instead.
+    ``where`` names the config in errors (a platform block)."""
     where = _where(model, where)
     names = _configured_field_names(model, config, where)
     bad = [
@@ -208,25 +202,6 @@ def _validate_fields_and_lookup(model, config, where=None):
             f"so a detail URL could match several rows. Use a field with "
             f"unique=True (or a single-field UniqueConstraint)."
         )
-
-
-def _resolved_field_groups(model, config):
-    """``(list fields, detail fields)`` of a config, ``'__all__'`` expanded to
-    every concrete and many-to-many field (as mixins._resolve_configured_fields
-    resolves it)."""
-    fields = config.get("fields", "__all__")
-    if isinstance(fields, dict):
-        list_fields = fields.get("list", fields.get("detail", []))
-        detail_fields = fields.get("detail", list_fields)
-    else:
-        list_fields = detail_fields = fields
-    every = [f.name for f in model._meta.fields] + [
-        f.name for f in model._meta.many_to_many
-    ]
-    return tuple(
-        every if group == "__all__" else list(group or [])
-        for group in (list_fields, detail_fields)
-    )
 
 
 def _unreachable_hop(model, path, bare_relation_ok=True):
@@ -313,8 +288,10 @@ def _validate_platform_block(model, config, tenant_field):
         )
     _validate_fields_and_lookup(model, block, where)
 
-    list_fields, detail_fields = _resolved_field_groups(model, block)
-    configured = set(list_fields) | set(detail_fields)
+    detail_fields = _resolve_configured_fields(model, "detail", block)
+    configured = set(_resolve_configured_fields(model, "list", block)) | set(
+        detail_fields
+    )
     for path in sorted(p for p in configured if isinstance(p, str)):
         found = _unreachable_hop(model, path)
         if found:
@@ -689,50 +666,22 @@ class TurboDRFRouter(DefaultRouter):
                     f"{tenant_field}"
                 )
 
-            self._register_model(model, config, predicates, tenant_field, logger)
+            self._register_model(model, config, predicates, tenant_field)
 
         # Mark bypass-roles validation as complete for this process.
         # Subsequent inits skip the check.
         _bypass_roles_validated = True
 
-        # Second pass: validate compiled-path safety. Must run AFTER the
-        # main loop so every model's predicates / tenant_field are
-        # registered — model A's M2M target may be model B, and B's
-        # predicates may not have registered yet during A's compile.
-        # See compiler.validate_compiled_path_safety for the full rule.
-        from .compiler import _compiled_plans, validate_compiled_path_safety
-
-        for compiled_model in list(_compiled_plans.keys()):
-            validate_compiled_path_safety(compiled_model)
-
-        # Third pass: validate searchable_fields safety. Same class of
-        # bug as the compiled M2M target bypass — DRF's SearchFilter
-        # joins to the target model without applying the target's own
-        # predicates. Runs over every enabled TurboDRF-mixin model
-        # regardless of compile mode.
-        from .validation import validate_searchable_fields_safety
-
-        for model in enabled:
-            validate_searchable_fields_safety(model)
-
-        # Fourth pass: validate Custom predicate write safety. A Custom
-        # without a write_validator doesn't check writes against its read
-        # rule. See predicates.validate_predicate_write_safety.
-        from .predicates import validate_predicate_write_safety
-
-        for model in enabled:
-            validate_predicate_write_safety(model)
-
-        # Fifth pass: validate every TURBODRF_ROLES permission string
-        # resolves to a real model + field + action. Catches typos like
+        # Every TURBODRF_ROLES permission string must resolve to a real
+        # model + field + action. Catches typos like
         # `core.project.titel.read` that silently grant nothing.
         from .predicates import validate_permission_strings
 
         validate_permission_strings()
 
-    def _register_model(self, model, config, predicates, tenant_field, logger):
+    def _register_model(self, model, config, predicates, tenant_field):
         """Build ``model``'s viewset from ``config`` (the top-level config, or
-        its platform block), register it and compile its list path."""
+        its platform block) and register it."""
         # Get custom endpoint or use default
         endpoint = config.get("endpoint", f"{model._meta.model_name}s")
         viewset_class = self._viewset_class(model, config, predicates, tenant_field)
@@ -743,22 +692,6 @@ class TurboDRFRouter(DefaultRouter):
             viewset_class,
             basename=self._route_basename(model, endpoint),
         )
-
-        # Compile read path (on by default, opt out with compiled=False)
-        if config.get("compiled", True):
-            from .compiler import compile_model, register_compiled_plan
-
-            try:
-                plan = compile_model(model)
-                if plan is not None:
-                    register_compiled_plan(model, plan)
-                    logger.info(f"Compiled read path for {model.__name__}")
-            except Exception as e:
-                # If compilation fails, fall back to DRF path silently
-                logger.warning(
-                    f"Could not compile {model.__name__}: {e}. "
-                    f"Falling back to DRF serializer path."
-                )
 
     def _viewset_class(self, model, config, predicates, tenant_field):
         """The generated viewset class for ``model``."""
@@ -846,14 +779,10 @@ class TurboDRFRouter(DefaultRouter):
         import logging
 
         from .backends import platform_role_getter
-        from .compiler import unregister_compiled_plan, validate_compiled_path_safety
         from .predicates import validate_permission_strings
         from .properties import validate_property_config
         from .tenancy import _register_tenancy
-        from .validation import (
-            validate_nesting_depth,
-            validate_searchable_fields_safety,
-        )
+        from .validation import validate_nesting_depth
 
         logger = logging.getLogger(__name__)
 
@@ -879,12 +808,7 @@ class TurboDRFRouter(DefaultRouter):
                             f"validation failed: {str(e)}"
                         )
                 validate_property_config(model)
-                # A rebuilt router reflects the current block.
-                unregister_compiled_plan(model)
-                self._register_model(model, block, [], None, logger)
-            for model in served:
-                validate_compiled_path_safety(model)
-                validate_searchable_fields_safety(model)
+                self._register_model(model, block, [], None)
         validate_permission_strings(roles, setting="TURBODRF_PLATFORM_ROLES")
 
     def _route_basename(self, model, endpoint):
