@@ -23,7 +23,7 @@ from .scope import (
     platform_reachable,
     use_scope,
 )
-from .views import TurboDRFViewSet
+from .views import _CRUD_WRITE_ACTIONS, TurboDRFViewSet
 
 
 def _walk_predicates(predicates):
@@ -34,10 +34,6 @@ def _walk_predicates(predicates):
         yield p
         if isinstance(p, Either):
             yield from _walk_predicates(p.predicates)
-
-
-# CRUD actions that write. A `read_only: True` resource leaves them unrouted.
-_CRUD_WRITE_ACTIONS = frozenset({"create", "update", "partial_update", "destroy"})
 
 
 # Process-level flag: once the bypass-role validation passes for the real
