@@ -351,53 +351,40 @@ def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
 
     all_field_read_rules |= _model_restricted_fields(model)
 
-    # Build allowed actions
     for action in ["read", "create", "update", "delete"]:
-        perm = f"{app_label}.{model_name}.{action}"
-        if perm in user_permissions:
+        if f"{app_label}.{model_name}.{action}" in user_permissions:
             snapshot.allowed_actions.add(action)
     if _grants_public_read(user, model):
         snapshot.allowed_actions.add("read")
 
-    # Store fields with explicit rules
-    snapshot.fields_with_read_rules = all_field_read_rules
-    snapshot.fields_with_write_rules = all_field_write_rules
-
-    # Build readable/writable fields
-    # Get all model fields (including M2M fields)
-    try:
-        all_model_fields = {f.name for f in model._meta.fields}
-        # Also include ManyToMany fields
-        all_model_fields.update({f.name for f in model._meta.many_to_many})
-    except (AttributeError, TypeError):
-        # Mock model without proper _meta - use empty set
-        all_model_fields = set()
-
-    for field_name in all_model_fields:
-        # Check readable: if explicit read rule exists, check it; else use model-level
-        if field_name in all_field_read_rules:
-            field_perm = f"{app_label}.{model_name}.{field_name}.read"
-            if field_perm in user_permissions:
-                snapshot.readable_fields.add(field_name)
-        else:
-            # No explicit read rule, fall back to model-level permission
-            if "read" in snapshot.allowed_actions:
-                snapshot.readable_fields.add(field_name)
-
-        # Check writable: if explicit write rule exists, check it; else use model-level
-        if field_name in all_field_write_rules:
-            field_perm = f"{app_label}.{model_name}.{field_name}.write"
-            if field_perm in user_permissions:
-                snapshot.writable_fields.add(field_name)
-        else:
-            # No explicit write rule, fall back to model-level permission
-            if (
-                "create" in snapshot.allowed_actions
-                or "update" in snapshot.allowed_actions
-            ):
-                snapshot.writable_fields.add(field_name)
-
+    granted = set()
+    for perm in user_permissions:
+        parts = perm.split(".")
+        if len(parts) == 4 and parts[0] == app_label and parts[1] == model_name:
+            granted.add((parts[2], parts[3]))
+    _fill_fields(snapshot, model, all_field_read_rules, all_field_write_rules, granted)
     return snapshot
+
+
+def _fill_fields(snapshot, model, read_rules, write_rules, granted):
+    """Set ``snapshot``'s readable / writable fields. A field with a read
+    (write) rule on any role needs the caller's grant, ``(field, "read")``
+    (``"write"``) in ``granted``; any other field follows the model-level
+    read (create or update) permission."""
+    snapshot.fields_with_read_rules = read_rules
+    snapshot.fields_with_write_rules = write_rules
+    try:
+        names = {f.name for f in model._meta.fields}
+        names.update(f.name for f in model._meta.many_to_many)
+    except (AttributeError, TypeError):  # a mock model without _meta
+        names = set()
+    can_read = "read" in snapshot.allowed_actions
+    can_write = bool({"create", "update"} & snapshot.allowed_actions)
+    for name in names:
+        if (name, "read") in granted if name in read_rules else can_read:
+            snapshot.readable_fields.add(name)
+        if (name, "write") in granted if name in write_rules else can_write:
+            snapshot.writable_fields.add(name)
 
 
 def _static_roles_config():
@@ -458,53 +445,17 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
             all_field_write_rules.add(field_name)
     all_field_read_rules |= _model_restricted_fields(model)
 
-    # Collect the user's model-level permissions and field grants
-    user_field_perms = set()
+    # The user's model-level permissions and field grants
+    granted = set()
     for perm in permissions:
         if perm.action:
-            # Model-level permission
             snapshot.allowed_actions.add(perm.action)
         elif perm.field_name and perm.permission_type:
-            user_field_perms.add(f"{perm.field_name}.{perm.permission_type}")
+            granted.add((perm.field_name, perm.permission_type))
     if _grants_public_read(user, model):
         snapshot.allowed_actions.add("read")
 
-    # Store fields with explicit rules
-    snapshot.fields_with_read_rules = all_field_read_rules
-    snapshot.fields_with_write_rules = all_field_write_rules
-
-    # Second pass: build readable/writable fields
-    try:
-        # Get all model fields (including M2M fields)
-        all_model_fields = {f.name for f in model._meta.fields}
-        # Also include ManyToMany fields
-        all_model_fields.update({f.name for f in model._meta.many_to_many})
-    except (AttributeError, TypeError):
-        # Mock model without proper _meta - use empty set
-        all_model_fields = set()
-
-    for field_name in all_model_fields:
-        # Check readable: if explicit read rule exists, check it; else use model-level
-        if field_name in all_field_read_rules:
-            if f"{field_name}.read" in user_field_perms:
-                snapshot.readable_fields.add(field_name)
-        else:
-            # No explicit read rule, fall back to model-level permission
-            if "read" in snapshot.allowed_actions:
-                snapshot.readable_fields.add(field_name)
-
-        # Check writable: if explicit write rule exists, check it; else use model-level
-        if field_name in all_field_write_rules:
-            if f"{field_name}.write" in user_field_perms:
-                snapshot.writable_fields.add(field_name)
-        else:
-            # No explicit write rule, fall back to model-level permission
-            if (
-                "create" in snapshot.allowed_actions
-                or "update" in snapshot.allowed_actions
-            ):
-                snapshot.writable_fields.add(field_name)
-
+    _fill_fields(snapshot, model, all_field_read_rules, all_field_write_rules, granted)
     return snapshot
 
 
