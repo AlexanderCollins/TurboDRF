@@ -220,10 +220,7 @@ def _resolve_user_roles(user) -> list:
         # Check if guest role is configured
         mode = get_permission_mode()
         if mode == "static":
-            from .settings import TURBODRF_ROLES as default_roles
-
-            TURBODRF_ROLES = getattr(settings, "TURBODRF_ROLES", default_roles)
-            if "guest" in TURBODRF_ROLES:
+            if "guest" in getattr(settings, "TURBODRF_ROLES", {}):
                 return ["guest"]
         elif mode == "database":
             from .models import TurboDRFRole
@@ -246,10 +243,7 @@ def _resolve_user_roles(user) -> list:
         return role_names
     elif hasattr(user, "roles"):
         return _role_names(user.roles)
-    elif hasattr(user, "_test_roles"):
-        return _role_names(user._test_roles)
-    else:
-        return []
+    return []
 
 
 def _role_names(roles, what="user.roles") -> list:
@@ -410,9 +404,7 @@ def _static_roles_config():
     """The static role map of the current scope."""
     if is_platform():
         return platform_roles_config()
-    from .settings import TURBODRF_ROLES as default_roles
-
-    return getattr(settings, "TURBODRF_ROLES", default_roles)
+    return getattr(settings, "TURBODRF_ROLES", {})
 
 
 def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
@@ -692,43 +684,6 @@ def invalidate_user_permissions(user=None):
     memo = _request_memo.get()
     if memo is not None:
         memo.clear()
-
-
-def get_cached_snapshot(user, model) -> Optional[PermissionSnapshot]:
-    """
-    Get cached permission snapshot if available.
-
-    Args:
-        user: Django user object
-        model: Django model class
-
-    Returns:
-        PermissionSnapshot or None if not cached
-    """
-    cache_key = get_cache_key(user, model)
-    if cache_key is None:
-        return None
-    return cache.get(cache_key)
-
-
-def set_cached_snapshot(user, model, snapshot: PermissionSnapshot):
-    """
-    Cache permission snapshot.
-
-    Args:
-        user: Django user object
-        model: Django model class
-        snapshot: PermissionSnapshot to cache
-    """
-    cache_key = get_cache_key(user, model)
-    if cache_key is None:
-        # Uncacheable identity (authenticated, no pk) — never persist a
-        # snapshot under a shared key.
-        return
-    cache_timeout = getattr(
-        settings, "TURBODRF_PERMISSION_CACHE_TIMEOUT", 300
-    )  # 5 minutes default
-    cache.set(cache_key, snapshot, cache_timeout)
 
 
 def build_permission_snapshot(user, model, use_cache=True) -> PermissionSnapshot:

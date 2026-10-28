@@ -512,30 +512,7 @@ class TestORFilterBackendInvalidField(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Filter backend: get_schema_operation_parameters — line 248
-# ---------------------------------------------------------------------------
-
-
-class TestORFilterBackendSchema(TestCase):
-    """Cover get_schema_operation_parameters method (line 248)."""
-
-    def test_returns_schema_parameters(self):
-        backend = ORFilterBackend()
-        view = MockView()
-        params = backend.get_schema_operation_parameters(view)
-
-        self.assertIsInstance(params, list)
-        self.assertEqual(len(params), 1)
-        param = params[0]
-        self.assertEqual(param["name"], "field_or")
-        self.assertEqual(param["in"], "query")
-        self.assertFalse(param["required"])
-        self.assertIn("schema", param)
-        self.assertEqual(param["schema"]["type"], "string")
-
-
-# ---------------------------------------------------------------------------
-# Filter backend: _is_valid_filter_field permission check errors — lines 228-237
+# Filter backend: _accepted_filter permission check errors — lines 228-237
 # ---------------------------------------------------------------------------
 
 
@@ -564,7 +541,7 @@ class TestFilterBackendPermissionCheckError(TestCase):
             side_effect=Exception("permission check exploded"),
         ):
             valid_fields = {"title"}
-            result = self.backend._is_valid_filter_field(
+            result = self.backend._accepted_filter(
                 "title", valid_fields, SampleModel, user
             )
             self.assertFalse(result)
@@ -592,7 +569,7 @@ class TestFilterBackendValidateFilterFieldFails(TestCase):
         user._test_roles = ["admin"]
 
         valid_fields = {"author"}
-        result = self.backend._is_valid_filter_field(
+        result = self.backend._accepted_filter(
             "author__publisher__name__icontains",
             valid_fields,
             SampleModel,

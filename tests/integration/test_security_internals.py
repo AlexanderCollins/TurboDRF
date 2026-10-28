@@ -45,9 +45,7 @@ from turbodrf.backends import (
     attach_snapshot_to_request,
     build_permission_snapshot,
     get_cache_key,
-    get_cached_snapshot,
     get_snapshot_from_request,
-    set_cached_snapshot,
 )
 from turbodrf.metadata import TurboDRFMetadata
 from turbodrf.predicates import (
@@ -513,16 +511,6 @@ class InternalHelperTests(AdversaryBase):
             get_cache_key(None, SampleModel)
         except AttributeError:
             pass
-
-    def test_set_get_cached_snapshot_edge(self):
-        """Setting None doesn't crash; unregistered model returns None."""
-        try:
-            set_cached_snapshot(self.attacker, SampleModel, None)
-        except Exception:
-            pass
-        from django.contrib.contenttypes.models import ContentType
-
-        self.assertIsNone(get_cached_snapshot(self.attacker, ContentType))
 
     def test_attach_snapshot_caches_per_request(self):
         """Same request -> same snapshot object; mutation does not leak."""
@@ -1848,27 +1836,11 @@ class ConcurrencyTests(AdversaryBase):
                 req,
             )
 
-    # ---- Compiled plan registry ------------------------------------------
-
     # ---- Cache backend / timeout edges -----------------------------------
 
     def test_cache_backend_swap_preserves_tenant_filter(self):
         """Swap to dummy cache, set timeout to 0, set extreme timeout
         — tenant filter still scopes correctly."""
-        from turbodrf.backends import (
-            build_permission_snapshot,
-            get_cached_snapshot,
-            set_cached_snapshot,
-        )
-
-        # locmem: write-then-read consistent
-        snap = build_permission_snapshot(self.attacker, Deal, use_cache=False)
-        set_cached_snapshot(self.attacker, Deal, snap)
-        self.assertEqual(
-            get_cached_snapshot(self.attacker, Deal).allowed_actions,
-            snap.allowed_actions,
-        )
-
         # Dummy cache
         with override_settings(
             CACHES={
