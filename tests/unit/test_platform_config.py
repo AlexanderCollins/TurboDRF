@@ -51,13 +51,11 @@ TENANT_MODEL = dict(TURBODRF_TENANT_MODEL="test_app.Brokerage")
 @contextmanager
 def _preserve_registries():
     import turbodrf.router as router_mod
-    from turbodrf import compiler, predicates
+    from turbodrf import predicates
 
     saved = [
         (predicates._model_predicates, dict(predicates._model_predicates)),
         (predicates._model_tenant_fields, dict(predicates._model_tenant_fields)),
-        (compiler._compiled_plans, dict(compiler._compiled_plans)),
-        (compiler._platform_compiled_plans, dict(compiler._platform_compiled_plans)),
     ]
     flag = router_mod._bypass_roles_validated
     try:
@@ -664,7 +662,7 @@ class TestCommands(TestCase):
 
     def test_check_platform_scope(self):
         out = self.run_command("turbodrf_check", "--scope", "platform")
-        self.assertIn("test_app.PlatformJob (platform: jobs/) [compiled]", out)
+        self.assertIn("test_app.PlatformJob (platform: jobs/) OK", out)
         self.assertIn("test_app.PlatformAccount (platform: accounts/)", out)
         self.assertIn("Tenant path: brokerage", out)
         self.assertIn("Rows: every tenant", out)
@@ -673,7 +671,7 @@ class TestCommands(TestCase):
 
     def test_check_tenant_scope_is_unchanged(self):
         out = self.run_command("turbodrf_check", "--model", "PlatformAccount")
-        self.assertIn("test_app.PlatformAccount [compiled] OK", out)
+        self.assertIn("test_app.PlatformAccount OK", out)
         self.assertIn("Fields: 3 DB", out)
         self.assertNotIn("PlatformJob", self.run_command("turbodrf_check"))
 
@@ -682,67 +680,6 @@ class TestCommands(TestCase):
             "turbodrf_check", "--scope", "platform", "--model", "Deal"
         )
         self.assertIn("No TurboDRF model with a platform block named 'Deal'", out)
-
-    def test_explain_platform_scope(self):
-        out = self.run_command(
-            "turbodrf_explain",
-            "PlatformJob",
-            "--scope",
-            "platform",
-            "--role",
-            "auditor",
-        )
-        self.assertIn("PlatformJob (platform scope)", out)
-        self.assertIn("brokerage_name ← brokerage__name", out)
-        self.assertIn("Permission filtering (role: auditor)", out)
-        # auditor can't read brokerages or accounts: their nested values (and
-        # the FK only they bring in) are pruned.
-        self.assertIn("Rendered: id, kind, status, attempts, brokerage", out)
-        self.assertIn("Pruned: account, brokerage_name, account_name", out)
-        out = self.run_command(
-            "turbodrf_explain",
-            "PlatformJob",
-            "--scope",
-            "platform",
-            "--role",
-            "support",
-        )
-        self.assertIn("All fields permitted", out)
-
-    def test_explain_platform_role_must_exist(self):
-        out = self.run_command(
-            "turbodrf_explain",
-            "PlatformJob",
-            "--scope",
-            "platform",
-            "--role",
-            "account_admin_typo",
-        )
-        self.assertIn("not found in TURBODRF_PLATFORM_ROLES", out)
-
-    def test_explain_platform_field_selection(self):
-        out = self.run_command(
-            "turbodrf_explain",
-            "PlatformAccount",
-            "--scope",
-            "platform",
-            "--fields",
-            "staff_notes",
-        )
-        self.assertIn("Rendered: staff_notes", out)
-
-    def test_explain_model_without_a_platform_block(self):
-        from django.core.management.base import CommandError
-
-        with self.assertRaisesMessage(CommandError, "no platform block"):
-            self.run_command("turbodrf_explain", "Deal", "--scope", "platform")
-
-    def test_explain_opted_out_platform_model(self):
-        out = self.run_command(
-            "turbodrf_explain", "PlatformTicket", "--scope", "platform"
-        )
-        self.assertIn("Compiled: False (opted out", out)
-        self.assertEqual(PlatformTicket.turbodrf()["platform"]["compiled"], False)
 
 
 # ---------------------------------------------------------------------------

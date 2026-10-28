@@ -178,7 +178,7 @@ class TurboDRFSearchFilter(SearchFilter):
 class TurboDRFOrderingFilter(OrderingFilter):
     """OrderingFilter with a pk tie-breaker: ``?ordering=`` on a non-unique
     column otherwise leaves ties in plan-dependent order, so a row can repeat
-    or vanish across pages (and the compiled and serializer paths disagree)."""
+    or vanish across pages."""
 
     def get_ordering(self, request, queryset, view):
         ordering = super().get_ordering(request, queryset, view)
@@ -376,16 +376,9 @@ class ORFilterBackend(BaseFilterBackend):
         # predicates / tenant_field, the JOIN must be scoped to rows the
         # caller can see via the target's own endpoint. Otherwise
         # `?fk__field=secret` joins the target without applying its own
-        # rules and leaks row existence (same bug class as the compiled
-        # M2M / search-field bypasses; URL-driven so it's gated here at
-        # request time).
-        from django.conf import settings
-
+        # rules and leaks row existence.
         from .validation import build_traversal_scope_q
 
-        allow_unsafe_traversal = getattr(
-            settings, "TURBODRF_ALLOW_UNSAFE_FILTER_TRAVERSAL", False
-        )
         scopes = {}
         for key, field_path, lookup, values, is_or in filters:
             field = self._value_field(model, field_path)
@@ -400,7 +393,7 @@ class ORFilterBackend(BaseFilterBackend):
                 raise exceptions.ValidationError({key: _messages(exc)})
             if not condition:
                 continue
-            if "__" in field_path and not allow_unsafe_traversal:
+            if "__" in field_path:
                 if field_path not in scopes:
                     scopes[field_path] = build_traversal_scope_q(
                         model, field_path, request
@@ -513,32 +506,13 @@ class ORFilterBackend(BaseFilterBackend):
 
         return valid_fields
 
-    def _is_valid_filter_field(self, field_name, valid_fields, model, user):
-        """
-        Check if a field name is valid for filtering with permission checking.
-
-        Validates:
-        1. The field path (lookups split off) is a valid one: configured, or
-           a JSON key path under a configured JSON field. Not one ending on an
-           M2M or reverse relation.
-        2. Nesting depth limits
-        3. Sensitive fields (at every hop) and read permission at every hop
-           — the permission walk only if TurboDRF permissions are enabled
-
-        Args:
-            field_name: Filter parameter (e.g., 'author__name__icontains')
-            valid_fields: Set of valid filterable field names and paths
-            model: Django model class
-            user: User object for permission checking
-
-        Returns:
-            bool: True if field is valid and user has permission
-        """
-        return self._accepted_filter(field_name, valid_fields, model, user) is not None
-
     def _accepted_filter(self, field_name, valid_fields, model, user):
-        """``(field path, lookup)`` for a valid filter parameter (see
-        _is_valid_filter_field), else None."""
+        """``(field path, lookup)`` for a valid filter parameter, else None.
+
+        Valid: the field path (lookups split off) is configured, or a JSON
+        key path under a configured JSON field, and doesn't end on an M2M or
+        reverse relation; it's within the nesting depth; no hop is sensitive;
+        and (with TurboDRF permissions on) the caller can read every hop."""
         from .permissions import permissions_bypassed
         from .validation import (
             check_nested_field_permissions,
@@ -603,27 +577,6 @@ class ORFilterBackend(BaseFilterBackend):
                 return None
 
         return field_path, lookup
-
-    def get_schema_operation_parameters(self, view):
-        """
-        Return schema parameters for Swagger/OpenAPI documentation.
-
-        This method provides documentation for the OR filter parameters
-        so they appear correctly in API documentation.
-        """
-        return [
-            {
-                "name": "field_or",
-                "required": False,
-                "in": "query",
-                "description": (
-                    "OR filter: Use field_or parameter to filter with OR logic. "
-                    "Multiple values are combined with OR. "
-                    "Example: ?email_or=test1@example.com&email_or=test2@example.com"
-                ),
-                "schema": {"type": "string"},
-            }
-        ]
 
 
 def _crosses_multivalued(model, field_path):

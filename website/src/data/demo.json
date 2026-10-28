@@ -1,5 +1,5 @@
 {
-  "turbodrf_version": "0.7.0",
+  "turbodrf_version": "0.8.2",
   "users": {
     "alice": {
       "role": "admin",
@@ -157,8 +157,8 @@
                 "title": "Website relaunch",
                 "status": "active",
                 "client": 1,
-                "owner": 3,
                 "budget": "48000.00",
+                "owner": 3,
                 "client_name": "Northwind",
                 "owner_username": "victor"
               },
@@ -167,8 +167,8 @@
                 "title": "Mobile app",
                 "status": "active",
                 "client": 2,
-                "owner": 2,
                 "budget": "125000.00",
+                "owner": 2,
                 "client_name": "Initech",
                 "owner_username": "maya"
               },
@@ -177,8 +177,8 @@
                 "title": "Data warehouse",
                 "status": "active",
                 "client": 1,
-                "owner": 1,
                 "budget": "310000.00",
+                "owner": 1,
                 "client_name": "Northwind",
                 "owner_username": "alice"
               },
@@ -187,8 +187,8 @@
                 "title": "Old prototype",
                 "status": "active",
                 "client": 1,
-                "owner": 1,
                 "budget": "5000.00",
+                "owner": 1,
                 "client_name": "Northwind",
                 "owner_username": "alice"
               }
@@ -218,8 +218,8 @@
                 "title": "Website relaunch",
                 "status": "active",
                 "client": 1,
-                "owner": 3,
                 "budget": "48000.00",
+                "owner": 3,
                 "client_name": "Northwind",
                 "owner_username": "victor"
               },
@@ -228,8 +228,8 @@
                 "title": "Mobile app",
                 "status": "active",
                 "client": 2,
-                "owner": 2,
                 "budget": "125000.00",
+                "owner": 2,
                 "client_name": "Initech",
                 "owner_username": "maya"
               },
@@ -238,8 +238,8 @@
                 "title": "Data warehouse",
                 "status": "active",
                 "client": 1,
-                "owner": 1,
                 "budget": "310000.00",
+                "owner": 1,
                 "client_name": "Northwind",
                 "owner_username": "alice"
               },
@@ -248,8 +248,8 @@
                 "title": "Old prototype",
                 "status": "active",
                 "client": 1,
-                "owner": 1,
                 "budget": "5000.00",
+                "owner": 1,
                 "client_name": "Northwind",
                 "owner_username": "alice"
               }
@@ -309,8 +309,8 @@
                 "title": "Payments API",
                 "status": "active",
                 "client": 3,
-                "owner": 4,
                 "budget": "90000.00",
+                "owner": 4,
                 "client_name": "Umbrella",
                 "owner_username": "bob"
               }
@@ -834,8 +834,7 @@
     },
     "spare_pk": 5
   },
-  "check": "\ndemo.Client [compiled] OK\n  Fields: 1 DB, 0 FK, 0 M2M, 0 property\n  Public access: False\n  Tenant model: demo.Workspace\n  Tenant field: workspace\n\ndemo.Project [compiled] OK\n  Fields: 5 DB, 2 FK, 0 M2M, 0 property\n  Public access: False\n  Tenant model: demo.Workspace\n  Tenant field: workspace\n  Within-tenant predicates: Owner('owner', bypass=['admin', 'manager'])",
-  "explain": "\ndemo.Project\n  Compiled: True\n  Public access: False\n\n  Simple fields:\n    id\n    title\n    status\n    client\n    owner\n    budget (\u2192 str)\n\n  FK annotations:\n    client_name \u2190 client__name\n    owner_username \u2190 owner__username\n\n  Complexity:\n    Total fields: 8\n    JOINs: 2\n    M2M queries: 0\n    Total queries: 2",
+  "check": "\ndemo.Client OK\n  Fields: 1 DB, 0 FK, 0 M2M, 0 property\n  Public access: False\n  Tenant model: demo.Workspace\n  Tenant field: workspace\n\ndemo.Project OK\n  Fields: 5 DB, 2 FK, 0 M2M, 0 property\n  Public access: False\n  Tenant model: demo.Workspace\n  Tenant field: workspace\n  Within-tenant predicates: Owner('owner', bypass=['admin', 'manager'])",
   "startup_error": "Invoice.turbodrf() declares no tenant boundary. Add 'tenant_field': '<path to demo.Workspace>', or 'tenancy': 'shared' for reference data. An 'owner_field' alone scopes rows within a tenant, not across tenants; so does a 'visibility' list without a 'tenant_field' unless one of its predicates restricts every caller (an Owner without bypass roles, Members, Group or Custom). Set TURBODRF_REQUIRE_TENANCY=False to disable this check.",
   "calls": {
     "list_admin": {
@@ -860,8 +859,8 @@
             "title": "Website relaunch",
             "status": "active",
             "client": 1,
-            "owner": 3,
             "budget": "48000.00",
+            "owner": 3,
             "client_name": "Northwind",
             "owner_username": "victor"
           },
@@ -870,8 +869,8 @@
             "title": "Mobile app",
             "status": "active",
             "client": 2,
-            "owner": 2,
             "budget": "125000.00",
+            "owner": 2,
             "client_name": "Initech",
             "owner_username": "maya"
           },
@@ -880,8 +879,8 @@
             "title": "Data warehouse",
             "status": "active",
             "client": 1,
-            "owner": 1,
             "budget": "310000.00",
+            "owner": 1,
             "client_name": "Northwind",
             "owner_username": "alice"
           }
@@ -911,8 +910,8 @@
             "title": "Website relaunch",
             "status": "active",
             "client": 1,
-            "owner": 3,
             "budget": "48000.00",
+            "owner": 3,
             "client_name": "Northwind",
             "owner_username": "victor"
           },
@@ -921,8 +920,8 @@
             "title": "Mobile app",
             "status": "active",
             "client": 2,
-            "owner": 2,
             "budget": "125000.00",
+            "owner": 2,
             "client_name": "Initech",
             "owner_username": "maya"
           },
@@ -931,8 +930,8 @@
             "title": "Data warehouse",
             "status": "active",
             "client": 1,
-            "owner": 1,
             "budget": "310000.00",
+            "owner": 1,
             "client_name": "Northwind",
             "owner_username": "alice"
           }
@@ -992,8 +991,8 @@
             "title": "Payments API",
             "status": "active",
             "client": 3,
-            "owner": 4,
             "budget": "90000.00",
+            "owner": 4,
             "client_name": "Umbrella",
             "owner_username": "bob"
           }
@@ -1082,8 +1081,8 @@
             "title": "Website relaunch",
             "status": "active",
             "client": 1,
-            "owner": 3,
             "budget": "48000.00",
+            "owner": 3,
             "client_name": "Northwind",
             "owner_username": "victor"
           }
@@ -1150,8 +1149,8 @@
             "title": "Mobile app",
             "status": "active",
             "client": 2,
-            "owner": 2,
             "budget": "125000.00",
+            "owner": 2,
             "client_name": "Initech",
             "owner_username": "maya"
           }
@@ -1181,8 +1180,8 @@
             "title": "Data warehouse",
             "status": "active",
             "client": 1,
-            "owner": 1,
             "budget": "310000.00",
+            "owner": 1,
             "client_name": "Northwind",
             "owner_username": "alice"
           },
@@ -1191,8 +1190,8 @@
             "title": "Mobile app",
             "status": "active",
             "client": 2,
-            "owner": 2,
             "budget": "125000.00",
+            "owner": 2,
             "client_name": "Initech",
             "owner_username": "maya"
           }
@@ -1281,7 +1280,7 @@
         "client_name": "Northwind",
         "owner_username": "alice"
       },
-      "queries": 9
+      "queries": 8
     },
     "create_cross_tenant_fk": {
       "user": "alice",
@@ -1315,18 +1314,5 @@
       },
       "queries": 0
     }
-  },
-  "benchmark": {
-    "rows_in_table": 504,
-    "page_size": 50,
-    "runs": 300,
-    "compiled_ms": 1.92,
-    "compiled_median_ms": 1.77,
-    "compiled_queries": 2,
-    "serializer_ms": 3.63,
-    "serializer_median_ms": 3.31,
-    "serializer_queries": 2,
-    "speedup": 1.9,
-    "machine": "arm64 \u00b7 Python 3.11.14 \u00b7 Django 5.2.14 \u00b7 SQLite"
   }
 }

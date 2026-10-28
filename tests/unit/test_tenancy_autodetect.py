@@ -144,22 +144,6 @@ class TestResolveTenancyForModel(TestCase):
         self.assertEqual(len(preds), 1)
         self.assertFalse(autodetected)
 
-    def test_visibility_form_with_tenant_extracted(self):
-        import warnings
-
-        from turbodrf.predicates import Owner, Tenant
-        from turbodrf.tenancy import resolve_tenancy_for_model
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            config = {"visibility": [Tenant("brokerage"), Owner("assigned_broker")]}
-            tf, preds, autodetected = resolve_tenancy_for_model(
-                Deal, config, "test_app.Brokerage", autodetect=False
-            )
-        self.assertEqual(tf, "brokerage")
-        self.assertEqual(len(preds), 1)  # Tenant extracted
-        self.assertFalse(autodetected)
-
     def test_autodetect_finds_path(self):
         from turbodrf.tenancy import resolve_tenancy_for_model
 
@@ -227,4 +211,6 @@ class TestPredicatePathValidation(TestCase):
         from turbodrf.tenancy import _validate_predicate_paths
 
         # Should not raise
-        _validate_predicate_paths(Deal, Custom(lambda r, u: Q()))
+        _validate_predicate_paths(
+            Deal, Custom(lambda r, u: Q(), write_validator=lambda d, i, r: [])
+        )

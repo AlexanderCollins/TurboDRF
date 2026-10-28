@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.8.2 — One read path
+
+Lists are served by the serializer path only. The compiled `.values()` list
+path is gone, with the startup checks, settings and commands that existed to
+keep it (or the search filter) in line with the serializer path. The JSON a
+list returns is unchanged, and so is its number of queries.
+
+### Upgrading
+
+- `'compiled'` in `turbodrf()` or a platform block is still accepted and does
+  nothing. Remove it when convenient.
+- `turbodrf_explain` and `turbodrf_benchmark` are removed. `turbodrf_check`
+  no longer prints a compiled status.
+- `Custom(...)` raises `ImproperlyConfigured` when it's created without a
+  `write_validator` (this was a startup check before, which
+  `TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE` could switch off). For a rule that
+  doesn't restrict writes, pass `write_validator=lambda d, i, r: []`. A
+  `q_func` that returns anything but a `Q` raises `TypeError`.
+- The `Tenant` predicate, deprecated since 0.4.0, is removed. Use the
+  `'tenant_field'` setting.
+- These settings are removed and have no effect if set:
+  `TURBODRF_ALLOW_UNSAFE_COMPILED_M2M`, `TURBODRF_ALLOW_UNSAFE_COMPILED_FK`,
+  `TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS`,
+  `TURBODRF_ALLOW_UNSAFE_FILTER_TRAVERSAL`,
+  `TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE` and
+  `TURBODRF_LOG_UNRESTRICTED_CUSTOM`. A `__` filter is now always scoped to
+  the related rows the caller can see.
+- A `searchable_fields` path through a model with its own predicates, or from
+  a shared model into a tenant-scoped one, no longer fails at startup. Search
+  already scoped those joins at request time.
+- Lists take the serializer path's time. On the 0.8.0 review's Postgres
+  benchmark that was 0.8 to 2 ms more per request at the default page size
+  of 20, and 2 to 11 ms more at 100.
+- `turbodrf.backends.get_cached_snapshot` and `set_cached_snapshot` are
+  removed; use `build_permission_snapshot`.
+- With `TURBODRF_ROLES` unset, the role map is `{}`. The placeholder it used
+  before named no real model and granted nothing.
+
+### Internals
+
+- Row scoping is built by two functions everywhere
+  (`predicates.tenant_q` and `predicates_q`): the viewset, nested-field,
+  filter and search joins, related-field choices and the post-write check.
+- One resolution of the `fields` config, and one readable/writable field
+  pass for both permission modes.
+- The package is 11,400 lines, down from 13,900 in 0.8.1. The tests lost
+  4,200 lines, mostly the compiled path's.
+
 ## 0.8.1 — Row-scope edge cases, faster scoped queries
 
 A review of 0.8.0 found five defects in less common configurations and four

@@ -19,12 +19,7 @@ from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
-from tests.integration.test_parity_compiled_vs_serializer import (
-    ALL_URL,
-    ParityHarness,
-    parity_config,
-    serializer_path,
-)
+from tests.integration.parity_fixtures import ALL_URL, ParityFixture, parity_config
 from tests.test_app.apps import _test_user_brokerages, set_test_brokerage
 from tests.test_app.models import (
     ArticleWithCategories,
@@ -42,7 +37,6 @@ from tests.test_app.models import (
     SampleModel,
     Widget,
 )
-from turbodrf import compiler
 from turbodrf.views import Authorization, TurboDRFViewSet
 
 User = get_user_model()
@@ -79,7 +73,7 @@ def _ids(body):
 # ---------------------------------------------------------------------------
 
 
-class TestNestedFilterNeedsConfiguredPath(ParityHarness):
+class TestNestedFilterNeedsConfiguredPath(ParityFixture):
     """Finding 1: a nested filter's resolved path must be a configured path.
     ParityTarget's seen_at / uid columns are exposed by no endpoint."""
 
@@ -117,7 +111,7 @@ class TestNestedFilterNeedsConfiguredPath(ParityHarness):
         self.assertEqual(_ids(body), [self.row_full.pk])
 
 
-class TestFilterValues(ParityHarness):
+class TestFilterValues(ParityFixture):
     """Finding 21: filter values are parsed by the model field (400 when they
     can't be), `__range` takes exactly two values, and a filter is never
     silently dropped into "every row"."""
@@ -166,7 +160,7 @@ class TestFilterValues(ParityHarness):
         self.assertEqual((status, body["data"]), (200, []))
 
 
-class TestMultiValuedFilters(ParityHarness):
+class TestMultiValuedFilters(ParityFixture):
     """Finding 22: a filter across an M2M matches each row once."""
 
     def test_nested_m2m_filter_does_not_repeat_rows(self):
@@ -175,16 +169,11 @@ class TestMultiValuedFilters(ParityHarness):
                 with parity_config(ParityAllTypes, {"fields": FIELDS}):
                     self.client.force_authenticate(user)
                     status, body = self._get(ALL_URL, {"tags__name__icontains": "a"})
-                    with serializer_path(ParityAllTypes):
-                        s_status, s_body = self._get(
-                            ALL_URL, {"tags__name__icontains": "a"}
-                        )
                 self.assertEqual(status, 200)
                 ids = _ids(body)
                 self.assertEqual(len(ids), len(set(ids)))
                 self.assertIn(self.row_full.pk, ids)
                 self.assertEqual(body["pagination"]["total_items"], len(ids))
-                self.assertEqual(_ids(s_body), ids)
 
 
 @override_settings(TURBODRF_ROLES=ROLES)
@@ -256,7 +245,7 @@ class TestM2MRelationFilters(TestCase):
         self.assertNotIn("deals__isnull", str(options.data["capabilities"]))
 
 
-class TestOrdering(ParityHarness):
+class TestOrdering(ParityFixture):
     """Finding 3: only concrete, single-valued columns are orderable."""
 
     def test_ordering_by_m2m_repeats_no_rows(self):
@@ -284,7 +273,7 @@ class TestOrdering(ParityHarness):
             self.assertEqual(view.ordering_fields, ["id", "name"])
 
 
-class TestSearchBounds(ParityHarness):
+class TestSearchBounds(ParityFixture):
     """Finding 5: search terms are de-duplicated and capped; an over-length
     or over-cap search matches nothing instead of widening or 500ing."""
 
@@ -348,34 +337,23 @@ class TestSearchFieldValidation(TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestClientFieldsParity(ParityHarness):
+class TestClientFieldsSelection(ParityFixture):
     def test_m2m_subfield_selection(self):
         for params in ({"fields": "tags.name"}, {"fields": "tags_name"}):
             with self.subTest(params=params):
-                self.assertParity(
-                    self.parity(
-                        ParityAllTypes,
-                        ALL_URL,
-                        str(params),
-                        fields=FIELDS,
-                        params=params,
-                        detail=False,
-                        unordered={"tags"},
-                    )
-                )
+                with parity_config(ParityAllTypes, {"fields": FIELDS}):
+                    self.client.force_authenticate(self.reader)
+                    status, body = self._get(ALL_URL, params)
+                self.assertEqual(status, 200)
+                rows = body["data"]
+                self.assertTrue(rows)
+                for row in rows:
+                    self.assertEqual(set(row), {"tags"})
+                    for tag in row["tags"]:
+                        self.assertEqual(set(tag), {"name"})
 
     def test_unconfigured_pk_selects_nothing(self):
         fields = ["char", "integer", "target__name"]
-        self.assertParity(
-            self.parity(
-                ParityAllTypes,
-                ALL_URL,
-                "?fields=id",
-                fields=fields,
-                params={"fields": "id"},
-                detail=False,
-            )
-        )
         with parity_config(ParityAllTypes, {"fields": fields}):
             status, body = self._get(ALL_URL, {"fields": "id"})
         self.assertEqual(
@@ -761,7 +739,7 @@ class TestDatabaseModeQueries(_EventsFixture):
                 self.assertLessEqual(len(queries), 2, queries)
 
 
-class TestCompiledQueryShape(_EventsFixture):
+class TestListQueryShape(_EventsFixture):
     def _list_queries(self, params=None):
         self.client.force_authenticate(self._analyst())
         with CaptureQueriesContext(connection) as ctx:
@@ -777,15 +755,15 @@ class TestCompiledQueryShape(_EventsFixture):
         self.assertEqual(values_sql.count("CASE WHEN"), 1, values_sql)
 
     def test_count_has_no_nested_value_joins(self):
-        """Finding 31: COUNT runs on the filtered rows, not the .values()
-        query with its JOINs and visibility subqueries."""
+        """Finding 31: COUNT runs on the filtered rows, not the page query
+        with its JOINs and visibility subqueries."""
         count_sql = next(sql for sql in self._list_queries() if "COUNT(" in sql)
         self.assertNotIn("JOIN", count_sql)
         self.assertNotIn("CASE", count_sql)
 
-    def test_compiled_list_and_delete_skip_serializer_prep(self):
-        """Finding 33: the compiled list and a delete render no instances, so
-        get_queryset skips the visibility annotations (and select_related)."""
+    def test_delete_skips_serializer_prep(self):
+        """Finding 33: a delete renders no instance, so get_queryset skips
+        the visibility annotations (and select_related)."""
         user = self._analyst()
         roles = {
             **ROLES,
@@ -801,68 +779,5 @@ class TestCompiledQueryShape(_EventsFixture):
                 side_effect=AssertionError("annotated"),
             ),
         ):
-            self.assertEqual(self.client.get("/api/holdingevents/").status_code, 200)
             resp = self.client.delete(f"/api/holdingevents/{event.pk}/")
         self.assertEqual(resp.status_code, 204)
-
-
-class TestCompiledPathRuns(TestCase):
-    """Finding 34: nothing asserted that compiled models' lists actually go
-    through the compiled path."""
-
-    COMPILED = [
-        "ArticleWithCategories",
-        "Category",
-        "CompiledArticle",
-        "CompiledSampleModel",
-        "CustomEndpointModel",
-        "Fund",
-        "HoldingEvent",
-        "ParityAllTypes",
-        "ParityChild",
-        "ParityCodePk",
-        "ParityTarget",
-        "ParityUuidPk",
-        "PlatformAccount",
-        "RelatedModel",
-        "SampleModel",
-        "Valuation",
-        "Widget",
-    ]
-
-    def test_test_app_models_compiled_at_boot(self):
-        import tests.urls  # noqa: F401
-
-        compiled = sorted(
-            model.__name__
-            for model in compiler._compiled_plans
-            if model.__module__ == "tests.test_app.models"
-        )
-        self.assertEqual(compiled, self.COMPILED)
-
-    @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
-    def test_compiled_lists_use_the_compiled_path(self):
-        from tests.urls import router
-
-        endpoints = {
-            viewset.model.__name__: prefix for prefix, viewset, _ in router.registry
-        }
-        client = APIClient()
-        for name in self.COMPILED:
-            with self.subTest(model=name):
-                with mock.patch.object(
-                    TurboDRFViewSet,
-                    "_compiled_list",
-                    autospec=True,
-                    side_effect=TurboDRFViewSet._compiled_list,
-                ) as spy:
-                    resp = client.get(f"/api/{endpoints[name]}/")
-                self.assertEqual(resp.status_code, 200)
-                self.assertEqual(spy.call_count, 1)
-
-    @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
-    def test_uncompiled_list_uses_the_serializer(self):
-        with mock.patch.object(
-            TurboDRFViewSet, "_compiled_list", side_effect=AssertionError
-        ):
-            self.assertEqual(APIClient().get("/api/gadgets/").status_code, 200)

@@ -404,7 +404,6 @@ class TestPermissionFlags(AuthzSecurityBase):
             {"TURBODRF_SENSITIVE_FIELDS": {"x": 1}},
             {"TURBODRF_MAX_NESTING_DEPTH": 999},
             {"TURBODRF_MAX_NESTING_DEPTH": 0},
-            {"TURBODRF_LOG_UNRESTRICTED_CUSTOM": True},
             {"TURBODRF_ENABLE_DOCS": False},
             {"TURBODRF_ROLES": {}},
         ]
@@ -469,16 +468,19 @@ class TestPredicates(AuthzSecurityBase):
 
         orig = list(get_predicates(Deal))
         try:
-            register_predicates(Deal, [Custom(q_func=lambda r, u: Q())])
+            register_predicates(
+                Deal,
+                [Custom(q_func=lambda r, u: Q(), write_validator=lambda d, i, r: [])],
+            )
             r = self.client.get("/api/deals/")
             self._assert_no_victim_leak(r)
         finally:
             register_predicates(Deal, orig)
 
     def test_custom_q_returns_none_or_string_or_raises(self):
-        """q_func returning None → AttributeError; returning string → AttributeError;
-        raising → propagates. None is a leak vector — verify framework path
-        handles it (no API leak)."""
+        """q_func returning None or a string → TypeError; raising →
+        propagates. None is a leak vector — verify framework path handles it
+        (no API leak)."""
         from turbodrf.predicates import Custom
 
         factory = APIRequestFactory()
@@ -486,15 +488,20 @@ class TestPredicates(AuthzSecurityBase):
         req.user = self.attacker
 
         # None
-        try:
-            Custom(q_func=lambda r, u: None).q(req, set(["underwriter"]))
-        except AttributeError:
-            pass
+        with self.assertRaises(TypeError):
+            Custom(q_func=lambda r, u: None, write_validator=lambda d, i, r: []).q(
+                req, set(["underwriter"])
+            )
         # Non-Q (string)
-        with self.assertRaises(AttributeError):
-            Custom(q_func=lambda r, u: "not a Q").q(req, set())
+        with self.assertRaises(TypeError):
+            Custom(q_func=lambda r, u: "not a Q", write_validator=lambda d, i, r: []).q(
+                req, set()
+            )
         # Raising
-        c = Custom(q_func=lambda r, u: (_ for _ in ()).throw(RuntimeError("kaboom")))
+        c = Custom(
+            q_func=lambda r, u: (_ for _ in ()).throw(RuntimeError("kaboom")),
+            write_validator=lambda d, i, r: [],
+        )
         with self.assertRaises(RuntimeError):
             c.q(req, set())
         # API path remains safe
@@ -511,7 +518,9 @@ class TestPredicates(AuthzSecurityBase):
         factory = APIRequestFactory()
         req = factory.get("/")
         req.user = self.attacker
-        Custom(q_func=naughty).q(req, set(["underwriter"]))
+        Custom(q_func=naughty, write_validator=lambda d, i, r: []).q(
+            req, set(["underwriter"])
+        )
         r = self.client.get("/api/deals/")
         self._assert_no_victim_leak(r)
 
@@ -528,7 +537,12 @@ class TestPredicates(AuthzSecurityBase):
         try:
             register_predicates(
                 Deal,
-                [Custom(q_func=lambda r, u: ~Q(brokerage=self.brokerage_attacker))],
+                [
+                    Custom(
+                        q_func=lambda r, u: ~Q(brokerage=self.brokerage_attacker),
+                        write_validator=lambda d, i, r: [],
+                    )
+                ],
             )
             r = self.client.get("/api/deals/")
             self._assert_no_victim_leak(r)
@@ -580,24 +594,6 @@ class TestPredicates(AuthzSecurityBase):
             Q(pk__in=[]),
         )
 
-    def test_either_and_tenant_inside_either_validation(self):
-        """Either() rejects empty/non-Predicate args; Tenant inside Either is
-        a tenant-escape and must raise."""
-        from turbodrf.predicates import (
-            Either,
-            Owner,
-            Tenant,
-            _reject_tenant_inside_either,
-        )
-
-        with self.assertRaises(ImproperlyConfigured):
-            Either("not a predicate", "also not")
-        with self.assertRaises(ImproperlyConfigured):
-            Either()
-        bad = Either(Tenant("brokerage"), Owner("assigned_broker"))
-        with self.assertRaises(ImproperlyConfigured):
-            _reject_tenant_inside_either(bad)
-
     def test_either_fail_open_cannot_escape_tenant(self):
         from turbodrf.predicates import (
             Custom,
@@ -612,8 +608,12 @@ class TestPredicates(AuthzSecurityBase):
                 Deal,
                 [
                     Either(
-                        Custom(q_func=lambda r, u: Q()),
-                        Custom(q_func=lambda r, u: Q()),
+                        Custom(
+                            q_func=lambda r, u: Q(), write_validator=lambda d, i, r: []
+                        ),
+                        Custom(
+                            q_func=lambda r, u: Q(), write_validator=lambda d, i, r: []
+                        ),
                     )
                 ],
             )
@@ -664,7 +664,7 @@ class TestPredicates(AuthzSecurityBase):
         from turbodrf.predicates import Conditional, Custom, parse_config
 
         with self.assertRaises(ImproperlyConfigured):
-            Custom(q_func="not callable")
+            Custom(q_func="not callable", write_validator=lambda d, i, r: [])
         with self.assertRaises(ImproperlyConfigured):
             Conditional(when="not a Q", require_roles=["admin"])
         with self.assertRaises(ImproperlyConfigured):
@@ -674,14 +674,6 @@ class TestPredicates(AuthzSecurityBase):
         tf, preds = parse_config({"tenant_field": "brokerage", "owner_field": []})
         self.assertEqual(tf, "brokerage")
         self.assertEqual(preds, [])
-
-    def test_tenant_predicate_anon_no_match(self):
-        from turbodrf.predicates import Tenant
-
-        factory = APIRequestFactory()
-        req = factory.get("/")
-        req.user = AnonymousUser()
-        self.assertEqual(Tenant("brokerage").q(req, set()), Q(pk__in=[]))
 
 
 # ============================================================================
@@ -1146,12 +1138,9 @@ class TestTenancyResolution(AuthzSecurityBase):
 
     def test_resolve_tenancy_for_model_invariants(self):
         """resolve_tenancy_for_model: empty config → no field, no preds;
-        Tenant() inside visibility → extracted to tenant_field;
-        tenancy='shared' → no field; bad field paths/owner_field/either-with-Tenant raise.
+        tenancy='shared' → no field; bad field paths / owner_field raise.
         """
-        import warnings
-
-        from turbodrf.predicates import Either, Owner, Tenant
+        from turbodrf.predicates import Owner
         from turbodrf.tenancy import resolve_tenancy_for_model
 
         class _Solo:
@@ -1170,18 +1159,6 @@ class TestTenancyResolution(AuthzSecurityBase):
         self.assertEqual(preds, [])
         self.assertFalse(ad)
 
-        # Tenant() in visibility → field extracted
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            tf, preds, _ad = resolve_tenancy_for_model(
-                Deal,
-                {"visibility": [Tenant("brokerage")]},
-                tenant_model_setting="test_app.Brokerage",
-                autodetect=False,
-            )
-        self.assertEqual(tf, "brokerage")
-        self.assertEqual(preds, [])
-
         # tenancy='shared'
         tf, preds, ad = resolve_tenancy_for_model(
             Deal, {"tenancy": "shared"}, tenant_model_setting=None, autodetect=False
@@ -1189,14 +1166,6 @@ class TestTenancyResolution(AuthzSecurityBase):
         self.assertIsNone(tf)
         self.assertEqual(preds, [])
 
-        # Tenant inside Either → reject
-        with self.assertRaises(ImproperlyConfigured):
-            resolve_tenancy_for_model(
-                Deal,
-                {"visibility": [Either(Tenant("brokerage"), Owner("assigned_broker"))]},
-                tenant_model_setting="test_app.Brokerage",
-                autodetect=False,
-            )
         # tenant_field + visibility — allowed (canonical power form)
         tf, preds, _ = resolve_tenancy_for_model(
             Deal,
@@ -1401,16 +1370,12 @@ class TestAppAndRegistry(AuthzSecurityBase):
 
 
 # ============================================================================
-# Compiled plan / ContentType / DB
+# ContentType / DB
 # ============================================================================
 
 
-class TestCompiledAndDB(AuthzSecurityBase):
-    def test_compile_model_disabled_and_sample_no_leak(self):
-        from turbodrf.compiler import _compiled_plans, compile_model
-
-        self.assertIsNone(compile_model(Deal))
-        self.assertNotIn(Deal, _compiled_plans)
+class TestSampleListAndDB(AuthzSecurityBase):
+    def test_sample_list_no_leak(self):
         self._assert_no_victim_leak(self.client.get("/api/compiledsamplemodels/"))
 
     def test_contenttype_db_and_model_label(self):

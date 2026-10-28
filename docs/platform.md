@@ -17,7 +17,7 @@ The **platform** scope serves that API from the same models:
   anything on the tenant router.
 
 Everything else is the same machinery: field rules, filters, search, ordering,
-pagination, the compiled list, the `@property` sandbox, `@turbodrf_action`
+pagination, the `@property` sandbox, `@turbodrf_action`
 actions, OPTIONS, the sensitive-field deny-list and the OpenAPI schema.
 
 ## A worked example
@@ -221,8 +221,7 @@ decides alone).
 
 A `"platform"` block takes the keys that shape an API: `endpoint`, `fields`,
 `searchable_fields`, `lookup_field`, `read_only`, `http_methods`, `actions`,
-`compiled`, `enabled`, `full_clean`, `property_relations` and
-`unscoped_properties`. Ordering is by the platform `fields`, as on the tenant
+`enabled`, `full_clean`, `property_relations` and `unscoped_properties`. Ordering is by the platform `fields`, as on the tenant
 scope. Nothing is inherited from the top level: a key left out of the block
 takes its default (`fields` defaults to `'__all__'`, so set it).
 
@@ -256,9 +255,8 @@ whether or not a platform router is mounted. `ImproperlyConfigured` for:
   name its tenant.
 
 A platform router also requires `TURBODRF_PLATFORM_ROLES` (a non-empty dict),
-validates its permission strings as `TURBODRF_ROLES` is validated, imports
-`TURBODRF_PLATFORM_ROLE_GETTER`, and runs the compiled-path and search-field
-checks on the platform configs.
+validates its permission strings as `TURBODRF_ROLES` is validated, and
+imports `TURBODRF_PLATFORM_ROLE_GETTER`.
 
 ## Roles and permissions
 
@@ -370,13 +368,10 @@ to a platform role the caller holds.
 
 ```bash
 python manage.py turbodrf_check --scope platform
-python manage.py turbodrf_explain Job --scope platform --role support
 ```
 
 `turbodrf_check --scope platform` lists the models with an enabled platform
-block, each with its compiled status, fields and tenant path.
-`turbodrf_explain --scope platform` explains the platform block's compiled
-list; `--role` is a platform role.
+block, each with its fields and tenant path.
 
 ## Not covered
 

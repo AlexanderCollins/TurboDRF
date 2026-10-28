@@ -1,5 +1,5 @@
 """
-Check which models are eligible for the compiled read path.
+Report each TurboDRF model's list fields and row scoping.
 
 Usage:
     python manage.py turbodrf_check
@@ -23,7 +23,7 @@ from turbodrf.scope import (
 
 
 class Command(BaseCommand):
-    help = "Check which TurboDRF models are eligible for the compiled read path"
+    help = "Report each TurboDRF model's list fields and row scoping"
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -76,14 +76,11 @@ class Command(BaseCommand):
         # The config the current scope serves (a platform block there).
         config = _model_config(model)
         platform = is_platform()
-        # Same default as the router: compiled unless opted out.
-        opted_in = config.get("compiled", True)
         public_access = config.get("public_access", False)
 
-        # The list fields the API serves (the compiled path serves lists).
+        # The list fields the API serves.
         list_fields = _resolve_configured_fields(model, "list")
 
-        # Check each field for eligibility
         issues = []
         field_summary = {"db": 0, "fk": 0, "m2m": 0, "reverse": 0, "property": 0}
 
@@ -114,31 +111,13 @@ class Command(BaseCommand):
                 except FieldDoesNotExist:
                     issues.append(f"  '{parts[0]}' base field does not exist")
 
-        # Compiled exactly when the router compiles it: opted in, and the
-        # compiler can render every list field as the serializer path does.
-        blocker = None
-        if opted_in and not issues:
-            from turbodrf.compiler import compile_blocker
-
-            try:
-                blocker = compile_blocker(model)
-            except Exception as e:  # the router logs and falls back too
-                blocker = str(e)
-        compiled = opted_in and not issues and blocker is None
-
         # Output
         name = f"{model._meta.app_label}.{model.__name__}"
         if platform:
             endpoint = config.get("endpoint", f"{model._meta.model_name}s")
             name += f" (platform: {endpoint}/)"
-        status = self.style.SUCCESS("compiled") if compiled else "not compiled"
-
-        if issues:
-            symbol = self.style.ERROR("INELIGIBLE")
-        else:
-            symbol = self.style.SUCCESS("OK")
-
-        self.stdout.write(f"\n{name} [{status}] {symbol}")
+        symbol = self.style.ERROR("ISSUES") if issues else self.style.SUCCESS("OK")
+        self.stdout.write(f"\n{name} {symbol}")
         reverse = (
             f", {field_summary['reverse']} reverse" if field_summary["reverse"] else ""
         )
@@ -167,20 +146,6 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR("  Issues:"))
             for issue in issues:
                 self.stdout.write(self.style.ERROR(issue))
-        elif blocker:
-            self.stdout.write(
-                self.style.WARNING(
-                    f"  Served by the serializer path, not compiled: {blocker}"
-                )
-            )
-        elif not opted_in:
-            where = "its platform block" if platform else "the turbodrf() config"
-            self.stdout.write(
-                self.style.WARNING(
-                    "  Eligible for compiled path. "
-                    f"Remove 'compiled': False from {where}."
-                )
-            )
 
     def _report_platform_tenancy(self, model):
         """The platform scope applies no row scoping; say which tenant path
