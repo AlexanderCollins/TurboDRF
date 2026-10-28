@@ -99,8 +99,9 @@ def _q_spans_multivalued(model, q):
     """True if any lookup in ``q`` may traverse an M2M or reverse relation.
 
     A child that isn't a ``(lookup, value)`` pair (an ``Exists()`` or other
-    expression, say from a ``Custom`` predicate) can't be inspected, so it
-    counts as multi-valued: the subquery form is correct either way."""
+    expression, say from a ``Custom`` predicate), or whose value is an
+    expression (``F('team__members')``), can't be inspected, so it counts as
+    multi-valued: the subquery form is correct either way."""
     from django.core.exceptions import FieldDoesNotExist
     from django.db.models import Q
 
@@ -110,6 +111,8 @@ def _q_spans_multivalued(model, q):
                 return True
             continue
         if not isinstance(child, tuple) or not isinstance(child[0], str):
+            return True
+        if hasattr(child[1], "resolve_expression"):
             return True
         current = model
         for part in child[0].split("__"):

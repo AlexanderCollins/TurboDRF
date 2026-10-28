@@ -26,9 +26,8 @@ def get_searchable_fields(model):
 
     Read from the ``turbodrf()`` config dict (``'searchable_fields': [...]``)
     first, falling back to a ``searchable_fields`` class attribute. The
-    config-dict form is preferred — it lives alongside ``fields`` /
-    ``tenant_field`` and is honored by both the ``?search=`` handling and the
-    boot-time searchable-fields safety check.
+    config-dict form is preferred: it lives alongside ``fields`` /
+    ``tenant_field``.
 
     A key present in the config wins even when it's empty:
     ``'searchable_fields': []`` turns search off for the model, whatever the
