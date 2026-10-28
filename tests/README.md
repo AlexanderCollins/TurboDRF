@@ -25,7 +25,7 @@ tests/
 ├── integration/             # API-level tests: CRUD endpoints, role
 │                            # permissions, tenancy / predicates, FK
 │                            # injection, security regressions,
-│                            # compiled-vs-serializer parity, swagger scoping
+│                            # swagger scoping
 │
 └── conformance/             # An independent policy monitor run against the
                              # real API (deterministic + Hypothesis)
@@ -89,8 +89,8 @@ The test suite uses models defined in `test_app/models.py`, among them:
 - **DisabledModel**: Model with TurboDRF disabled
 - **Brokerage → Deal → BankAccount → Transaction**: tenant chain for
   tenancy, predicate and IDOR tests
-- **Parity\*** and **Scope\*** / **Rbac\*** models: compiled-vs-serializer
-  parity, nested-value scoping and RBAC regression tests
+- **Parity\*** and **Scope\*** / **Rbac\*** models: one column per field
+  type (parity_fixtures.py), nested-value scoping and RBAC regression tests
 
 ## Test Users and Roles
 

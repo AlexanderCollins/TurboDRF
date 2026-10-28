@@ -33,7 +33,7 @@ GET /api/books/?search=django
 Each entry is a column or a `__`-path that ends on one (`author__name`). It may start with one of DRF's prefixes: `^` (starts with), `=` (exact match) or `@` (full-text search, Postgres). `$` (regex) isn't accepted. An entry that doesn't resolve, ends on a relation or starts with `$` is dropped.
 
 - A caller who can't read a field can't search by it, and sensitive fields are never searched.
-- A `__`-path term only matches related rows the caller can see through that model's own endpoint. A path through a model with its own predicates, or from a shared model into a tenant-scoped one, is refused at startup unless `TURBODRF_ALLOW_UNSAFE_SEARCH_FIELDS` is set.
+- A `__`-path term only matches related rows the caller can see through that model's own endpoint (its tenant and predicates).
 - A search with more than 20 distinct terms, or a term longer than `TURBODRF_MAX_FILTER_VALUE_LENGTH` (default 1000), returns nothing.
 
 ## Filtering

@@ -2,21 +2,17 @@
 
 Runs the demo project (demo/models.py, settings.py) against an in-memory
 SQLite database, makes each request the site shows as a real API call, and
-writes them to src/data/demo.json: the role switcher, the code samples and
-the videos all read from there, so nothing on the site is typed by hand.
+writes them to src/data/demo.json: the infographics and the code samples
+read from there, so nothing on the site is typed by hand.
 
     ../../../venv/bin/python capture.py      (from website/tools/demo)
 """
 
 import json
 import os
-import platform
-import statistics
 import sys
-import time
 from decimal import Decimal
 from pathlib import Path
-from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -230,58 +226,6 @@ def startup_error():
     return None
 
 
-def benchmark(client, user, rows=500, page=50, runs=300):
-    """Average time of a full list request, compiled vs the DRF serializer."""
-    ws = user.workspace
-    clients = list(Client.objects.filter(workspace=ws))
-    Project.objects.bulk_create(
-        Project(
-            title=f"Project {i}",
-            workspace=ws,
-            client=clients[i % len(clients)],
-            owner=user,
-            budget=Decimal("1000.00") + i,
-        )
-        for i in range(rows)
-    )
-    client.force_authenticate(user=user)
-    url = f"/api/projects/?page_size={page}"
-
-    def timed():
-        for _ in range(30):
-            client.get(url)
-        times = []
-        for _ in range(runs):
-            start = time.perf_counter()
-            resp = client.get(url)
-            times.append(time.perf_counter() - start)
-            assert resp.status_code == 200
-        with CaptureQueriesContext(connection) as queries:
-            client.get(url)
-        return statistics.mean(times) * 1000, statistics.median(times) * 1000, len(queries)
-
-    compiled = timed()
-    from turbodrf import compiler
-
-    with mock.patch.dict(compiler._compiled_plans):
-        del compiler._compiled_plans[Project]
-        serializer = timed()
-    return {
-        "rows_in_table": Project.objects.filter(workspace=ws).count(),
-        "page_size": page,
-        "runs": runs,
-        "compiled_ms": round(compiled[0], 2),
-        "compiled_median_ms": round(compiled[1], 2),
-        "compiled_queries": compiled[2],
-        "serializer_ms": round(serializer[0], 2),
-        "serializer_median_ms": round(serializer[1], 2),
-        "serializer_queries": serializer[2],
-        "speedup": round(serializer[0] / compiled[0], 1),
-        "machine": f"{platform.machine()} · Python {platform.python_version()} · "
-        f"Django {django.get_version()} · SQLite",
-    }
-
-
 def main():
     users, projects, ws, umbrella = seed()
     api = APIClient()
@@ -348,10 +292,8 @@ def main():
         "routes": routes(),
         "matrix": grid,
         "check": command("turbodrf_check"),
-        "explain": command("turbodrf_explain", "Project"),
         "startup_error": startup_error(),
         "calls": calls,
-        "benchmark": benchmark(api, users["alice"]),
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(data, indent=2) + "\n")
@@ -362,9 +304,7 @@ def main():
         print(f"{key:15}", "  ".join(f"{who}={c['status']}" for who, c in cells.items()))
     print(json.dumps(data["routes"]))
     print(data["check"])
-    print(data["explain"])
     print(data["startup_error"])
-    print(json.dumps(data["benchmark"], indent=1))
 
 
 if __name__ == "__main__":

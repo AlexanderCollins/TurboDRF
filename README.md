@@ -125,11 +125,11 @@ Full docs: <https://turbodrf.com/docs/>
 - [Permissions](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/permissions.md) -- role-based, field-level, and Django default permissions
 - [Tenancy & row-level access](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/tenancy.md) -- predicates, multi-tenancy, FK injection defense
 - [Platform scope](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/platform.md) -- an API for your own staff across tenants: opt-in per model, a gate on every route, separate roles
-- [Performance](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/performance.md) -- compiled read path, fast JSON rendering, benchmarking
+- [Performance](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/performance.md) -- queries per request, indexes, fast JSON rendering
 - [Filtering & Search](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/filtering.md) -- filtering, search, ordering, OR queries
 - [Integrations](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/integrations.md) -- allauth, Keycloak, drf-api-tracking, Sentry (all experimental)
 - [Security](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/security.md) -- sensitive fields, secure defaults, error responses
-- [Management Commands](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/commands.md) -- turbodrf_check, turbodrf_benchmark, turbodrf_explain
+- [Management Commands](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/commands.md) -- turbodrf_check
 - **[Settings Reference](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/settings_reference.md)** -- every TURBODRF_* setting in one place
 
 ## Permissions and access control

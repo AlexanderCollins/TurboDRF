@@ -13,7 +13,6 @@ def turbodrf(cls):
         'fields': ['title', 'price'], # Fields to expose (default: '__all__'; see below)
         'public_access': False,       # Allow unauthenticated GET (default: False)
         'lookup_field': 'slug',       # URL lookup field (default: pk)
-        'compiled': True,             # Use compiled read path (default: True)
         'searchable_fields': [        # Fields enabled for ?search= (default: none)
             'title', 'author__name',
         ],
@@ -118,7 +117,7 @@ Names are output keys; dot (`author.name`) or underscore (`author_name`) notatio
 
 ## Property / computed read fields
 
-A model `@property` (or a zero-argument method) can be listed in `fields`. It renders **read-only** on both read paths -- the compiled `.values()` path and the DRF serializer path -- and is ignored on writes:
+A model `@property` (or a zero-argument method) can be listed in `fields`. It renders **read-only** and is ignored on writes:
 
 ```python
 class Book(models.Model, TurboDRFMixin):
@@ -184,8 +183,6 @@ A path may end on a plain field (`portfolio__name`), and may be as deep as `TURB
 ```python
 'unscoped_properties': ['exchange_rate'],   # reads shared reference data
 ```
-
-A nested property path (`author__display_name`) isn't compiled: a model that lists one is served by the serializer path (`turbodrf_check` says why).
 
 ## Searchable fields
 
