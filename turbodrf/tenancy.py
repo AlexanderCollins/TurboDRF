@@ -235,9 +235,8 @@ def resolve_tenancy_for_model(model, config, tenant_model_setting, autodetect=Tr
         parse_config(config)
         return None, [], False
 
-    # Power form (visibility=...): parse_config extracts any Tenant() into
-    # tenant_field setting (with deprecation warning) and rejects Tenant
-    # inside Either.
+    # Power form (visibility=...): the tenant boundary stays the
+    # tenant_field setting, outside the predicate list.
     if config.get("visibility") is not None:
         tenant_field, predicates = parse_config(config)
         if tenant_field is not None:

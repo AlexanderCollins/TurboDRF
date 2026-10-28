@@ -630,8 +630,7 @@ class Valuation(TurboDRFMixin, models.Model):
 
 
 # ---------------------------------------------------------------------------
-# Compiled-vs-serializer parity parity models
-# (tests/integration/test_parity_compiled_vs_serializer.py). Every common field type, nullable
+# Parity models (tests/integration/parity_fixtures.py). Every common field type, nullable
 # and not, plus FK / O2O / M2M targets for nested paths. Scenarios patch the
 # turbodrf() config per test, so the configs below are only defaults.
 # ---------------------------------------------------------------------------

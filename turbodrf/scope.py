@@ -18,7 +18,7 @@ request (and renders the response inside it); the schema generator and the
 management commands set it explicitly. The code that depends on it reads
 ``current_scope()``: the model config (``mixins._model_config``), roles and
 permission snapshots (``backends``), the row-scoping registry
-(``predicates.get_predicates`` / ``get_tenant_field``) and the compiled plans.
+(``predicates.get_predicates`` / ``get_tenant_field``).
 """
 
 import contextvars

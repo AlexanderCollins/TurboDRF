@@ -126,11 +126,10 @@ def get_permission_mode() -> str:
 
 class RoleOnlyIdentity:
     """A permission-only caller holding just a list of role names: the
-    schema's ``?role=`` narrowing and ``turbodrf_explain --role``. No primary
-    key, so its snapshots are never cached. It holds the same roles on both
-    scopes: ``roles`` on the tenant scope (static mode) and ``platform_roles``
-    on the platform scope, whatever TURBODRF_PLATFORM_ROLE_GETTER reads for a
-    real user."""
+    schema's ``?role=`` narrowing. No primary key, so its snapshots are never
+    cached. It holds the same roles on both scopes: ``roles`` on the tenant
+    scope (static mode) and ``platform_roles`` on the platform scope, whatever
+    TURBODRF_PLATFORM_ROLE_GETTER reads for a real user."""
 
     is_authenticated = True
     is_anonymous = False

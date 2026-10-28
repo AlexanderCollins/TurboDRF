@@ -3,6 +3,7 @@ model, an Owner over a ``__`` path on writes, and the browsable API's
 dropdown labels."""
 
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -17,6 +18,8 @@ from tests.test_app.models import (
     BankAccount,
     Brokerage,
     Deal,
+    ParityAllTypes,
+    ParityTarget,
     RelatedModel,
     SampleModel,
     Transaction,
@@ -220,3 +223,24 @@ class TestBrowsableDropdownLabels(TestCase):
         html = page.content.decode()
         self.assertIn(f'<option value="{related.pk}"', html)
         self.assertNotIn("SECRET_NAME_XYZ", html)
+
+
+class TestReverseOneToOneBase(TestCase):
+    """A nested path through a reverse one-to-one (``twin_row__char``) renders
+    the related value, never the bare ``twin_row`` key: that pk belongs to
+    the other row, which may be hidden from the caller (listing ``twin_row``
+    bare is a startup error)."""
+
+    def test_base_is_not_rendered(self):
+        cache.clear()
+        target = ParityTarget.objects.create(name="t")
+        ParityAllTypes.objects.create(char="twin-of-t", twin=target)
+        config = {**ParityTarget.turbodrf(), "fields": ["id", "name", "twin_row__char"]}
+        client = APIClient()
+        with patch.object(ParityTarget, "turbodrf", classmethod(lambda cls: config)):
+            rows = client.get("/api/paritytargets/").json()["data"]
+            detail = client.get(f"/api/paritytargets/{target.pk}/").json()
+        self.assertTrue(rows)
+        for row in [*rows, detail]:
+            self.assertNotIn("twin_row", row)
+            self.assertIn("name", row)

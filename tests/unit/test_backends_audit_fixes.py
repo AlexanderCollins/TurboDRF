@@ -1,5 +1,5 @@
-"""Regressions for the permission-cache, compiler, decorator and exception
-handler audit findings. Each test names the finding it pins."""
+"""Regressions for the permission-cache, value-rendering, decorator and
+exception handler audit findings. Each test names the finding it pins."""
 
 from decimal import Decimal
 from unittest import mock
@@ -23,10 +23,10 @@ from turbodrf.backends import (
     get_user_roles,
     invalidate_user_permissions,
 )
-from turbodrf.compiler import NotCompilable, field_representation
 from turbodrf.decorators import turbodrf_action
 from turbodrf.exceptions import turbodrf_exception_handler
 from turbodrf.models import RolePermission, TurboDRFRole, UserRole
+from turbodrf.serializers import field_representation
 
 User = get_user_model()
 
@@ -157,8 +157,7 @@ class TestRequestMemo(TestCase):
 
 class TestFieldRepresentation(TestCase):
     """Finding 23: only field types whose raw value renders like their DRF
-    field render raw; everything else goes through the DRF field, or isn't
-    compiled."""
+    field render raw; everything else goes through the DRF field."""
 
     def test_choices_and_foreign_field_classes_use_the_drf_field(self):
         class Custom(models.CharField):
@@ -173,18 +172,6 @@ class TestFieldRepresentation(TestCase):
         self.assertIsNotNone(field_representation(status))
         self.assertIsNotNone(field_representation(custom))
         self.assertIsNone(field_representation(bound(models.CharField(), "plain")))
-
-    def test_field_without_a_drf_field_is_not_compilable(self):
-        class Point(models.Field):
-            def get_internal_type(self):
-                return "TextField"
-
-        point = Point()
-        point.name, point.model = "point", SampleModel
-        with self.assertRaises(NotCompilable):
-            from turbodrf.compiler import _check_representable
-
-            _check_representable(point, "point")
 
 
 class TestTurboDRFAction(TestCase):

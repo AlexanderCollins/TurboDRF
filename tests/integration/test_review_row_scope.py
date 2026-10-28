@@ -243,43 +243,6 @@ class TestM2MSubFieldAcrossFurtherHop(_Fixture):
         rows = self._rows(self.client.get("/api/scopetaggeds/"))
         self.assertEqual(rows[0]["tags"], [{"name": "t", "folder__name": None}])
 
-    def test_compiled_path_nulls_hidden_hop(self):
-        from turbodrf import compiler
-
-        config = {**ScopeTagged.turbodrf(), "compiled": True}
-        with patch.object(ScopeTagged, "turbodrf", classmethod(lambda cls: config)):
-            plan = compiler.compile_model(ScopeTagged)
-        saved = compiler._compiled_plans.pop(ScopeTagged, None)
-        compiler.register_compiled_plan(ScopeTagged, plan)
-        try:
-            self._as(self.a2)
-            rows = self._rows(self.client.get("/api/scopetaggeds/"))
-            self._as(self.a1)
-            owner_rows = self._rows(self.client.get("/api/scopetaggeds/"))
-        finally:
-            compiler._compiled_plans.pop(ScopeTagged, None)
-            if saved is not None:
-                compiler._compiled_plans[ScopeTagged] = saved
-        self.assertEqual(rows[0]["tags"], [{"name": "t", "folder__name": None}])
-        self.assertEqual(owner_rows[0]["tags"][0]["folder__name"], "A1-private-plan")
-
-    def test_boot_gate_refuses_compiled_config(self):
-        from turbodrf import compiler
-
-        config = {**ScopeTagged.turbodrf(), "compiled": True}
-        with patch.object(ScopeTagged, "turbodrf", classmethod(lambda cls: config)):
-            plan = compiler.compile_model(ScopeTagged)
-        saved = compiler._compiled_plans.pop(ScopeTagged, None)
-        compiler.register_compiled_plan(ScopeTagged, plan)
-        try:
-            with self.assertRaises(ImproperlyConfigured) as ctx:
-                compiler.validate_compiled_path_safety(ScopeTagged)
-            self.assertIn("ScopeFolder", str(ctx.exception))
-        finally:
-            compiler._compiled_plans.pop(ScopeTagged, None)
-            if saved is not None:
-                compiler._compiled_plans[ScopeTagged] = saved
-
 
 class TestEitherComposition(_Fixture):
     """Either(Owner(bypass), Members): the bypass role sees every tenant row;
@@ -343,13 +306,12 @@ class TestTenancyGate(_Fixture):
     def _build(self, cfg):
         """Build a fresh router that only sees ScopeLoose with config `cfg`;
         restore the global registries afterwards."""
-        from turbodrf import compiler, predicates
+        from turbodrf import predicates
         from turbodrf.router import TurboDRFRouter
 
         saved = (
             dict(predicates._model_predicates),
             dict(predicates._model_tenant_fields),
-            dict(compiler._compiled_plans),
         )
         self.addCleanup(self._restore, saved)
         p1 = patch("turbodrf.router.apps", router_apps([ScopeLoose]))
@@ -363,14 +325,12 @@ class TestTenancyGate(_Fixture):
 
     @staticmethod
     def _restore(saved):
-        from turbodrf import compiler, predicates
+        from turbodrf import predicates
 
         predicates._model_predicates.clear()
         predicates._model_predicates.update(saved[0])
         predicates._model_tenant_fields.clear()
         predicates._model_tenant_fields.update(saved[1])
-        compiler._compiled_plans.clear()
-        compiler._compiled_plans.update(saved[2])
 
     def test_no_declaration_raises(self):
         with self.assertRaises(ImproperlyConfigured):

@@ -30,7 +30,6 @@ from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient, APIRequestFactory
 
@@ -237,7 +236,7 @@ class TestNestingDepthExceeded(TestCase):
 
 
 class TestBrowsableAPIFallback(TestCase):
-    """Test that browsable API format disables compiled path."""
+    """The browsable API renders a list."""
 
     def setUp(self):
         self.client = APIClient()
@@ -248,7 +247,7 @@ class TestBrowsableAPIFallback(TestCase):
 
     @override_settings(TURBODRF_DISABLE_PERMISSIONS=True)
     def test_format_api_returns_html(self):
-        """?format=api should use browsable API renderer, not compiled path."""
+        """?format=api uses the browsable API renderer."""
         response = self.client.get("/api/compiledsamplemodels/?format=api")
         self.assertEqual(response.status_code, 200)
         # The response should be HTML from browsable API
@@ -507,121 +506,6 @@ class TestCheckNonRelationTraversal(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# turbodrf_explain.py — line 170: all fields permitted
-# ---------------------------------------------------------------------------
-
-
-class TestExplainAllFieldsPermitted(TestCase):
-    """Test turbodrf_explain --role admin where all fields are permitted."""
-
-    def test_all_fields_permitted_shows_message(self):
-        """admin reads every SampleModel list field, nested ones included."""
-        out = StringIO()
-        call_command("turbodrf_explain", "SampleModel", "--role", "admin", stdout=out)
-        output = out.getvalue()
-        self.assertIn("All fields permitted", output)
-
-
-# ---------------------------------------------------------------------------
-# turbodrf_explain.py — line 68: compile failure
-# ---------------------------------------------------------------------------
-
-
-class TestExplainCompileFailure(TestCase):
-    """Test turbodrf_explain when compilation fails completely."""
-
-    def test_compile_failure_raises_command_error(self):
-        with patch(
-            "turbodrf.management.commands.turbodrf_explain.compile_model",
-            return_value=None,
-        ):
-            with self.assertRaises(CommandError) as ctx:
-                out = StringIO()
-                call_command("turbodrf_explain", "CompiledSampleModel", stdout=out)
-            self.assertIn("Could not compile", str(ctx.exception))
-
-
-# ---------------------------------------------------------------------------
-# turbodrf_benchmark.py — lines 75-81: force-compile for non-compiled model
-# and line 112: list_fields from dict config
-# ---------------------------------------------------------------------------
-
-
-class TestBenchmarkForceCompile(TestCase):
-    """Benchmark runs real list requests as --user on both read paths."""
-
-    def setUp(self):
-        # A superuser has the test app's 'admin' role.
-        User.objects.create_superuser("bench_admin", "b@x.test", "x")
-
-    def test_benchmark_with_non_compiled_model(self):
-        """Category is compiled by default (no 'compiled' key): both paths
-        are measured."""
-        Category.objects.create(name="BenchCat", description="D")
-        out = StringIO()
-        call_command(
-            "turbodrf_benchmark",
-            "Category",
-            "--user",
-            "bench_admin",
-            "--requests",
-            "5",
-            "--warmup",
-            "1",
-            stdout=out,
-        )
-        output = out.getvalue()
-        self.assertIn("Speedup", output)
-
-    def test_benchmark_with_simple_model(self):
-        """RelatedModel has simple list fields (no FK traversals).
-
-        This exercises the normal DRF benchmark path without errors.
-        """
-        RelatedModel.objects.create(name="BenchRel", description="D")
-        out = StringIO()
-        call_command(
-            "turbodrf_benchmark",
-            "RelatedModel",
-            "--user",
-            "bench_admin",
-            "--requests",
-            "5",
-            "--warmup",
-            "1",
-            stdout=out,
-        )
-        output = out.getvalue()
-        self.assertIn("Speedup", output)
-
-
-class TestBenchmarkCompileFailure(TestCase):
-    """A model the router didn't compile: only the DRF path is measured (it
-    used to be force-compiled, measuring a path requests never take)."""
-
-    def test_not_compiled_measures_drf_path_only(self):
-        User.objects.create_superuser("bench_admin2", "b@x.test", "x")
-        RelatedModel.objects.create(name="R")
-        out = StringIO()
-        with patch("turbodrf.compiler.is_compiled", return_value=False):
-            call_command(
-                "turbodrf_benchmark",
-                "RelatedModel",
-                "--user",
-                "bench_admin2",
-                "--requests",
-                "1",
-                "--warmup",
-                "0",
-                stdout=out,
-            )
-        output = out.getvalue()
-        self.assertIn("DRF", output)
-        self.assertIn("nothing to compare", output)
-        self.assertNotIn("Speedup", output)
-
-
-# ---------------------------------------------------------------------------
 # renderers.py — test module-level vars and class attributes
 # ---------------------------------------------------------------------------
 
@@ -744,13 +628,7 @@ class TestRouterNestingDepthWarning(TestCase):
     @override_settings(TURBODRF_MAX_NESTING_DEPTH=0)
     def test_deep_field_triggers_warning(self):
         """A field exceeding max nesting depth triggers a warning log."""
-        from turbodrf import compiler
         from turbodrf.router import TurboDRFRouter
-
-        # Building a router re-registers every compiled plan globally; under
-        # depth 0 they'd lose their nested fields for later tests.
-        saved = dict(compiler._compiled_plans)
-        self.addCleanup(compiler._compiled_plans.update, saved)
 
         router = TurboDRFRouter()
         # The router auto-registers on init; we just need to verify it doesn't crash
@@ -1219,51 +1097,6 @@ class TestNonCompiledListFallthrough(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# views.py — _should_use_compiled_path for non-compiled and compiled models
-# (lines 188-196)
-# ---------------------------------------------------------------------------
-
-
-class TestShouldUseCompiledPath(TestCase):
-    """Test _should_use_compiled_path method directly."""
-
-    def test_non_compiled_model_returns_false(self):
-        from turbodrf.views import TurboDRFViewSet
-
-        viewset = TurboDRFViewSet()
-        viewset.model = SampleModel
-        factory = APIRequestFactory()
-        request = factory.get("/fake/")
-
-        with patch("turbodrf.compiler.is_compiled", return_value=False):
-            self.assertFalse(viewset._should_use_compiled_path(request))
-
-    def test_compiled_model_returns_true(self):
-        from turbodrf.views import TurboDRFViewSet
-
-        viewset = TurboDRFViewSet()
-        viewset.model = CompiledSampleModel
-        factory = APIRequestFactory()
-        request = factory.get("/fake/")
-        self.assertTrue(viewset._should_use_compiled_path(request))
-
-    def test_compiled_model_with_api_format_returns_false(self):
-        from turbodrf.views import TurboDRFViewSet
-
-        viewset = TurboDRFViewSet()
-        viewset.model = CompiledSampleModel
-        factory = APIRequestFactory()
-        request = factory.get("/fake/")
-
-        # Simulate browsable API renderer
-        mock_renderer = MagicMock()
-        mock_renderer.format = "api"
-        request.accepted_renderer = mock_renderer
-
-        self.assertFalse(viewset._should_use_compiled_path(request))
-
-
-# ---------------------------------------------------------------------------
 # views.py — _authorized_readable_fields with snapshot that has
 # readable_fields (line 295-297)
 # ---------------------------------------------------------------------------
@@ -1419,36 +1252,6 @@ class TestMixinGetApiFieldsAll(TestCase):
             self.assertNotIn("test_models", fields)
         finally:
             RelatedModel.turbodrf = original
-
-
-# ---------------------------------------------------------------------------
-# turbodrf_benchmark.py — line 112: dict fields config → list_fields from dict
-# ---------------------------------------------------------------------------
-
-
-class TestBenchmarkDictFieldsConfig(TestCase):
-    """Benchmark a dict fields config with nested list fields (it used to
-    crash: the DRF path built a ModelSerializer with `__` paths)."""
-
-    def test_benchmark_with_dict_config_model(self):
-        User.objects.create_superuser("bench_admin3", "b@x.test", "x")
-        rel = RelatedModel.objects.create(name="BenchR", description="D")
-        SampleModel.objects.create(
-            title="BenchT", price=Decimal("1.00"), is_active=True, related=rel
-        )
-        out = StringIO()
-        call_command(
-            "turbodrf_benchmark",
-            "SampleModel",
-            "--user",
-            "bench_admin3",
-            "--requests",
-            "3",
-            "--warmup",
-            "1",
-            stdout=out,
-        )
-        self.assertIn("Speedup", out.getvalue())
 
 
 # ---------------------------------------------------------------------------

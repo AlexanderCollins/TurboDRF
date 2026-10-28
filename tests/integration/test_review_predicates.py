@@ -52,11 +52,10 @@ def _preserve_registries():
     """Router builds and registry edits mutate module-level state shared by
     the whole worker. Snapshot and restore it."""
     import turbodrf.router as router_mod
-    from turbodrf import compiler, predicates
+    from turbodrf import predicates
 
     preds = dict(predicates._model_predicates)
     tenants = dict(predicates._model_tenant_fields)
-    plans = dict(compiler._compiled_plans)
     flag = router_mod._bypass_roles_validated
     try:
         yield
@@ -65,8 +64,6 @@ def _preserve_registries():
         predicates._model_predicates.update(preds)
         predicates._model_tenant_fields.clear()
         predicates._model_tenant_fields.update(tenants)
-        compiler._compiled_plans.clear()
-        compiler._compiled_plans.update(plans)
         router_mod._bypass_roles_validated = flag
 
 

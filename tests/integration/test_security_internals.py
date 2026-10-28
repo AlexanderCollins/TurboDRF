@@ -22,7 +22,7 @@ from django.contrib.auth.models import Group as DjangoGroup
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.db import connections, transaction
-from django.db.models import F, Q
+from django.db.models import Q
 from django.test import TestCase, TransactionTestCase, override_settings
 from rest_framework import serializers as drf_serializers
 from rest_framework.test import APIClient, APIRequestFactory
@@ -49,16 +49,6 @@ from turbodrf.backends import (
     get_snapshot_from_request,
     set_cached_snapshot,
 )
-from turbodrf.compiler import (
-    CompiledQueryPlan,
-    _build_fk_type_coercers,
-    _build_type_coercers,
-    _compile_m2m_spec,
-    compile_model,
-    field_representation,
-    get_compiled_plan,
-    is_compiled,
-)
 from turbodrf.metadata import TurboDRFMetadata
 from turbodrf.predicates import (
     Conditional,
@@ -67,15 +57,13 @@ from turbodrf.predicates import (
     Group,
     Members,
     Owner,
-    Tenant,
     _authed_user,
     _no_match_q,
-    _reject_tenant_inside_either,
     get_user_tenant,
 )
 from turbodrf.renderers import FAST_JSON_AVAILABLE, FAST_JSON_LIB
 from turbodrf.router import _walk_predicates
-from turbodrf.serializers import _apply_predicate_writes
+from turbodrf.serializers import _apply_predicate_writes, field_representation
 from turbodrf.swagger import RoleBasedSchemaGenerator
 from turbodrf.tenancy import (
     _model_is_tenant,
@@ -399,22 +387,6 @@ class InternalHelperTests(AdversaryBase):
         except (AttributeError, TypeError):
             pass
 
-    def test_should_use_compiled_path_anon(self):
-        """anon request must not 500."""
-        viewset = TurboDRFViewSet()
-        viewset.model = Deal
-        viewset._should_use_compiled_path(self._anon_request())
-
-    def test_filter_compiled_fk_annotations_anon_yields_no_victim(self):
-        """Anon must not be granted FK annotation keys leaking victim data."""
-        plan = compile_model(SampleModel)
-        if plan is None:
-            self.skipTest("SampleModel not compiled")
-        viewset = TurboDRFViewSet()
-        viewset.model = SampleModel
-        result = viewset._filter_compiled_fk_annotations(plan, self._anon_request())
-        self.assert_no_victim_leak_value(result)
-
     # ---- predicate helpers ------------------------------------------------
 
     def test_authed_user_fails_closed(self):
@@ -433,21 +405,11 @@ class InternalHelperTests(AdversaryBase):
         self.assertIn(owner_b, flat)
         self.assertEqual(list(_walk_predicates([])), [])
 
-    def test_reject_tenant_inside_either(self):
-        """Tenant inside Either (or nested Either) must raise."""
-        with self.assertRaises(ImproperlyConfigured):
-            _reject_tenant_inside_either(Either(Tenant("brokerage"), Owner("a")))
-        with self.assertRaises(ImproperlyConfigured):
-            _reject_tenant_inside_either(
-                Either(Either(Tenant("brokerage"), Owner("a")), Owner("b"))
-            )
-
     def test_predicate_q_fails_closed_no_request(self):
-        """Tenant/Owner/Custom/Members/Group must fail-closed with no request."""
+        """Owner/Custom/Members/Group must fail-closed with no request."""
         for pred in (
-            Tenant("brokerage"),
             Owner("assigned_broker"),
-            Custom(q_func=lambda r, ur: Q(pk=1)),
+            Custom(q_func=lambda r, ur: Q(pk=1), write_validator=lambda d, i, r: []),
             Members(m2m_field="categories"),
             Group(field="brokerage", user_via="users"),
         ):
@@ -499,36 +461,6 @@ class InternalHelperTests(AdversaryBase):
         self.assertEqual(represent(Decimal("1E-2")), "0.01")
         self.assertEqual(represent(42), "42.00")
         self.assertIsNone(field_representation(SampleModel._meta.get_field("title")))
-
-    def test_build_type_coercers_silent_skip(self):
-        """Unknown / empty fields silently skipped."""
-        self.assertNotIn(
-            "nonexistent_field",
-            _build_type_coercers(SampleModel, ["title", "nonexistent_field"]),
-        )
-        self.assertEqual(_build_type_coercers(SampleModel, []), {})
-        # Decimal field IS picked up
-        self.assertIn(
-            "price", _build_type_coercers(CompiledSampleModel, ["price", "title"])
-        )
-
-    def test_build_fk_type_coercers_bogus(self):
-        """Bogus F-path doesn't crash; empty input returns {}."""
-        bogus = {"x_y": F("does_not_exist__no_field")}
-        self.assertNotIn("x_y", _build_fk_type_coercers(SampleModel, bogus))
-        self.assertEqual(_build_fk_type_coercers(SampleModel, {}), {})
-
-    def test_compile_m2m_spec_bad_inputs(self):
-        """non-m2m field / empty subfields / unknown subfield don't crash."""
-        # FK (not m2m) — accept any reasonable error
-        try:
-            spec = _compile_m2m_spec(SampleModel, "related", ["name"])
-            self.assert_no_victim_leak_value(spec)
-        except Exception:
-            pass
-        # unknown subfield: refused at compile time, not a 500 per request
-        with self.assertRaises(ImproperlyConfigured):
-            _compile_m2m_spec(CompiledArticle, "categories", ["nonexistent"])
 
     def test_resolve_tenant_model_inputs(self):
         """nonexistent / malformed / None / class — all handled."""
@@ -654,7 +586,13 @@ class InternalHelperTests(AdversaryBase):
                 Deal, Either(Owner("assigned_broker"), Owner("bogus"))
             )
         # Custom: not path-validated
-        _validate_predicate_paths(Deal, Custom(q_func=lambda r, ur: Q(bogus_field="x")))
+        _validate_predicate_paths(
+            Deal,
+            Custom(
+                q_func=lambda r, ur: Q(bogus_field="x"),
+                write_validator=lambda d, i, r: [],
+            ),
+        )
 
     def test_swagger_helpers_fail_closed(self):
         """invalid path / unknown model / unknown method / empty perms ->
@@ -779,133 +717,7 @@ class CompiledPathTests(AdversaryBase):
 
     # ---- FK annotation tampering -----------------------------------------
 
-    def test_fk_annotation_safe_paths(self):
-        """fk_annotations contains only configured paths, no sensitive
-        substring, no underscore-only output keys."""
-        plan = get_compiled_plan(CompiledArticle)
-        for output_key, f_expr in plan.fk_annotations.items():
-            self.assertNotIn("__", output_key)
-            self.assertNotIn("password", f_expr.name)
-            self.assertNotIn("secret_key", f_expr.name)
-            self.assertEqual(output_key, f_expr.name.replace("__", "_"))
-
-        # No FK annotation in CompiledSampleModel points at a tenant or victim
-        sample_plan = get_compiled_plan(CompiledSampleModel)
-        for output_key, f_expr in sample_plan.fk_annotations.items():
-            self.assertNotIn("brokerage", f_expr.name)
-            self.assertNotIn("victim", f_expr.name.lower())
-
-    def test_apply_to_queryset_unknown_or_empty_keys_drops_all(self):
-        """unknown / empty allowed_fk_keys -> active_fk == {}."""
-        plan = get_compiled_plan(CompiledArticle)
-        qs = CompiledArticle.objects.all()
-        for keys in ({"this_key_does_not_exist"}, set()):
-            _, active = plan.apply_to_queryset(qs, allowed_fk_keys=keys)
-            _, active_fk, _, _ = active
-            self.assertEqual(active_fk, {})
-
-    def test_evil_runtime_fk_annotation_blocked_by_view_layer(self):
-        """A plan with an evil fk_annotation IS applied if reached
-        directly, but the view layer's _filter_compiled_fk_annotations
-        gate (sensitive deny-list) trims it out."""
-        plan = get_compiled_plan(CompiledArticle)
-        original_fk = dict(plan.fk_annotations)
-        try:
-            plan.fk_annotations["evil"] = F("author__id")
-            # legacy: no allowed_fk_keys filter — annotation is applied
-            qs = CompiledArticle.objects.all()
-            _, active = plan.apply_to_queryset(qs, allowed_fk_keys=None)
-            _, active_fk, _, _ = active
-            self.assertIn("evil", active_fk)
-        finally:
-            plan.fk_annotations.clear()
-            plan.fk_annotations.update(original_fk)
-
-        # The view's gate rejects 'author_password' (sensitive deny-list)
-        evil_plan = CompiledQueryPlan(
-            model=CompiledArticle,
-            simple_fields=["id", "title"],
-            fk_annotations={"author_password": F("author__password")},
-            m2m_specs={},
-            property_fields={},
-            type_coercers={},
-            pk_field="id",
-            original_fields=["title"],
-        )
-
-        class FakeReq:
-            user = self.attacker
-            query_params = {}
-
-        vs = TurboDRFViewSet()
-        vs.model = CompiledArticle
-        try:
-            allowed = vs._filter_compiled_fk_annotations(evil_plan, FakeReq())
-        except Exception:
-            allowed = None
-        if isinstance(allowed, set):
-            self.assertNotIn("author_password", allowed)
-
-    def test_apply_to_queryset_readable_fields_filter(self):
-        """readable_fields filters simple_fields and dependent FKs."""
-        plan = get_compiled_plan(CompiledArticle)
-        qs = CompiledArticle.objects.all()
-        _, active = plan.apply_to_queryset(
-            qs, readable_fields={"title", "secret_field", "evil_field"}
-        )
-        active_simple, active_fk, _, _ = active
-        for f in active_simple:
-            self.assertNotIn("secret_field", f)
-            self.assertNotIn("evil_field", f)
-        # author_name FK dropped because base 'author' isn't readable
-        self.assertNotIn("author_name", active_fk)
-
     # ---- M2M spec tampering ----------------------------------------------
-
-    def test_m2m_spec_structure_and_filter(self):
-        """M2M spec has correct structure, target FK paths, configured
-        sub-fields only; per-nested filter excludes evil sub-fields."""
-        plan = get_compiled_plan(CompiledArticle)
-        spec = plan.m2m_specs["categories"]
-        self.assertIn("through_model", spec)
-        self.assertIn("source_fk", spec)
-        self.assertIn("target_fk", spec)
-        self.assertEqual(spec["related_model"], Category)
-        for sub_field, f_expr in spec["annotations"].items():
-            self.assertTrue(f_expr.name.startswith(spec["target_fk"] + "__"))
-        for sf in spec["sub_fields"]:
-            self.assertIn(sf, {"name", "description"})
-
-        # Inject an evil sub-field; allowed_m2m_subfields gate trims it
-        original_subs = list(spec["sub_fields"])
-        original_annots = dict(spec["annotations"])
-        try:
-            spec["sub_fields"].append("evil_field")
-            spec["annotations"]["evil_field"] = F("category__id")
-            qs = CompiledArticle.objects.all()
-            _, active = plan.apply_to_queryset(
-                qs, allowed_m2m_subfields={"categories": {"name"}}
-            )
-            _, _, active_m2m, _ = active
-            if "categories" in active_m2m:
-                self.assertNotIn("evil_field", active_m2m["categories"]["sub_fields"])
-                self.assertNotIn("evil_field", active_m2m["categories"]["annotations"])
-        finally:
-            spec["sub_fields"][:] = original_subs
-            spec["annotations"].clear()
-            spec["annotations"].update(original_annots)
-
-        # Empty allowed sub-fields drops the whole spec
-        _, active = plan.apply_to_queryset(
-            qs, allowed_m2m_subfields={"categories": set()}
-        )
-        _, _, active_m2m, _ = active
-        self.assertNotIn("categories", active_m2m)
-
-        # legacy: None allowed_m2m_subfields keeps configured M2Ms
-        _, active = plan.apply_to_queryset(qs, allowed_m2m_subfields=None)
-        _, _, active_m2m, _ = active
-        self.assertIn("categories", active_m2m)
 
     def test_m2m_post_process_groups_by_pk(self):
         """M2M merge groups rows by the correct article pk -> categories
@@ -999,63 +811,6 @@ class CompiledPathTests(AdversaryBase):
             r = self.client.get("/api/compiledsamplemodels/")
             self.assert_no_5xx(r, "disabled perms")
             self.assert_no_victim_leak(r)
-
-    def test_plan_introspection_no_sensitive_simple_fields(self):
-        """No simple_fields name contains sensitive substrings;
-        is_compiled() agrees with model annotations; module registry
-        doesn't bleed cross-model."""
-        plan = get_compiled_plan(CompiledArticle)
-        for f in plan.simple_fields:
-            for sensitive in ("password", "secret_key", "token", "session_key"):
-                self.assertNotIn(sensitive, f)
-        # _fk_base_field returns a string and doesn't crash
-        for output_key in plan.fk_annotations:
-            self.assertIsInstance(plan._fk_base_field(output_key), str)
-
-        sample_plan = get_compiled_plan(CompiledSampleModel)
-        article_plan = get_compiled_plan(CompiledArticle)
-        self.assertIsNot(sample_plan, article_plan)
-
-        for M in (Deal, BankAccount, Transaction):
-            self.assertFalse(is_compiled(M))
-        for M in (CompiledSampleModel, CompiledArticle):
-            self.assertTrue(is_compiled(M))
-
-    def test_apply_to_queryset_readable_fields_edges(self):
-        """None / empty / property-only readable_fields handled correctly."""
-        plan = get_compiled_plan(CompiledSampleModel)
-        qs = CompiledSampleModel.objects.all()
-
-        # None -> all configured fields present
-        _, active = plan.apply_to_queryset(qs, readable_fields=None)
-        active_simple, _, _, _ = active
-        for f in plan.simple_fields:
-            self.assertIn(f, active_simple)
-
-        # empty set -> nothing
-        _, active = plan.apply_to_queryset(qs, readable_fields=set())
-        active_simple, active_fk, _, _ = active
-        self.assertEqual(active_simple, [])
-        self.assertEqual(active_fk, {})
-
-        # property only -> property listed, simple field excluded
-        _, active = plan.apply_to_queryset(qs, readable_fields={"display_title"})
-        active_simple, _, _, active_props = active
-        self.assertIn("display_title", active_props)
-        self.assertNotIn("title", active_simple)
-
-    def test_apply_to_queryset_empty_data(self):
-        """Empty queryset / no data: no 5xx, no leak; post_process == []."""
-        plan = get_compiled_plan(CompiledArticle)
-        qs = CompiledArticle.objects.none()
-        compiled_qs, active = plan.apply_to_queryset(qs)
-        self.assertEqual(plan.post_process(list(compiled_qs), active), [])
-
-        CompiledArticle.objects.all().delete()
-        r = self.client.get("/api/compiledarticles/")
-        self.assert_no_5xx(r, "empty data")
-        if r.status_code == 200 and isinstance(r.data, dict):
-            self.assertEqual(r.data.get("data"), [])
 
 
 # ---------------------------------------------------------------------------
@@ -1497,7 +1252,6 @@ def _attach_capture(*logger_names):
 
 _TURBODRF_LOGGERS = (
     "turbodrf.predicates",
-    "turbodrf.compiler",
     "turbodrf.serializers",
     "turbodrf.router",
     "turbodrf.filter_backends",
@@ -1567,33 +1321,6 @@ class LoggingSecurityTests(AdversaryBase):
         for rec in cm.records:
             self.assertNotIn("\n[FAKE LOG]\n", rec.getMessage())
 
-    def test_unrestricted_custom_warning_default_safe_can_be_silenced(self):
-        """Default: warning emitted (loud-by-default catches the
-        accidental ``return Q()`` footgun). With
-        TURBODRF_LOG_UNRESTRICTED_CUSTOM=False: silent. Either way, no
-        request data leaks into log records."""
-        c = Custom(q_func=lambda r, u: Q())
-        rf = APIRequestFactory()
-        req = rf.post("/api/deals/", data={"title": VICTIM_SECRET_DEAL})
-        req.user = self.attacker
-
-        # ON (default)
-        with self.assertLogs("turbodrf.predicates", level="WARNING") as cm:
-            c.q(req, {"underwriter"})
-        _assert_no_secrets_in_records(self, cm.records)
-
-        # OFF (explicit opt-out)
-        with override_settings(TURBODRF_LOG_UNRESTRICTED_CUSTOM=False):
-            handler, detach = _attach_capture("turbodrf.predicates")
-            try:
-                c.q(req, set())
-            finally:
-                detach()
-            self.assertEqual(
-                [r for r in handler.records if r.levelname == "WARNING"],
-                [],
-            )
-
     def test_debug_mode_5xx_no_secret_no_traceback(self):
         """Both DEBUG=True and DEBUG=False: no secret in body, no
         traceback in DEBUG=False, no internal class names, no auth
@@ -1636,7 +1363,6 @@ class LoggingSecurityTests(AdversaryBase):
         for sub in (
             "Traceback (most recent call last)",
             "TurboDRFViewSet",
-            "CompiledQueryPlan",
         ):
             self.assertNotIn(sub, body)
 
@@ -1818,9 +1544,7 @@ class LoggingSecurityTests(AdversaryBase):
     def test_log_format_string_contracts(self):
         """Source-level checks: views.py has no logger calls; serializers
         uses DEBUG-level for stripping; keycloak uses %r for role names;
-        compiler info log doesn't dump rows; router warning doesn't
-        reference request.user/data."""
-        from turbodrf import compiler as compiler_mod
+        router warning doesn't reference request.user/data."""
         from turbodrf import router as router_mod
         from turbodrf import serializers as serializers_mod
         from turbodrf import views as views_mod
@@ -1836,9 +1560,6 @@ class LoggingSecurityTests(AdversaryBase):
 
         kc_src = open(keycloak_mod.__file__).read()
         self.assertIn("Keycloak role %r has no entry", kc_src)
-
-        compiler_src = open(compiler_mod.__file__).read()
-        self.assertIn("Compiled read path for", compiler_src)
 
         router_src = open(router_mod.__file__).read()
         self.assertNotIn("request.user", router_src)
@@ -2090,7 +1811,8 @@ class ConcurrencyTests(AdversaryBase):
 
         # Either(Owner, Custom) — non-trivial Q
         either = Either(
-            Owner("assigned_broker", bypass=[]), Custom(lambda r, ur: Q(pk__in=[]))
+            Owner("assigned_broker", bypass=[]),
+            Custom(lambda r, ur: Q(pk__in=[]), write_validator=lambda d, i, r: []),
         )
         for _ in range(20):
             self.assertNotEqual(either.q(req, {"underwriter"}), Q())
@@ -2127,25 +1849,6 @@ class ConcurrencyTests(AdversaryBase):
             )
 
     # ---- Compiled plan registry ------------------------------------------
-
-    def test_compiled_plan_concurrent_get_returns_same_instance(self):
-        """get_compiled_plan from many threads returns the same plan
-        instance (no rebuild race)."""
-        plans = []
-
-        def get():
-            try:
-                plans.append(get_compiled_plan(CompiledSampleModel))
-            finally:
-                _close_thread_db()
-
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            list(as_completed([ex.submit(get) for _ in range(16)]))
-
-        non_none = [p for p in plans if p is not None]
-        self.assertGreater(len(non_none), 0)
-        first = non_none[0]
-        self.assertTrue(all(p is first for p in non_none))
 
     # ---- Cache backend / timeout edges -----------------------------------
 
@@ -2817,7 +2520,7 @@ class IntegrationTests(AdversaryBase):
         request = MagicMock()
         request.user = u
         with override_settings(TURBODRF_TENANT_USER_FIELD="brokerage"):
-            self.assertIsNotNone(Tenant("brokerage").q(request, set()))
+            self.assertIsNotNone(pred_mod.tenant_q("brokerage", request))
 
         # Method (not property) -> coerced to None
         class MethodUser:
@@ -3098,7 +2801,15 @@ class ScopedTargetQuerysetFailClosed(AdversaryBase):
         from turbodrf.predicates import get_predicates, register_predicates
 
         orig = list(get_predicates(RelatedModel))
-        register_predicates(RelatedModel, [Custom(q_func=lambda r, ur: Q(pk__in=[]))])
+        register_predicates(
+            RelatedModel,
+            [
+                Custom(
+                    q_func=lambda r, ur: Q(pk__in=[]),
+                    write_validator=lambda d, i, r: [],
+                )
+            ],
+        )
         try:
             self.assertEqual(self._scoped(RelatedModel, None).count(), 0)
         finally:
@@ -3110,7 +2821,13 @@ class ScopedTargetQuerysetFailClosed(AdversaryBase):
         orig = list(get_predicates(RelatedModel))
         marker = RelatedModel.objects.create(name="scoped_only", description="x")
         register_predicates(
-            RelatedModel, [Custom(q_func=lambda r, ur: Q(name="scoped_only"))]
+            RelatedModel,
+            [
+                Custom(
+                    q_func=lambda r, ur: Q(name="scoped_only"),
+                    write_validator=lambda d, i, r: [],
+                )
+            ],
         )
         try:
             pks = set(

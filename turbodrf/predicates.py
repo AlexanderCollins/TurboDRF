@@ -3,7 +3,7 @@ Predicate-based row-level access control for TurboDRF.
 
 Predicates declare visibility rules per model. They:
 - Produce Django Q objects for read filtering (get_queryset / get_object)
-- Auto-fill mandatory fields on create (tenant FK)
+- Auto-fill owner columns on create
 - Validate that writes don't violate the predicate
 
 Stack with AND. Use Either(...) for OR. Multi-role users are OR'd across roles
@@ -72,6 +72,35 @@ def _no_match_q():
     return Q(pk__in=[])
 
 
+def tenant_q(tenant_field, request):
+    """The tenant boundary for ``tenant_field``: rows in the caller's tenant.
+    ``Q()`` without a ``tenant_field``; no rows without a request, an
+    authenticated user or a tenant (fail closed)."""
+    if not tenant_field:
+        return Q()
+    user = _authed_user(request)
+    tenant = get_user_tenant(user) if user is not None else None
+    if tenant is None:
+        return _no_match_q()
+    return Q(**{tenant_field: tenant})
+
+
+def predicates_q(predicates, request):
+    """The AND of ``predicates``' read rules for the caller. ``Q()`` without
+    predicates; no rows without a request (fail closed)."""
+    if not predicates:
+        return Q()
+    if request is None:
+        return _no_match_q()
+    from .backends import get_user_roles
+
+    roles = set(get_user_roles(getattr(request, "user", None)))
+    q = Q()
+    for pred in predicates:
+        q &= pred.q(request, roles)
+    return q
+
+
 def _role_set(roles, what):
     """``roles`` as a set of role names. A bare string is one role, not the set
     of its characters (``bypass='admin'`` would have bypassed for roles 'a',
@@ -104,8 +133,6 @@ class Predicate:
         validate_write(validated_data, instance, request) → list[str] errors
     """
 
-    mandatory = False
-
     def q(self, request, user_roles):
         return Q()
 
@@ -113,57 +140,6 @@ class Predicate:
         return validated_data
 
     def validate_write(self, validated_data, instance, request):
-        return []
-
-
-class Tenant(Predicate):
-    """Mandatory tenant boundary.
-
-    Filters by request.user.<TURBODRF_TENANT_USER_FIELD>. Auto-fills on create
-    (direct columns only). Rejects PATCH/POST that would set the tenant FK to
-    a different value. `field` accepts `__`-paths for chained tenancy.
-    """
-
-    mandatory = True
-
-    def __init__(self, field):
-        self.field = field
-
-    def q(self, request, user_roles):
-        user = _authed_user(request)
-        if user is None:
-            return _no_match_q()
-        tenant = get_user_tenant(user)
-        if tenant is None:
-            return _no_match_q()
-        return Q(**{self.field: tenant})
-
-    def auto_fill(self, validated_data, request):
-        if "__" in self.field:
-            return validated_data
-        user = _authed_user(request)
-        if user is None:
-            return validated_data
-        tenant = get_user_tenant(user)
-        if tenant is None:
-            return validated_data
-        # Always overwrite — never trust client-provided tenant
-        validated_data = dict(validated_data)
-        validated_data[self.field] = tenant
-        return validated_data
-
-    def validate_write(self, validated_data, instance, request):
-        if "__" in self.field or self.field not in validated_data:
-            return []
-        user = _authed_user(request)
-        if user is None:
-            return [f"Cannot set {self.field}: no authenticated user."]
-        provided_pk = getattr(
-            validated_data[self.field], "pk", validated_data[self.field]
-        )
-        expected_pk = getattr(get_user_tenant(user), "pk", get_user_tenant(user))
-        if provided_pk != expected_pk:
-            return [f"Cannot set {self.field} to a different tenant."]
         return []
 
 
@@ -287,20 +263,30 @@ class Either(Predicate):
 class Custom(Predicate):
     """Escape hatch for arbitrary within-tenant predicates.
 
-    The Tenant boundary is applied separately as a setting and is NOT
+    The tenant boundary is applied separately as a setting and is NOT
     bypassable — so even if `q_func` returns Q() (no within-tenant
-    restriction), tenant isolation still holds. The previous
-    `unrestricted_ok` flag was removed because it solved a problem (Tenant
-    inside the predicate algebra) that no longer exists in this design.
+    restriction), tenant isolation still holds.
 
-    A warning is logged whenever a Custom predicate returns an empty Q, to
-    surface accidental Q() returns; set TURBODRF_LOG_UNRESTRICTED_CUSTOM=False
-    to silence it.
+    ``q_func`` filters reads only, so ``write_validator`` is required: a
+    function ``(validated_data, instance, request) -> [errors]`` that applies
+    the rule to writes. Pass ``lambda d, i, r: []`` to declare that the rule
+    doesn't restrict writes (other predicates, such as Owner, still apply).
     """
 
     def __init__(self, q_func, write_validator=None, auto_filler=None):
         if not callable(q_func):
             raise ImproperlyConfigured("Custom requires a callable q_func.")
+        if not callable(write_validator):
+            qf_name = getattr(q_func, "__name__", repr(q_func))
+            raise ImproperlyConfigured(
+                f"Custom(q_func={qf_name}) needs a write_validator. A q_func "
+                f"filters reads only: without a write_validator any caller "
+                f"with the model-level write permission can create or move "
+                f"rows outside the rule. Pass write_validator=my_check (return "
+                f"a list of error strings to block, [] to allow), or "
+                f"write_validator=lambda d, i, r: [] if the rule shouldn't "
+                f"restrict writes."
+            )
         self.q_func = q_func
         self.write_validator = write_validator
         self.auto_filler = auto_filler
@@ -309,20 +295,10 @@ class Custom(Predicate):
         if not request:
             return _no_match_q()
         result = self.q_func(request, user_roles)
-        # Optional runtime warning if the q_func returned an empty Q.
-        # Tenant isolation still holds (separate layer), but this is
-        # usually a sign of a bug in the q_func.
-        if not result.children:
-            from django.conf import settings as _s
-
-            if getattr(_s, "TURBODRF_LOG_UNRESTRICTED_CUSTOM", True):
-                import logging
-
-                logging.getLogger(__name__).warning(
-                    "Custom predicate returned an empty Q (no within-tenant "
-                    "restriction). Tenant isolation still applies but this "
-                    "may indicate a bug in q_func."
-                )
+        if not isinstance(result, Q):
+            raise TypeError(
+                f"Custom q_func must return a Q, not {type(result).__name__}."
+            )
         return result
 
     def auto_fill(self, validated_data, request):
@@ -331,9 +307,7 @@ class Custom(Predicate):
         return validated_data
 
     def validate_write(self, validated_data, instance, request):
-        if self.write_validator:
-            return self.write_validator(validated_data, instance, request)
-        return []
+        return self.write_validator(validated_data, instance, request)
 
 
 # ---------------------------------------------------------------------------
@@ -431,13 +405,8 @@ def parse_config(config):
       - 'owner_field': str|list     → one Owner predicate (a list → over
         every column)
       - 'bypass_owner_roles': list  → applied to Owner predicates
-      - 'visibility': [Predicate..] → power form. Tenant() inside is
-        EXTRACTED to the tenant_field setting (with deprecation warning).
-        Tenant() inside an Either raises — would let OR-composition
-        escape the tenant boundary.
+      - 'visibility': [Predicate..] → power form, within-tenant only
     """
-    import warnings
-
     if not isinstance(config, dict):
         raise ImproperlyConfigured(
             f"turbodrf() must return a dict; got {type(config).__name__}"
@@ -500,7 +469,6 @@ def parse_config(config):
                     f"'visibility' items must be Predicate instances; "
                     f"got {type(p).__name__}"
                 )
-            _reject_tenant_inside_either(p)
 
         # Honor an explicit tenant_field setting when present.
         tf = config.get("tenant_field")
@@ -509,32 +477,7 @@ def parse_config(config):
                 raise ImproperlyConfigured("'tenant_field' must be a string.")
             tenant_field = tf
 
-        # Extract any top-level Tenant predicates into tenant_field setting.
-        # Still emits a deprecation warning so the canonical form is
-        # `tenant_field=...` + within-tenant `visibility=[...]`, but no
-        # longer dead-ends users when they follow the warning's advice.
-        cleaned = []
-        for p in visibility:
-            if isinstance(p, Tenant):
-                if tenant_field is not None and tenant_field != p.field:
-                    raise ImproperlyConfigured(
-                        f"Multiple tenant fields declared: 'tenant_field' "
-                        f"setting is {tenant_field!r} but Tenant() inside "
-                        f"'visibility' uses {p.field!r}. Use a single "
-                        f"'tenant_field' setting."
-                    )
-                tenant_field = p.field
-                warnings.warn(
-                    "Tenant() inside 'visibility' is deprecated. Use the "
-                    "'tenant_field' setting instead — Tenant is a mandatory "
-                    "boundary, not a composable predicate. The "
-                    "'tenant_field' setting can sit alongside 'visibility'.",
-                    DeprecationWarning,
-                    stacklevel=3,
-                )
-            else:
-                cleaned.append(p)
-        return tenant_field, cleaned
+        return tenant_field, list(visibility)
 
     # Sugar form
     tf = config.get("tenant_field")
@@ -558,27 +501,6 @@ def parse_config(config):
             raise ImproperlyConfigured("'owner_field' must be str or list[str].")
 
     return tenant_field, predicates
-
-
-def _reject_tenant_inside_either(predicate):
-    """Walk the predicate tree; raise if Tenant appears inside Either/Custom.
-
-    Tenant inside Either ORs with sibling predicates that may collapse to
-    Q() for bypass roles, which would erase the tenant boundary entirely.
-    Tenant must always be at the top level — and ideally not in the
-    visibility list at all; use the tenant_field setting.
-    """
-    if isinstance(predicate, Either):
-        for child in predicate.predicates:
-            if isinstance(child, Tenant):
-                raise ImproperlyConfigured(
-                    "Tenant() cannot appear inside Either(). The tenant "
-                    "boundary is mandatory and must not OR-compose with "
-                    "discretionary predicates (would create cross-tenant "
-                    "escape for bypass roles). Use the 'tenant_field' "
-                    "setting at the top level instead."
-                )
-            _reject_tenant_inside_either(child)
 
 
 def has_tenancy_declaration(config):
@@ -607,8 +529,7 @@ def has_tenancy_declaration(config):
 def _always_restricts(predicate):
     """True if ``predicate`` restricts every caller to rows tied to them,
     whatever their roles. ``Custom`` (and unknown subclasses) count: their
-    rule is the developer's. A top-level ``Tenant`` becomes the tenant
-    boundary."""
+    rule is the developer's."""
     if isinstance(predicate, Owner):
         return not predicate.bypass
     if isinstance(predicate, Conditional):
@@ -675,87 +596,6 @@ def clear_predicates():
     """Used in tests to reset between runs."""
     _model_predicates.clear()
     _model_tenant_fields.clear()
-
-
-def validate_predicate_write_safety(model):
-    """Refuse to boot if a Custom predicate is registered without an
-    explicit ``write_validator``.
-
-    A ``Custom``'s ``q_func`` filters reads only. Without a
-    ``write_validator`` a write isn't checked against it: a caller with the
-    model-level write permission can create rows, or move visible rows,
-    outside the rule (as with ``Members`` / ``Group``). Inside
-    ``Either(Owner, Custom)`` this no longer weakens ``Owner`` — ``Either``
-    runs every child's check — but the Custom's own rule still isn't applied
-    to writes, and the developer should say so.
-
-    Detection is fully static: walk every model's predicate stack
-    (recursing into Either), find any ``Custom`` whose
-    ``write_validator`` is ``None``, and refuse to start.
-
-    Resolution (raised in the error message):
-
-      * Pass ``write_validator=my_check`` to enforce writes for real.
-      * Pass ``write_validator=lambda d, i, r: []`` to declare that this
-        rule doesn't restrict writes (other predicates still apply).
-      * Set ``TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE = True`` to bypass the
-        gate (logs a warning; for migrations only).
-    """
-    from django.conf import settings
-    from django.core.exceptions import ImproperlyConfigured
-
-    allow_unsafe = getattr(settings, "TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE", False)
-    predicates = get_predicates(model)
-    if not predicates:
-        return
-
-    offending = list(_walk_unsafe_custom(predicates))
-    if not offending:
-        return
-
-    descriptions = "\n".join(f"  • {pred_repr}" for pred_repr in offending)
-    message = (
-        f"{model.__name__} has Custom predicate(s) without an explicit "
-        f"write_validator:\n{descriptions}\n\n"
-        f"A Custom's q_func filters reads only. Without a write_validator, "
-        f"writes aren't checked against it: any caller with the model-level "
-        f"write permission can create rows, or move rows, outside the "
-        f"rule.\n\n"
-        f"Fix one of:\n"
-        f"  • Pass write_validator=my_check to enforce the rule on writes — "
-        f"return a list of error strings to block, [] to allow. Inside "
-        f"Either(...) every child's check runs, and any error blocks the "
-        f"write.\n"
-        f"  • Pass write_validator=lambda d, i, r: [] if this rule shouldn't "
-        f"restrict writes (other predicates, such as Owner, still apply).\n"
-        f"  • Set TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE=True to bypass "
-        f"this gate (NOT recommended; logs a warning)."
-    )
-
-    if allow_unsafe:
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "TURBODRF_ALLOW_UNSAFE_CUSTOM_WRITE=True — bypassing Custom "
-            "predicate write-safety gate. %s",
-            message,
-        )
-        return
-
-    raise ImproperlyConfigured(message)
-
-
-def _walk_unsafe_custom(predicates, path=""):
-    """Yield a human description of every Custom-without-write_validator
-    in a predicate stack. Recurses into Either."""
-    for pred in predicates:
-        if isinstance(pred, Either):
-            yield from _walk_unsafe_custom(
-                pred.predicates, path=f"{path}Either(...) → "
-            )
-        elif isinstance(pred, Custom) and pred.write_validator is None:
-            qf_name = getattr(pred.q_func, "__name__", repr(pred.q_func))
-            yield f"{path}Custom(q_func={qf_name})"
 
 
 _MODEL_ACTIONS = {"read", "create", "update", "delete"}
