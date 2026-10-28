@@ -175,8 +175,9 @@ class Owner(Predicate):
 
     Writes (non-bypass callers): an owner column can be set only to the caller,
     can't be cleared, and can't be changed while it holds another user — so a
-    co-owner can't take the row over. Only direct columns are checked; a
-    ``__`` path is a read rule.
+    co-owner can't take the row over. A ``__`` path can't be checked on the
+    submitted values, so it's checked on the saved row: the caller must still
+    see it, or the write is rolled back.
     """
 
     def __init__(self, field, bypass=None):
@@ -187,6 +188,7 @@ class Owner(Predicate):
             if not self.fields:
                 raise ImproperlyConfigured("Owner requires at least one field.")
         self.bypass = _role_set(bypass, "Owner bypass")
+        self.verify_after_write = any("__" in f for f in self.fields)
 
     def q(self, request, user_roles):
         if user_roles and (user_roles & self.bypass):
@@ -335,8 +337,8 @@ class Custom(Predicate):
 
 
 # ---------------------------------------------------------------------------
-# Advanced predicates — kept importable but not surfaced in main docs.
-# Use these when the sugar form + Tenant/Owner/Either/Custom doesn't fit.
+# Advanced predicates (docs/tenancy.md, "Advanced predicates").
+# Use these when the sugar form + Owner/Either/Custom doesn't fit.
 # ---------------------------------------------------------------------------
 
 

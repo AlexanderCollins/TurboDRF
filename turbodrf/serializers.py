@@ -77,7 +77,7 @@ def _in_caller_tenant(value, target, tenant_model, tenant_user_field, tenant_pk)
     of the tenant model must be the caller's tenant; a row carrying
     ``TURBODRF_TENANT_USER_FIELD`` (typically User) must carry the caller's
     tenant. Other rows have no tenant of their own to compare."""
-    if target is tenant_model:
+    if _same_model(target, tenant_model):
         tenant = value
     elif hasattr(target, tenant_user_field):
         tenant = getattr(value, tenant_user_field, None)
@@ -106,11 +106,12 @@ def _co_tenant_queryset(host, queryset, request):
         return queryset
     tenant_pk = _caller_tenant_pk(request)
     tenant_model = _tenant_model(host, host_tenant_field)
-    if target is not tenant_model and not hasattr(target, tenant_user_field):
+    is_tenant = _same_model(target, tenant_model)
+    if not is_tenant and not hasattr(target, tenant_user_field):
         return queryset
     if tenant_pk is None:
         return queryset.none()
-    if target is tenant_model:
+    if is_tenant:
         return queryset.filter(pk=tenant_pk)
     try:
         target._meta.get_field(tenant_user_field)
@@ -271,7 +272,7 @@ def _check_fk_injection_writes(model, validated_data, request, tenant_field):
     """
     from django.conf import settings as django_settings
 
-    from .predicates import get_predicates
+    from .predicates import get_predicates, get_tenant_field
     from .validation import scoped_target_queryset
 
     fk_errors = {}
@@ -307,12 +308,18 @@ def _check_fk_injection_writes(model, validated_data, request, tenant_field):
         # Co-tenant check, even when the related model has no predicates
         # (typical for User). Unified message (identical to the not-visible
         # case) so the error can't be used as a cross-tenant PK existence
-        # oracle.
-        if co_tenant and not all(
-            _in_caller_tenant(
-                v, field.related_model, tenant_model, tenant_user_field, tenant_pk
+        # oracle. A target with a tenant_field of its own was just checked
+        # against the caller's tenant by its scope (one query, not one per
+        # value).
+        if (
+            co_tenant
+            and not get_tenant_field(field.related_model)
+            and not all(
+                _in_caller_tenant(
+                    v, field.related_model, tenant_model, tenant_user_field, tenant_pk
+                )
+                for v in values
             )
-            for v in values
         ):
             fk_errors[field.name] = message
     return fk_errors
@@ -610,7 +617,9 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         browsable API's dropdowns) are the rows the caller can reference: those
         visible through the target's own endpoint and, for a tenant-scoped
         host, in the caller's tenant. Without a request (programmatic use)
-        there is no caller to scope to."""
+        there is no caller to scope to. A dropdown option is labelled with the
+        value the field renders, not ``str(row)``, which can show columns of
+        the target the caller can't read."""
         fields = super().get_fields()
         if self.instance is not None:
             pk_name = self.Meta.model._meta.pk.name
@@ -622,6 +631,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                 relation = getattr(field, "child_relation", field)
                 if isinstance(relation, RelatedField) and relation.queryset is not None:
                     relation.queryset = self._referenceable(relation.queryset, request)
+                    relation.display_value = relation.to_representation
         return fields
 
     def _referenceable(self, queryset, request):
@@ -947,10 +957,8 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         from .validation import build_traversal_scope_q, scoped_target_queryset
 
         request = self.context.get("request")
-        queryset = target._default_manager.all()
         scoped = scoped_target_queryset(target, request)
-        if scoped is not None:
-            queryset = queryset.filter(pk__in=scoped.values("pk"))
+        queryset = target._default_manager.all() if scoped is None else scoped
 
         hops = {}  # a sub-path's relation prefix -> its visibility alias, or None
         annotations = {}
@@ -1335,8 +1343,12 @@ class TurboDRFSerializerFactory:
 
         # Add base fields for nested fields if not already present
         # This ensures FK id fields are included (e.g., 'author' for 'author__name')
+        from .validation import is_reverse_one_to_one
+
         for base_field in nested_fields:
-            if base_field not in simple_fields:
+            if base_field not in simple_fields and not is_reverse_one_to_one(
+                model, base_field
+            ):
                 simple_fields.append(base_field)
 
         # Split out model @property / method fields — they can't live in

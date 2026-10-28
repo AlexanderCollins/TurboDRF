@@ -98,7 +98,8 @@ is a class attribute on the model, not a key.
 
 `tenant_field` must be a chain of forward foreign keys / one-to-ones, named
 by field (`workspace`, not `workspace_id`), that ends at
-`TURBODRF_TENANT_MODEL`. `owner_field` alone doesn't count as a tenancy
+`TURBODRF_TENANT_MODEL`; the last one must reference the tenant's primary key
+(no `to_field`). `owner_field` alone doesn't count as a tenancy
 decision. Nor does a `visibility` list without a `tenant_field`, unless one
 of its predicates restricts every caller: an `Owner` without bypass roles,
 `Members`, `Group` or `Custom` (an `Either` only if all its children do).
@@ -247,8 +248,9 @@ Several owner columns: use `Owner(['author', 'reviewer'])` (or a list
 
 How `Either` treats writes: every child's write check must pass. `Owner`'s
 check applies to every writer without a bypass role: they can't set an owner
-column to another user, or change one that holds another user. `Custom`
-adds its `write_validator`; `Members`, `Group` and `Conditional` add none.
+column to another user, or change one that holds another user. An `Owner`
+over a `__` path (`Owner('project__owner')`) is checked on the saved row
+instead: the writer must still see it. `Custom` adds its `write_validator`; `Members`, `Group` and `Conditional` add none.
 On create, `Either` fills a single-column `Owner` child's column with the
 caller.
 

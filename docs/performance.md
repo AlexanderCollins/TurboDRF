@@ -36,6 +36,21 @@ The number of queries per page doesn't depend on how many rows the page has: a `
 - Browsable API
 - Models whose list fields the compiled path can't render the way the serializer does: a reverse relation, a nested path through a reverse FK (or through an M2M below the first hop), a nested `@property` path, or a field type with no DRF field to render it. `python manage.py turbodrf_check` reports which field and why.
 
+## Indexes for tenant-scoped lists
+
+A list on a tenant-scoped model filters by the tenant FK and sorts by the model's `Meta.ordering` (or the primary key when it has none). The index Django creates on the FK doesn't cover the sort, so on a large tenant the database walks the whole sort index to find one page. Add a composite index that leads with the tenant FK:
+
+```python
+class Project(models.Model, TurboDRFMixin):
+    workspace = models.ForeignKey('accounts.Workspace', on_delete=models.CASCADE)
+    ...
+
+    class Meta:
+        indexes = [models.Index(fields=['workspace', 'id'])]
+```
+
+The database then reads one page of the tenant's rows from the index, already in order. If the model has a `Meta.ordering`, or clients often sort with `?ordering=`, index `['workspace', <that field>]` as well.
+
 ## Fast JSON rendering
 
 TurboDRF auto-detects the fastest available JSON library:

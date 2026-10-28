@@ -149,8 +149,8 @@ class TurboDRFMixin:
                   Required when TURBODRF_REQUIRE_TENANCY is True and no
                   tenant_field / visibility is declared.
                 - 'visibility' (list[Predicate]): Power form. A list of
-                  Predicate instances (Tenant, Owner, Members, Group,
-                  Conditional, Either, Custom) that compose with AND.
+                  Predicate instances (Owner, Members, Group, Conditional,
+                  Either, Custom) that compose with AND.
                   Use this when sugar form (tenant_field/owner_field) doesn't
                   fit the access pattern.
                 - 'searchable_fields' (list[str]): Field names (or '__'-paths)
