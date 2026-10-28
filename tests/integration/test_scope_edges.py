@@ -25,6 +25,7 @@ from tests.test_app.models import (
     Transaction,
 )
 from turbodrf.predicates import (
+    Custom,
     Owner,
     _model_predicates,
     _model_tenant_fields,
@@ -244,3 +245,32 @@ class TestReverseOneToOneBase(TestCase):
         for row in [*rows, detail]:
             self.assertNotIn("twin_row", row)
             self.assertIn("name", row)
+
+
+class TestExpressionValueAcrossToMany(TestCase):
+    """A predicate whose value crosses a to-many relation (an F() over
+    ``watchers``) joins one row per related row: the scope must still list
+    each row once."""
+
+    def test_target_rows_are_not_repeated(self):
+        from django.db.models import F, Q
+
+        from tests.test_app.models import ScopeBoard
+        from turbodrf.validation import scoped_target_queryset
+
+        cache.clear()
+        _test_user_brokerages.clear()
+        firm = Brokerage.objects.create(name="A")
+        user = User.objects.create_user(username="w")
+        set_test_brokerage(user, firm)
+        board = ScopeBoard.objects.create(title="b", brokerage=firm, owner=user)
+        board.watchers.add(
+            user, *(User.objects.create_user(username=f"w{i}") for i in range(2))
+        )
+        every_watcher = Custom(
+            q_func=lambda r, roles: Q(pk__lte=F("watchers__pk") + 10**9),
+            write_validator=lambda d, i, r: [],
+        )
+        with _Predicates(ScopeBoard, [every_watcher]):
+            rows = scoped_target_queryset(ScopeBoard, SimpleNamespace(user=user))
+            self.assertEqual(list(rows.values_list("pk", flat=True)), [board.pk])
