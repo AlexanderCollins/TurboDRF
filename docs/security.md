@@ -8,7 +8,8 @@ Endpoints require authentication unless `public_access: True` is explicitly set.
 > It removes every permission check, authentication included: anonymous
 > callers can create, update and delete through the generated endpoints,
 > and read any model that isn't row-scoped. Never set it in a deployed
-> environment.
+> environment. With `DEBUG = False`, `manage.py check` warns
+> (`turbodrf.W002`).
 
 `public_access: True` gives anonymous callers model-level read (GET, HEAD,
 OPTIONS) and nothing more. Field rules still bind them: a field that any role
@@ -37,7 +38,7 @@ remove the defaults.
 
 The deny-list applies in every permission mode, `TURBODRF_DISABLE_PERMISSIONS`
 and `TURBODRF_USE_DEFAULT_PERMISSIONS` included: to list and detail responses
-on both read paths (including `fields: "__all__"`), filters, search, ordering,
+(including `fields: "__all__"`), filters, search, ordering,
 OPTIONS metadata and the OpenAPI schema.
 
 ### Per-model `sensitive_fields`

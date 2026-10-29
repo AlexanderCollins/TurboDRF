@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.3 — Warn on disabled permissions
+
+- `manage.py check` warns (`turbodrf.W002`) when `TURBODRF_DISABLE_PERMISSIONS`
+  is on with `DEBUG = False`: it lets anonymous callers create, update and
+  delete, and is for local development only.
+- Docs: the `TURBODRF_ROLES` default is `{}` (since 0.8.2), and responses have
+  one read path.
+
 ## 0.8.2 — One read path
 
 Lists are served by the serializer path only. The compiled `.values()` list
