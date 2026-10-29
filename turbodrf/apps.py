@@ -29,6 +29,26 @@ def check_docs_dependencies(app_configs=None, **kwargs):
     ]
 
 
+def check_permissions_enabled(app_configs=None, **kwargs):
+    """Warn when TURBODRF_DISABLE_PERMISSIONS is on outside DEBUG: it lets
+    anonymous callers create, update and delete through every generated
+    endpoint, and is for local development only."""
+    if settings.DEBUG or not getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False):
+        return []
+    return [
+        checks.Warning(
+            "TURBODRF_DISABLE_PERMISSIONS is True with DEBUG off: anonymous "
+            "callers can create, update and delete through every TurboDRF "
+            "endpoint.",
+            hint=(
+                "It's for local development only. Remove it from deployed "
+                "settings and give users roles (docs/permissions.md)."
+            ),
+            id="turbodrf.W002",
+        )
+    ]
+
+
 class TurboDRFConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "turbodrf"
@@ -39,6 +59,7 @@ class TurboDRFConfig(AppConfig):
         Perform initialization when Django starts.
         """
         checks.register(check_docs_dependencies)
+        checks.register(check_permissions_enabled, checks.Tags.security)
 
         # Register every TurboDRF model's tenant boundary and predicates now,
         # not when the URLconf first builds a router: FK-injection checks and

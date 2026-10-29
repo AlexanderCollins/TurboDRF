@@ -1,5 +1,5 @@
 {
-  "turbodrf_version": "0.8.2",
+  "turbodrf_version": "0.8.3",
   "users": {
     "alice": {
       "role": "admin",
