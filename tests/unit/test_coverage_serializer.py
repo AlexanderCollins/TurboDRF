@@ -656,6 +656,25 @@ class TestTurboDRFAppConfig(TestCase):
             with override_settings(TURBODRF_ENABLE_DOCS=False):
                 self.assertEqual(check_docs_dependencies(), [])
 
+    def test_permissions_check_warns_when_disabled_outside_debug(self):
+        """TURBODRF_DISABLE_PERMISSIONS opens every endpoint to anonymous
+        writes, so a deployed (DEBUG off) settings file with it warns."""
+        from django.core.checks.registry import registry
+
+        from turbodrf.apps import check_permissions_enabled
+
+        self.assertIn(
+            check_permissions_enabled,
+            registry.get_checks(include_deployment_checks=True),
+        )
+        with override_settings(DEBUG=False):
+            self.assertEqual(check_permissions_enabled(), [])
+            with override_settings(TURBODRF_DISABLE_PERMISSIONS=True):
+                messages = check_permissions_enabled()
+                self.assertEqual([m.id for m in messages], ["turbodrf.W002"])
+        with override_settings(DEBUG=True, TURBODRF_DISABLE_PERMISSIONS=True):
+            self.assertEqual(check_permissions_enabled(), [])
+
     @override_settings(TURBODRF_ENABLE_DOCS=False)
     def test_ready_skips_yasg_when_docs_disabled(self):
         """ready() skips drf_yasg install when TURBODRF_ENABLE_DOCS=False."""
