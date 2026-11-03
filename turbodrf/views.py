@@ -102,6 +102,14 @@ def _select_configured_fields(fields, wanted):
     ]
 
 
+def _expression_inside(value):
+    """True for a list, tuple or set (an ``__in`` or ``__range`` value) that
+    holds an expression, such as ``F()``: it reads columns like one."""
+    return isinstance(value, (list, tuple, set, frozenset)) and any(
+        hasattr(item, "resolve_expression") for item in value
+    )
+
+
 class RowsMatching(Subquery):
     """An ``__in`` value: the pks of the rows one lookup matches, built from a
     plain lookup and value, so it refers to nothing outside itself."""
@@ -128,8 +136,8 @@ def _q_spans_multivalued(model, q):
         if type(value) is F:
             if _to_many_prefix(model, value.name):
                 return True
-        elif hasattr(value, "resolve_expression") and not isinstance(
-            value, RowsMatching
+        elif _expression_inside(value) or (
+            hasattr(value, "resolve_expression") and not isinstance(value, RowsMatching)
         ):
             return True
         if _to_many_prefix(model, child[0]):
@@ -160,9 +168,11 @@ def _to_many_prefix(model, path):
 
 def _leaves(q):
     """The ``(lookup, value)`` children of ``q`` at any depth, or ``None`` if
-    one isn't such a pair (an expression)."""
+    one isn't such a pair (an expression) or a node is an XOR."""
     from django.db.models import Q
 
+    if q.connector == "XOR":
+        return None  # its meaning changes when its operands move apart
     leaves = []
     for child in q.children:
         if isinstance(child, Q):
@@ -198,8 +208,10 @@ def without_to_many_joins(model, q):
 
     ``None`` when that could change which rows ``q`` matches: two lookups
     through the same relation share one JOIN in a ``filter()`` (one related
-    row must match both), and an expression can't be inspected. Only a plain
-    ``F()`` on a single-valued path, or a ``RowsMatching``, is kept."""
+    row must match both), an XOR's meaning depends on its operands staying
+    together, and an expression can't be inspected (one inside a list
+    included). Only a plain ``F()`` on a single-valued path, or a
+    ``RowsMatching``, is kept."""
     from django.db.models import F
 
     leaves = _leaves(q)
@@ -211,8 +223,8 @@ def without_to_many_joins(model, q):
         if type(value) is F:
             if prefix or _to_many_prefix(model, value.name):
                 return None
-        elif hasattr(value, "resolve_expression") and not isinstance(
-            value, RowsMatching
+        elif _expression_inside(value) or (
+            hasattr(value, "resolve_expression") and not isinstance(value, RowsMatching)
         ):
             return None
         if prefix:
@@ -233,16 +245,17 @@ def without_to_many_joins(model, q):
 def prefixed(q, prefix):
     """``q`` (a related model's scope) moved onto relation ``prefix`` of
     another model: each lookup and plain ``F()`` starts with ``prefix__``.
-    ``None`` if a child can't be moved: an expression, or a value other than a
-    plain ``F()`` or a ``RowsMatching``."""
+    ``None`` if a child can't be moved: an XOR, an expression, or a value
+    other than a plain ``F()`` or a ``RowsMatching`` that holds one."""
     from django.db.models import F
 
     leaves = _leaves(q)
     if leaves is None:
         return None
     for _lookup, value in leaves:
-        if hasattr(value, "resolve_expression") and not (
-            type(value) is F or isinstance(value, RowsMatching)
+        if _expression_inside(value) or (
+            hasattr(value, "resolve_expression")
+            and not (type(value) is F or isinstance(value, RowsMatching))
         ):
             return None
 

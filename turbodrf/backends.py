@@ -6,6 +6,7 @@ policy snapshots once per request and caching them for reuse.
 """
 
 import contextvars
+import copy
 import hashlib
 import secrets
 from contextlib import contextmanager
@@ -572,34 +573,29 @@ def _roles_digest(user):
     return _static_digest(getattr(settings, "TURBODRF_ROLES", {}))
 
 
-# A static role map -> (the map, its fingerprint, its digest). Hashing a large
-# map costs more than the snapshot it keys, so it's done once per map: settings
-# don't change at runtime, and override_settings replaces the whole object. The
-# fingerprint (each role's list and its length) still catches a test editing
+# A static role map -> (the map, a copy of it, its digest). Hashing a large map
+# costs more than the snapshot it keys, so it's done once per map: settings
+# don't change at runtime, and override_settings replaces the whole object.
+# Comparing with the copy (no sort, repr or hash) still catches a test editing
 # the map in place.
 _static_digests = {}
 
 
 def _static_digest(roles):
-    try:
-        fingerprint = tuple(
-            (role, id(perms), len(perms)) for role, perms in roles.items()
-        )
-    except (TypeError, AttributeError):
-        return "__unhashable__"
     entry = _static_digests.get(id(roles))
-    if entry is not None and entry[0] is roles and entry[1] == fingerprint:
-        return entry[2]
     try:
+        if entry is not None and entry[0] is roles and entry[1] == roles:
+            return entry[2]
+        snapshot = {role: copy.copy(perms) for role, perms in roles.items()}
         signature = sorted(
             (role, tuple(sorted(perms))) for role, perms in roles.items()
         )
-    except TypeError:
+    except (TypeError, AttributeError):
         return "__unhashable__"
     digest = hashlib.sha256(repr(signature).encode()).hexdigest()
     if len(_static_digests) >= 32:
         _static_digests.clear()  # many override_settings maps in a test run
-    _static_digests[id(roles)] = (roles, fingerprint, digest)
+    _static_digests[id(roles)] = (roles, snapshot, digest)
     return digest
 
 
