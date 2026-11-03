@@ -1,10 +1,12 @@
 # Changelog
 
-## 0.8.4 — Audit fixes
+## 0.8.4 — Audit fixes, register(), OpenAPI 3
 
 A full audit (reads, writes, auth plumbing, performance, adoption) found
 three medium and about a dozen low issues. Each fix has a test that sends the
-attack that worked on 0.8.3 (`tests/integration/test_audit_084.py`).
+attack that worked on 0.8.3 (`tests/integration/test_audit_084.py`). The
+adoption findings brought a way to serve a model without the mixin, an
+OpenAPI 3 schema and two debugging commands.
 
 ### Security
 
@@ -64,9 +66,11 @@ attack that worked on 0.8.3 (`tests/integration/test_audit_084.py`).
   `User.add_to_class('roles', ...)` patch the quickstart used.
 - `TURBODRF_PAGINATION_CLASS` swaps in your own pagination class (and so your
   API's own response envelope).
-
-### Quality of life
-
+- An OpenAPI 3 schema, for typed client generators (openapi-typescript,
+  orval): `pip install "turbodrf[openapi3]"` (drf-spectacular), and
+  `turbodrf.urls` serves it at `openapi/`, JSON or YAML. It is scoped to the
+  caller like the Swagger 2 one. Your own router serves its routes with
+  `router.get_openapi3_view()`, the platform router behind its gate.
 - `manage.py turbodrf_explain --user U --model M [--pk P]` says why a user
   can or can't read a model, a field or a row: their roles and tenant, each
   action and the roles granting it, each field's rule, and which layer (the
@@ -74,6 +78,8 @@ attack that worked on 0.8.3 (`tests/integration/test_audit_084.py`).
   --role R` (or `--anonymous`) prints the schema the docs view serves those
   roles, with no database user, for CI and client generation. See
   [Management Commands](docs/commands.md).
+
+### Quality of life
 
 - With `DEBUG = True`, a 403 says why: no roles, or the permission string no
   role grants. The reason is logged at INFO either way.
@@ -89,11 +95,6 @@ attack that worked on 0.8.3 (`tests/integration/test_audit_084.py`).
   view's implementation notes or an MIT license by default. A retrieve
   response is `app_model_detail`, like the write responses, and a write
   body `app_model_write`.
-- An OpenAPI 3 schema, for typed client generators (openapi-typescript,
-  orval): `pip install "turbodrf[openapi3]"` (drf-spectacular), and
-  `turbodrf.urls` serves it at `openapi/`, JSON or YAML. It is scoped to the
-  caller like the Swagger 2 one. Your own router serves its routes with
-  `router.get_openapi3_view()`, the platform router behind its gate.
 
 ### Upgrading
 
