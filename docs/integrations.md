@@ -1,6 +1,6 @@
 # Integrations
 
-> ⚠ **All integrations on this page are experimental and opt-in.**
+> **All integrations on this page are experimental and opt-in.**
 > They're gated behind settings (default `False`) and have unit-test
 > coverage with mocks but are **not verified end-to-end against the
 > real third-party servers** they integrate with. Treat them as
@@ -175,6 +175,10 @@ Limits:
   property or method — TurboDRF leaves it alone and logs that it didn't
   install the resolver. Your `roles` is then the only source of roles, and
   neither integration is consulted.
+- With `TURBODRF_ROLE_GETTER` set, TurboDRF calls that function instead of
+  reading `user.roles`, so neither integration is consulted unless your
+  getter reads `user.roles` itself. `manage.py check` warns
+  (`turbodrf.W005`) when both are set.
 - In `TURBODRF_PERMISSION_MODE = "database"`, roles come from the
   `UserRole` table and neither integration is consulted.
 - The flags are read at startup to decide whether to install the

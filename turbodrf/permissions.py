@@ -83,7 +83,8 @@ class TurboDRFPermission(BasePermission):
           authenticated caller's rows are scoped by their tenant and the
           model's predicates, so they may see rows an anonymous caller never
           does: only a role grants that.
-        - Users must have a 'roles' property that returns a list of role names
+        - A user's roles come from get_user_roles: ``user.roles``,
+          TURBODRF_ROLE_GETTER, or UserRole rows in database mode
         - On the platform scope there is no anonymous access, the roles are
           the caller's platform roles and the permissions those of
           TURBODRF_PLATFORM_ROLES (see turbodrf.scope).

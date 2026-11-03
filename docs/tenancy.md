@@ -48,7 +48,7 @@ register any model that doesn't say how it relates to the tenant.
 
 ### Step 2: Decide each model's relationship to the tenant
 
-For every TurboDRFMixin model, ask: **how does this row belong to a
+For every TurboDRF model, ask: **how does this row belong to a
 tenant?**
 
 | Answer | Config |
@@ -71,7 +71,7 @@ Does each row belong to one user (and that user owns it)?
 ├── Yes  → use sugar form: owner_field
 └── No
     ├── Multiple users have access (members, collaborators)?
-    │   ├── Yes  → use power form: Either(Owner, Custom)
+    │   ├── Yes  → use power form: Members, Either(Owner, Members), or Custom
     │   └── No   → continue
     └── Anyone in the tenant can see all rows?
         └── Yes  → leave it tenant-only (no within-tenant rule)
@@ -171,9 +171,8 @@ def collaborator_q(request, user_roles):
 
 The early-return-empty pattern is important. If your function returns
 `Q()` (no filter) for users who shouldn't see anything, you've silently
-disabled the within-tenant rule. The framework will warn you about
-this at runtime — but you should code it to return `Q(pk__in=[])`
-whenever the user doesn't qualify.
+disabled the within-tenant rule, and nothing warns you. Return
+`Q(pk__in=[])` whenever the user doesn't qualify.
 
 ### Step 6: Always write a `write_validator`
 
@@ -245,8 +244,8 @@ TurboDRF checks the configuration at startup and raises a directed
 `ImproperlyConfigured` error on a problem: tenancy declarations, unknown
 `turbodrf()` keys, fields that don't exist, `Custom` without
 `write_validator`, permission string typos, and more (see [Hard-fail-at-startup](#hard-fail-at-startup)).
-Tenancy errors raise when Django starts; the rest when Django first imports
-your URLconf. Run `python manage.py check` in CI and before each deploy: it
+A broken tenancy declaration raises when Django starts; a missing one, and
+the rest, when Django first imports your URLconf. Run `python manage.py check` in CI and before each deploy: it
 imports the URLconf, so it runs them all. (`get_wsgi_application()` doesn't,
 so without it a broken config deploys and fails on the first request.)
 
@@ -326,8 +325,8 @@ user, the tenant boundary still holds.
 ### `Owner(field, bypass=[...])` — within-tenant ownership
 
 Filters to rows where `<field> = request.user`, unless caller has a bypass
-role. On create, a single owner column left out of the request is filled with
-the caller; updates never reassign it.
+role. On create, a single owner column (not a `__` path) left out of the
+request is filled with the caller; updates never reassign it.
 
 Writes by a caller without a bypass role are checked: they can't set any
 owner column to another user, and they can't change an owner column whose
@@ -338,12 +337,20 @@ owner's column, and a collaborator who can see a row can't make it theirs.
 Owner('assigned_to')
 Owner('assigned_to', bypass=['admin'])
 Owner(['author', 'reviewer'])   # multi-owner: any-match OR
+Owner('project__owner')         # the owner of the row's project
 ```
 
 A multi-column `Owner` (or a list `owner_field`) reads rows where ANY column
-matches, and the write checks above cover every column. It isn't auto-filled.
+matches, and the write checks above cover every column. It isn't auto-filled,
+so the saved row is checked instead: a create by a caller without a bypass
+role must name them in one of the columns, or it's rolled back with a 400.
 For several owner columns use one `Owner([...])`, not
 `Either(Owner(...), Owner(...))`.
+
+An `Owner` over a `__` path can't be checked on the submitted values, so it's
+checked on the saved row, in the same transaction: a write that would leave
+the row invisible to its writer (a task moved onto someone else's project) is
+rolled back with a 400.
 
 ### `Either(*predicates)` — OR composition
 
@@ -355,11 +362,14 @@ Either(Owner('owner'), Members('shared_with'))
   on the caller (an `Owner` whose bypass role they hold, say) makes the whole
   `Either` unrestricted.
 - **Writes** must pass every child's write check. `Owner`'s checks apply to
-  every writer, including users who see the row through another child (an
-  `Owner` over a `__` path re-checks the saved row, as `Conditional` does); a
+  every writer, including users who see the row through another child; a
   `Custom` adds its `write_validator`; `Members`, `Group` and `Conditional`
   add no write rule (`Conditional` still re-checks the saved row, see
   [Advanced predicates](#advanced-predicates)).
+- An `Owner` over a `__` path holds on its own inside an `Either`: a create
+  must satisfy it, and so must an update that changes the path's first hop,
+  before and after. Seeing a row through another child doesn't let a writer
+  put it on a colleague's parent, or move a colleague's row onto their own.
 - **Create** fills a single-column `Owner` child's column with the caller when
   the request leaves it out, as a top-level `Owner` does.
 
@@ -466,8 +476,12 @@ Other hard-fails:
 - `bypass_owner_roles` listing roles not in `TURBODRF_ROLES` (typo guard)
 - A `Custom` predicate without a `write_validator`
 - An unknown `turbodrf()` key, a `fields` entry the model doesn't have (or
-  that ends on a reverse one-to-one), a `lookup_field` that isn't a unique
-  column, and two models routed to the same `endpoint`
+  that ends on a reverse one-to-one), a `searchable_fields` entry that can't
+  be searched, a `lookup_field` that isn't a unique column, and two models
+  routed to the same `endpoint`
+- A `TURBODRF_PERMISSION_MODE` other than `'static'` or `'database'`, and a
+  `TURBODRF_ROLE_GETTER` or `TURBODRF_PAGINATION_CLASS` that can't be
+  imported
 
 These raise whatever the tenancy settings:
 
@@ -494,10 +508,12 @@ foreign key or many-to-many values, each target must be visible under the
 related model's tenant boundary and predicate stack, as through its own
 endpoint. This runs on every model, shared ones included, and an anonymous
 writer can't reference a tenant-scoped target. On a model scoped by a
-`tenant_field` or predicates, a target that is the tenant model must also be
-the caller's tenant, and a target with a `TURBODRF_TENANT_USER_FIELD`
-attribute (typically a user) must be in the caller's tenant. The message is
-the same whether the target is hidden or doesn't exist.
+`tenant_field` or predicates, and on a shared model written by a caller who
+has a tenant, a target that is the tenant model must also be the caller's
+tenant, and a target with a `TURBODRF_TENANT_USER_FIELD` attribute (typically
+a user) must be in the caller's tenant. A generic foreign key's `object_id` is
+checked like an FK to its content type's model. The message is the same
+whether the target is hidden or doesn't exist.
 
 ```
 POST /api/comments/ {"document": <foreign>, "amount": 100}
@@ -649,9 +665,9 @@ The router checks `user_via` at startup.
 visible only to callers holding one of `require_roles`; other rows are
 unaffected. `Conditional(when=Q(kind='staff_loan'), require_roles=['staff'])`.
 
-- A predicate that crosses an M2M or reverse relation (`Members`, or an
-  `Either` that includes one) is applied as a subquery, so it doesn't
-  duplicate list rows or break detail lookups.
+- A predicate lookup that crosses an M2M or reverse relation (`Members`,
+  `Group` through a team's members) is applied as `pk IN (the rows it
+  matches)`, so it doesn't duplicate list rows or break detail lookups.
 - `Members` and `Group` scope reads, and so updates and deletes (only
   visible rows can be fetched). They add no write rule: a create isn't
   membership-checked, nor is an update that moves a row to another group.

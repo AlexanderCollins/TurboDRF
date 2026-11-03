@@ -650,16 +650,16 @@ def _platform_tenant_errors(model, validated_data, instance):
                 break
     if moved and _platform_referenced(model, instance):
         errors[hop] = [
-            "Cannot move this row to another tenant while rows of its tenant "
-            "point at it: move or delete them first."
+            "Cannot move this row to another tenant while other rows point at "
+            "it: move or delete them first."
         ]
     return errors
 
 
 def _platform_referenced(model, instance):
-    """Do rows of a tenant-scoped model point at ``instance`` and stay in its
-    current tenant when it moves (their ``tenant_field`` doesn't run through
-    the relation)? A move would leave them pointing at another tenant's row."""
+    """Do rows of a tenant-scoped model point at ``instance`` and keep their
+    own tenant when it moves (their ``tenant_field`` doesn't run through the
+    relation)? A move would leave them pointing at another tenant's row."""
     from .predicates import registered_tenant_field
 
     for rel in model._meta.related_objects:

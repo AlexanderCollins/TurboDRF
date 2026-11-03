@@ -55,8 +55,8 @@ in [`CHANGELOG.md`](CHANGELOG.md).
 
 | Version | Supported |
 |---------|-----------|
-| Latest minor (0.8.x today) | ✅ |
-| Older minors | ❌ — upgrade |
+| Latest minor (0.8.x today) | Yes |
+| Older minors | No: upgrade |
 
 ## Threat model
 
