@@ -2,6 +2,8 @@
 URL configuration for tests.
 """
 
+from importlib.util import find_spec
+
 from django.urls import include, path
 
 from turbodrf.documentation import get_turbodrf_schema_view
@@ -23,3 +25,8 @@ if schema_view:
         path("swagger/", schema_view.with_ui("swagger", cache_timeout=0)),
         path("redoc/", schema_view.with_ui("redoc", cache_timeout=0)),
     ]
+    # The OpenAPI 3 schema (tests/integration/test_openapi3.py).
+    if find_spec("drf_spectacular"):
+        from turbodrf.openapi import get_openapi3_view
+
+        urlpatterns.append(path("openapi/", get_openapi3_view()))

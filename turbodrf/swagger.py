@@ -38,7 +38,6 @@ Scopes:
     own scope, so roles, snapshots and fields are that scope's.
 """
 
-import hashlib
 import logging
 from collections import OrderedDict
 
@@ -107,18 +106,33 @@ def _serializer_context(view):
     return {"request": getattr(view, "request", None), "view": view, "format": None}
 
 
-def _iter_definition_refs(node):
+def _iter_definition_refs(node, prefix=_DEFINITION_REF_PREFIX):
     """Yield every definition name referenced by a ``$ref`` under ``node``."""
     stack = [node]
     while stack:
         current = stack.pop()
         if isinstance(current, dict):
             ref = current.get("$ref")
-            if isinstance(ref, str) and ref.startswith(_DEFINITION_REF_PREFIX):
-                yield ref[len(_DEFINITION_REF_PREFIX) :]
+            if isinstance(ref, str) and ref.startswith(prefix):
+                yield ref[len(prefix) :]
             stack.extend(current.values())
         elif isinstance(current, (list, tuple)):
             stack.extend(current)
+
+
+def _prune_unreachable(definitions, roots, prefix=_DEFINITION_REF_PREFIX):
+    """Drop every entry of ``definitions`` that no ``$ref`` (``prefix`` +
+    name) under ``roots`` reaches, directly or through other entries."""
+    reachable = set()
+    pending = list(_iter_definition_refs(roots, prefix))
+    while pending:
+        name = pending.pop()
+        if name in reachable or name not in definitions:
+            continue
+        reachable.add(name)
+        pending.extend(_iter_definition_refs(definitions[name], prefix))
+    for name in [n for n in definitions if n not in reachable]:
+        del definitions[name]
 
 
 def _prune_unreachable_definitions(schema):
@@ -131,16 +145,7 @@ def _prune_unreachable_definitions(schema):
     definitions = schema.get(openapi.SCHEMA_DEFINITIONS)
     if not definitions:
         return
-    reachable = set()
-    pending = list(_iter_definition_refs(schema.get("paths") or {}))
-    while pending:
-        name = pending.pop()
-        if name in reachable or name not in definitions:
-            continue
-        reachable.add(name)
-        pending.extend(_iter_definition_refs(definitions[name]))
-    for name in [n for n in definitions if n not in reachable]:
-        del definitions[name]
+    _prune_unreachable(definitions, schema.get("paths") or {})
     if not definitions:
         del schema[openapi.SCHEMA_DEFINITIONS]
 
@@ -204,21 +209,132 @@ class _NoSlashEndpointEnumerator(EndpointEnumerator):
     ):
         if isinstance(url_name, str) and url_name.endswith(_NO_SLASH_SUFFIX):
             return False
-        view_class = getattr(callback, "cls", None)
-        if getattr(view_class, "turbodrf_scope", TENANT) != self.scope:
-            return False
-        if self.view_classes is not None and view_class not in self.view_classes():
+        if not _in_document(getattr(callback, "cls", None), self):
             return False
         return super().should_include_endpoint(
             path, callback, app_name, namespace, url_name
         )
 
 
+def _in_document(view_class, enumerator):
+    """True if ``view_class`` belongs in ``enumerator``'s document: it serves
+    the enumerator's ``scope`` and, when ``view_classes`` is set (a router's
+    registry), is one of them."""
+    if getattr(view_class, "turbodrf_scope", TENANT) != enumerator.scope:
+        return False
+    views = enumerator.view_classes
+    return views is None or view_class in views()
+
+
 class _PlatformEndpointEnumerator(_NoSlashEndpointEnumerator):
     scope = PLATFORM
 
 
-class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
+class _CallerScope:
+    """Whose permissions a schema describes, and which operations it
+    documents. Shared by RoleBasedSchemaGenerator (drf-yasg, Swagger 2) and
+    turbodrf.openapi's generator (drf-spectacular, OpenAPI 3): each calls
+    ``_start`` when it begins a schema, ``_scope_view`` on each view, and
+    ``_may_perform`` after the view's own permission check."""
+
+    # The scope this generator documents (and generates in).
+    scope = TENANT
+
+    def _start(self, request):
+        """Reset the per-schema state and adopt a ``?role=`` narrowing (see
+        RoleBasedSchemaGenerator.get_schema)."""
+        from .backends import get_permission_mode, get_user_roles
+
+        self.current_role = None
+        self._scoped_user = None
+        self._snapshots = {}
+        if request is None:
+            return
+        requested = self._requested_role(request)
+        if not requested:
+            return
+        held = set(get_user_roles(getattr(request, "user", None)) or [])
+        # A client-supplied role is NEVER trusted for privilege: it is
+        # adopted only when the caller already holds it, so it can only
+        # narrow the schema.
+        if requested not in held:
+            return
+        if current_scope() == TENANT and get_permission_mode() == "database":
+            logger.info(
+                "Ignoring ?role=%s for the schema: role narrowing is not "
+                "supported in database permission mode.",
+                requested,
+            )
+            return
+        self.current_role = requested
+        if held != {requested}:
+            self._scoped_user = RoleOnlyIdentity([requested])
+
+    @staticmethod
+    def _requested_role(request):
+        """The role named by ``?role=`` or ``session['api_role']``, if any.
+
+        Works without SessionMiddleware (no ``request.session``).
+        """
+        params = getattr(request, "GET", None)
+        role = params.get("role") if params is not None else None
+        if not role:
+            session = getattr(request, "session", None)
+            if session is not None:
+                try:
+                    role = session.get("api_role")
+                except Exception:
+                    role = None
+        if isinstance(role, str) and role:
+            return role
+        return None
+
+    def _scope_view(self, view):
+        """Point a schema-generation view at the narrowed identity, if any."""
+        if self._scoped_user is None:
+            return
+        setattr(view, _SCHEMA_USER_ATTR, self._scoped_user)
+        model = _turbodrf_model(view)
+        view_request = getattr(view, "request", None)
+        if model is not None and view_request is not None:
+            # Seed the view's per-request snapshot cache with the narrowed
+            # snapshot so the view's own filter/ordering parameter lists
+            # match the selected role too.
+            view_request._turbodrf_snapshots = {
+                request_snapshot_key(model): self._snapshot(view, model)
+            }
+
+    def _snapshot(self, view, model):
+        user = _schema_user(view)
+        key = (id(user), request_snapshot_key(model))
+        if key not in self._snapshots:
+            # Keep the user referenced so its id can't be reused meanwhile.
+            self._snapshots[key] = (user, build_permission_snapshot(user, model))
+        return self._snapshots[key][1]
+
+    def _may_perform(self, view, method):
+        """True if ``view`` is a TurboDRF view of this scope and the caller's
+        snapshot grants the action ``method`` maps to. The view's own
+        permission classes (what the API itself enforces) are checked
+        separately, through each library's hook."""
+        model = _turbodrf_model(view)
+        if model is None or getattr(view, "turbodrf_scope", TENANT) != self.scope:
+            return False  # not TurboDRF's, or another scope's document
+
+        from .permissions import permissions_bypassed
+
+        if permissions_bypassed():
+            # TURBODRF_DISABLE_PERMISSIONS / TURBODRF_USE_DEFAULT_PERMISSIONS:
+            # the view's own permission classes are the API's gate.
+            return True
+
+        action = _METHOD_ACTIONS.get(method.lower())
+        if action is None:
+            return False
+        return self._snapshot(view, model).can_perform_action(action)
+
+
+class RoleBasedSchemaGenerator(OpenAPISchemaGenerator, _CallerScope):
     """
     OpenAPI schema generator that scopes the schema to the caller.
 
@@ -262,84 +378,16 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
             caller can read.
         """
         with use_scope(self.scope):
-            return self._scoped_schema(request, public)
-
-    def _scoped_schema(self, request, public):
-        from .backends import get_permission_mode, get_user_roles
-
-        self.current_role = None
-        self._scoped_user = None
-        self._snapshots = {}
-
-        if request is not None:
-            requested = self._requested_role(request)
-            if requested:
-                user = getattr(request, "user", None)
-                held = set(get_user_roles(user) or [])
-                # A client-supplied role is NEVER trusted for privilege: it is
-                # adopted only when the caller already holds it, so it can
-                # only narrow the schema.
-                if requested in held:
-                    if (
-                        current_scope() == TENANT
-                        and get_permission_mode() == "database"
-                    ):
-                        logger.info(
-                            "Ignoring ?role=%s for the schema: role narrowing "
-                            "is not supported in database permission mode.",
-                            requested,
-                        )
-                    else:
-                        self.current_role = requested
-                        if held != {requested}:
-                            self._scoped_user = RoleOnlyIdentity([requested])
-
-        schema = super().get_schema(request, public)
-        _prune_unreachable_definitions(schema)
-        _strip_sensitive_properties(schema)
-        return schema
-
-    @staticmethod
-    def _requested_role(request):
-        """The role named by ``?role=`` or ``session['api_role']``, if any.
-
-        Works without SessionMiddleware (no ``request.session``).
-        """
-        params = getattr(request, "GET", None)
-        role = params.get("role") if params is not None else None
-        if not role:
-            session = getattr(request, "session", None)
-            if session is not None:
-                try:
-                    role = session.get("api_role")
-                except Exception:
-                    role = None
-        if isinstance(role, str) and role:
-            return role
-        return None
+            self._start(request)
+            schema = super().get_schema(request, public)
+            _prune_unreachable_definitions(schema)
+            _strip_sensitive_properties(schema)
+            return schema
 
     def create_view(self, callback, method, request=None):
         view = super().create_view(callback, method, request)
-        if self._scoped_user is not None:
-            setattr(view, _SCHEMA_USER_ATTR, self._scoped_user)
-            model = _turbodrf_model(view)
-            view_request = getattr(view, "request", None)
-            if model is not None and view_request is not None:
-                # Seed the view's per-request snapshot cache with the narrowed
-                # snapshot so the view's own filter/ordering parameter lists
-                # match the selected role too.
-                view_request._turbodrf_snapshots = {
-                    request_snapshot_key(model): self._snapshot(view, model)
-                }
+        self._scope_view(view)
         return view
-
-    def _snapshot(self, view, model):
-        user = _schema_user(view)
-        key = (id(user), request_snapshot_key(model))
-        if key not in self._snapshots:
-            # Keep the user referenced so its id can't be reused meanwhile.
-            self._snapshots[key] = (user, build_permission_snapshot(user, model))
-        return self._snapshots[key][1]
 
     def should_include_endpoint(self, path, method, view, public):
         """Document an operation only if the caller may perform it.
@@ -348,27 +396,12 @@ class RoleBasedSchemaGenerator(OpenAPISchemaGenerator):
         classes (what the API itself enforces) must admit the caller, and
         the caller's snapshot must grant the method's action.
         """
-        model = _turbodrf_model(view)
-        if model is None:
+        if _turbodrf_model(view) is None:
             # Only TurboDRF endpoints are documented by this generator.
             return False
-        if getattr(view, "turbodrf_scope", TENANT) != self.scope:
-            return False  # another scope's document
-
-        if not self._gen.has_view_permissions(path, method, view):
-            return False
-
-        from .permissions import permissions_bypassed
-
-        if permissions_bypassed():
-            # TURBODRF_DISABLE_PERMISSIONS / TURBODRF_USE_DEFAULT_PERMISSIONS:
-            # the view's own permission classes above are the API's gate.
-            return True
-
-        action = _METHOD_ACTIONS.get(method.lower())
-        if action is None:
-            return False
-        return self._snapshot(view, model).can_perform_action(action)
+        return self._gen.has_view_permissions(path, method, view) and self._may_perform(
+            view, method
+        )
 
 
 class PlatformSchemaGenerator(RoleBasedSchemaGenerator):
@@ -524,122 +557,140 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
         it returned the unfiltered model serializer, so TurboDRF views get a
         serializer built by TurboDRFSerializerFactory for the schema user.
         """
-        model = _turbodrf_model(self.view)
-        if model is None:
+        serializer = _response_serializer(self.view, self.request)
+        if serializer is None:
             return super().get_view_serializer()
+        return serializer
 
-        from .permissions import permissions_bypassed
+    def _get_write_operation_serializer(self):
+        """Serializer for a write operation's request body (see
+        ``_write_serializer``)."""
+        serializer = _write_serializer(self.view, self.request)
+        if serializer is None:
+            return super().get_request_serializer()
+        return serializer
 
-        if permissions_bypassed():
-            # No TurboDRF field permissions: the view's own serializer is
-            # exactly what the API uses.
-            return super().get_view_serializer()
 
-        action = getattr(self.view, "action", None)
-        if action not in _WRITE_ACTIONS + _STANDARD_READ_ACTIONS:
-            declared = self._declared_action_serializer()
-            if declared is not None:
-                return declared(context=_serializer_context(self.view))
+def _action_serializer(view):
+    """An instance of the serializer_class a custom
+    ``@action(serializer_class=...)`` declares (the router passes it to the
+    view instance), or None."""
+    declared = view.__dict__.get("serializer_class")
+    if declared is None:
+        return None
+    return declared(context=_serializer_context(view))
 
-        from .serializers import TurboDRFSerializerFactory
 
-        if action == "list":
-            fields, view_type = _resolve_configured_fields(model, "list"), "list"
-        elif action in _WRITE_ACTIONS:
-            fields, view_type = _resolve_configured_fields(model, "detail"), "detail"
-        else:
-            fields, view_type = _resolve_configured_fields(model, "detail"), "retrieve"
+def _response_serializer(view, request=None):
+    """The serializer documenting a TurboDRF view's response, built for the
+    schema user by TurboDRFSerializerFactory: the list or detail fields the
+    caller can read. A custom action's declared ``serializer_class`` wins.
 
-        user = _schema_user(self.view, self.request)
-        serializer_class = TurboDRFSerializerFactory.create_serializer(
+    None when the view's own serializer is the right one: not a TurboDRF
+    view, or TurboDRF's permissions are bypassed (the view's serializer is
+    then exactly what the API uses). drf-yasg's default (and
+    drf-spectacular's) calls ``view.get_serializer()``, which for a
+    role-narrowed schema would use the caller's full roles."""
+    model = _turbodrf_model(view)
+    if model is None:
+        return None
+
+    from .permissions import permissions_bypassed
+
+    if permissions_bypassed():
+        return None
+
+    action = getattr(view, "action", None)
+    if action not in _WRITE_ACTIONS + _STANDARD_READ_ACTIONS:
+        declared = _action_serializer(view)
+        if declared is not None:
+            return declared
+
+    from .serializers import TurboDRFSerializerFactory
+
+    view_type = "list" if action == "list" else "detail"
+    user = _schema_user(view, request)
+    serializer_class = TurboDRFSerializerFactory.create_serializer(
+        model,
+        _resolve_configured_fields(model, view_type),
+        user,
+        view_type=view_type,
+        snapshot=build_permission_snapshot(user, model),
+    )
+    return serializer_class(context=_serializer_context(view))
+
+
+def _write_serializer(view, request=None):
+    """
+    Serializer for a TurboDRF view's write request body, or None for another
+    view.
+
+    Built by TurboDRFSerializerFactory for the schema user (the caller, or
+    the role they narrowed to), so it contains only fields the caller can
+    read AND write. ``TURBODRF_SENSITIVE_FIELDS`` are always dropped. Nested
+    ``a__b`` paths collapse to their writable base FK ``a``. Its definition
+    is ``<app>_<model>_write``: a caller has one writable field set per
+    model.
+    """
+    model = _turbodrf_model(view)
+    if model is None:
+        return None
+
+    from .permissions import permissions_bypassed
+    from .serializers import TurboDRFSerializer, TurboDRFSerializerFactory
+    from .validation import is_field_path_sensitive
+
+    # Writes use the detail fields, as the API does ("__all__" includes
+    # forward M2M fields).
+    fields = []
+    for name in _resolve_configured_fields(model, "detail"):
+        # Strip nested fields (`__` paths) — DRF ModelSerializer can't
+        # use them in Meta.fields, and only the base FK is writable.
+        base = name.split("__")[0]
+        if base not in fields:
+            fields.append(base)
+
+    if permissions_bypassed():
+        # Parity with the API: no TurboDRF field permissions apply.
+        base_class = type(
+            f"{model.__name__}WriteBaseSerializer",
+            (TurboDRFSerializer,),
+            {
+                "Meta": type(
+                    "Meta",
+                    (),
+                    {
+                        "model": model,
+                        "fields": [f for f in fields if not is_field_path_sensitive(f)],
+                    },
+                )
+            },
+        )
+    else:
+        user = _schema_user(view, request)
+        base_class = TurboDRFSerializerFactory.create_serializer(
             model,
             fields,
             user,
-            view_type=view_type,
+            view_type="write",
             snapshot=build_permission_snapshot(user, model),
         )
-        return serializer_class(context=_serializer_context(self.view))
 
-    def _get_write_operation_serializer(self):
-        """
-        Serializer for a write operation's request body.
+    base_meta = base_class.Meta
+    ref_name_value = f"{model._meta.app_label}_{model._meta.model_name}_write"
+    if current_scope() != TENANT:
+        ref_name_value = f"{current_scope()}_{ref_name_value}"
 
-        Built by TurboDRFSerializerFactory for the schema user (the caller,
-        or the role they narrowed to), so it contains only fields the caller
-        can read AND write. ``TURBODRF_SENSITIVE_FIELDS`` are always dropped.
-        Nested ``a__b`` paths collapse to their writable base FK ``a``.
+    class WriteOperationSerializer(base_class):
+        class Meta(base_meta):
+            ref_name = ref_name_value
 
-        Returns:
-            Serializer instance whose fields are exactly the caller's
-            writable fields (possibly none).
-        """
-        model = _turbodrf_model(self.view)
-        if model is None:
-            return super().get_request_serializer()
-
-        from .permissions import permissions_bypassed
-        from .serializers import TurboDRFSerializer, TurboDRFSerializerFactory
-        from .validation import is_field_path_sensitive
-
-        # Writes use the detail fields, as the API does ("__all__" includes
-        # forward M2M fields).
-        fields = []
-        for name in _resolve_configured_fields(model, "detail"):
-            # Strip nested fields (`__` paths) — DRF ModelSerializer can't
-            # use them in Meta.fields, and only the base FK is writable.
-            base = name.split("__")[0]
-            if base not in fields:
-                fields.append(base)
-
-        if permissions_bypassed():
-            # Parity with the API: no TurboDRF field permissions apply.
-            base_class = type(
-                f"{model.__name__}WriteBaseSerializer",
-                (TurboDRFSerializer,),
-                {
-                    "Meta": type(
-                        "Meta",
-                        (),
-                        {
-                            "model": model,
-                            "fields": [
-                                f for f in fields if not is_field_path_sensitive(f)
-                            ],
-                        },
-                    )
-                },
-            )
-        else:
-            user = _schema_user(self.view, self.request)
-            base_class = TurboDRFSerializerFactory.create_serializer(
-                model,
-                fields,
-                user,
-                view_type="write",
-                snapshot=build_permission_snapshot(user, model),
+        def get_fields(self):
+            # A request body lists only what the caller can write.
+            return OrderedDict(
+                (name, field)
+                for name, field in super().get_fields().items()
+                if not field.read_only
             )
 
-        base_meta = base_class.Meta
-        writable = sorted(
-            set(base_meta.fields) - set(getattr(base_meta, "read_only_fields", ()))
-        )
-        digest = hashlib.sha256(",".join(writable).encode()).hexdigest()[:8]
-        ref_name_value = (
-            f"{model._meta.app_label}_{model._meta.model_name}_{digest}_write"
-        )
-        if current_scope() != TENANT:
-            ref_name_value = f"{current_scope()}_{ref_name_value}"
-
-        class WriteOperationSerializer(base_class):
-            class Meta(base_meta):
-                ref_name = ref_name_value
-
-            def get_fields(self):
-                # A request body lists only what the caller can write.
-                return OrderedDict(
-                    (name, field)
-                    for name, field in super().get_fields().items()
-                    if not field.read_only
-                )
-
-        return WriteOperationSerializer(context=_serializer_context(self.view))
+    return WriteOperationSerializer(context=_serializer_context(view))

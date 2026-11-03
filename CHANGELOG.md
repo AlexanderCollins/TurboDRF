@@ -63,7 +63,14 @@ attack that worked on 0.8.3 (`tests/integration/test_audit_084.py`).
 - A route clash suggests an app-prefixed `endpoint` (`'shop/books'`).
 - Schema definition names are stable (`app_model_list`), without a hash that
   changed with each role's field set, and the API docs no longer show the
-  view's implementation notes or an MIT license by default.
+  view's implementation notes or an MIT license by default. A retrieve
+  response is `app_model_detail`, like the write responses, and a write
+  body `app_model_write`.
+- An OpenAPI 3 schema, for typed client generators (openapi-typescript,
+  orval): `pip install "turbodrf[openapi3]"` (drf-spectacular), and
+  `turbodrf.urls` serves it at `openapi/`, JSON or YAML. It is scoped to the
+  caller like the Swagger 2 one. Your own router serves its routes with
+  `router.get_openapi3_view()`, the platform router behind its gate.
 
 ### Upgrading
 

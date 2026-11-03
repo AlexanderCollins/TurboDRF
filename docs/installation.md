@@ -19,6 +19,7 @@ Optional extras (quote them, or zsh expands the brackets):
 
 ```bash
 pip install "turbodrf[fast]"      # msgspec: faster JSON rendering
+pip install "turbodrf[openapi3]"  # drf-spectacular: an OpenAPI 3 schema at /api/openapi/
 pip install "turbodrf[allauth]"   # django-allauth group-to-role mapping (experimental)
 ```
 

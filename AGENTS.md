@@ -33,6 +33,9 @@ INSTALLED_APPS = [..., 'rest_framework', 'drf_yasg', 'turbodrf']
 
 # urls.py
 urlpatterns = [path('api/', include('turbodrf.urls'))]
+# With `pip install "turbodrf[openapi3]"` it also serves an OpenAPI 3 schema
+# at api/openapi/, scoped to the caller. Don't mount drf-spectacular's own
+# SpectacularAPIView over TurboDRF routes: it isn't scoped.
 ```
 
 Users need roles: see [Roles](#roles) below. Without one, every request is

@@ -111,19 +111,10 @@ def get_turbodrf_schema_view(
     if not getattr(settings, "TURBODRF_ENABLE_DOCS", True):
         return None
 
-    from .scope import PLATFORM, SCOPES
+    from .scope import PLATFORM
     from .swagger import PlatformSchemaGenerator, RoleBasedSchemaGenerator
 
-    if scope not in SCOPES:
-        raise ImproperlyConfigured(
-            f"get_turbodrf_schema_view scope must be one of {SCOPES}; got {scope!r}."
-        )
-    gate = list(gate or ())
-    if scope == PLATFORM and not gate:
-        raise ImproperlyConfigured(
-            "The platform schema view requires a gate: pass the platform "
-            "router's (router.get_schema_view() does)."
-        )
+    gate = _schema_gate("get_turbodrf_schema_view", scope, gate)
     generator_class = (
         PlatformSchemaGenerator if scope == PLATFORM else RoleBasedSchemaGenerator
     )
@@ -158,6 +149,24 @@ def get_turbodrf_schema_view(
         schema_view = _platform_schema_view(schema_view)
 
     return schema_view
+
+
+def _schema_gate(caller, scope, gate):
+    """``gate`` as a list, once ``scope`` is known and, on the platform
+    scope, a gate is given."""
+    from .scope import PLATFORM, SCOPES
+
+    if scope not in SCOPES:
+        raise ImproperlyConfigured(
+            f"{caller} scope must be one of {SCOPES}; got {scope!r}."
+        )
+    gate = list(gate or ())
+    if scope == PLATFORM and not gate:
+        raise ImproperlyConfigured(
+            "The platform schema view requires a gate: pass the platform "
+            "router's (router.get_schema_view() and get_openapi3_view() do)."
+        )
+    return gate
 
 
 def _platform_schema_view(schema_view):
