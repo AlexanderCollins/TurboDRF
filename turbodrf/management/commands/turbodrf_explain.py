@@ -9,7 +9,6 @@ the serializer's field check, and the tenant boundary and predicates applied
 through views.Authorization. It only reads.
 """
 
-from django.apps import apps
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import FieldDoesNotExist, ValidationError
@@ -19,7 +18,7 @@ from django.test import RequestFactory
 from rest_framework.request import Request
 
 from turbodrf import backends, predicates, validation
-from turbodrf.mixins import TurboDRFMixin, _model_config, _resolve_configured_fields
+from turbodrf.mixins import _model_config, _resolve_configured_fields, turbodrf_models
 from turbodrf.permissions import permissions_bypassed
 from turbodrf.scope import SCOPES, TENANT, is_platform, use_scope
 from turbodrf.views import Authorization
@@ -35,11 +34,6 @@ ACTIONS = {
     "delete": ("delete", {"delete"}),
 }
 DISABLED = "TURBODRF_DISABLE_PERMISSIONS"
-
-
-def turbodrf_models():
-    """Every TurboDRF model: the discovery turbodrf_check uses."""
-    return [m for m in apps.get_models() if issubclass(m, TurboDRFMixin)]
 
 
 def _first(manager, **lookup):

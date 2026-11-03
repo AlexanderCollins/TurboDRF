@@ -264,8 +264,6 @@ def _resolve_user_roles(user) -> list:
             .values_list("role__name", flat=True)
         )
         return role_names
-    if isinstance(user, RoleOnlyIdentity):
-        return list(user.roles)
     if getattr(settings, "TURBODRF_ROLE_GETTER", None) is None:
         return _role_names(getattr(user, "roles", None))
     return _role_names(role_getter()(user), what="TURBODRF_ROLE_GETTER")
