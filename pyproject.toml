@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "turbodrf"
-version = "0.8.3"
-description = "Dead simple Django REST API generator with role-based permissions"
+version = "0.8.4"
+description = "Turn Django models into a secure REST API: CRUD endpoints, field-level permissions and multi-tenant row scoping"
 readme = "README.md"
 authors = [
     {name = "Alexander Collins"}
@@ -41,6 +41,10 @@ dependencies = [
 fast = [
     "msgspec>=0.18.0",
 ]
+# The OpenAPI 3 schema view (turbodrf.openapi).
+openapi3 = [
+    "drf-spectacular>=0.27",
+]
 dev = [
     "pytest>=6.0",
     "pytest-django>=4.0",
@@ -48,6 +52,7 @@ dev = [
     "pytest-xdist>=3.0",
     "hypothesis>=6.0",
     "msgspec>=0.18.0",
+    "drf-spectacular>=0.27",  # the openapi3 extra's tests
     "Pillow>=9.0",  # the test app has an ImageField
     # Lint tools are pinned so local runs and CI agree.
     "black==26.10.1",

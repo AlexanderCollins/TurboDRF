@@ -88,29 +88,16 @@ what clients send when they create a book.
 
 ## 4. Give users roles
 
-TurboDRF reads `user.roles`, a list of role names. Here they're the names of
-the user's Django groups:
+TurboDRF needs each user's role names. Here they're the names of the user's
+Django groups:
 
 ```python
-# shop/apps.py
-from django.apps import AppConfig
-
-
-class ShopConfig(AppConfig):
-    default_auto_field = 'django.db.models.BigAutoField'
-    name = 'shop'
-
-    def ready(self):
-        from django.contrib.auth.models import User
-
-        # TurboDRF reads user.roles. Here: the names of the user's groups.
-        User.add_to_class(
-            'roles', property(lambda user: [g.name for g in user.groups.all()])
-        )
+# mysite/settings.py
+TURBODRF_ROLE_GETTER = 'turbodrf.backends.group_names'
 ```
 
-A custom user model can define `roles` as a property instead, or roles can
-live in the database. See
+Without the setting TurboDRF reads `user.roles`, so a custom user model can
+define that property instead, or roles can live in the database. See
 [Assigning roles to users](permissions.md#assigning-roles-to-users).
 
 ## 5. URLs
@@ -127,8 +114,11 @@ urlpatterns = [
 ```
 
 `turbodrf.urls` registers every TurboDRF model, plus `/api/swagger/` and
-`/api/redoc/` when the docs are enabled. (To mount only the API, include
-`TurboDRFRouter().urls` from `turbodrf.router` instead.)
+`/api/redoc/` when the docs are enabled, and an OpenAPI 3 schema at
+`/api/openapi/` with the `openapi3` extra (see
+[OpenAPI 3 and typed clients](settings_reference.md#openapi-3-and-typed-clients)).
+(To mount only the API, include `TurboDRFRouter().urls` from
+`turbodrf.router` instead.)
 
 ## 6. Migrate, create users, run
 

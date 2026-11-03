@@ -14,7 +14,12 @@ from django.urls import re_path
 from rest_framework.permissions import BasePermission, OperationHolderMixin
 from rest_framework.routers import DefaultRouter
 
-from .mixins import TurboDRFMixin, _resolve_configured_fields
+from .mixins import (
+    _resolve_configured_fields,
+    config_label,
+    is_turbodrf_model,
+    turbodrf_config,
+)
 from .scope import (
     PLATFORM,
     SCOPES,
@@ -23,7 +28,7 @@ from .scope import (
     platform_reachable,
     use_scope,
 )
-from .views import _CRUD_WRITE_ACTIONS, TurboDRFViewSet
+from .views import _CRUD_WRITE_ACTIONS, TurboDRFViewSet, configured_pagination_class
 
 
 def _walk_predicates(predicates):
@@ -64,7 +69,7 @@ def _field_path_resolves(model, path):
 
 
 def _where(model, where=None):
-    return where or f"{model.__name__}.turbodrf()"
+    return where or f"{config_label(model)}"
 
 
 def _configured_field_names(model, config, where=None):
@@ -138,7 +143,7 @@ def _validate_config_keys(model, config):
     if "sensitive_fields" in unknown:
         hint = " 'sensitive_fields' is a class attribute on the model, not a key."
     raise ImproperlyConfigured(
-        f"{model.__name__}.turbodrf() has unknown keys {unknown}.{hint} "
+        f"{config_label(model)} has unknown keys {unknown}.{hint} "
         f"Valid keys: {', '.join(sorted(_CONFIG_KEYS))}."
     )
 
@@ -240,7 +245,7 @@ def _unreachable_error(where, key, path, hop, target):
 
 
 def _platform_where(model):
-    return f"{model.__name__}.turbodrf()['platform']"
+    return f"{config_label(model)}['platform']"
 
 
 def _platform_block_of(model, config):
@@ -250,7 +255,7 @@ def _platform_block_of(model, config):
     block = config["platform"]
     if not isinstance(block, dict):
         raise ImproperlyConfigured(
-            f"{model.__name__}.turbodrf() 'platform' must be a dict of the "
+            f"{config_label(model)} 'platform' must be a dict of the "
             f"platform API's config (fields, endpoint, actions, ...); got "
             f"{type(block).__name__}."
         )
@@ -413,6 +418,32 @@ def _platform_roles_setting():
     return roles
 
 
+def _validate_searchable_fields(model):
+    """Every ``searchable_fields`` entry must be searchable: a column, or a
+    ``__`` path of relations ending on one, with at most a ``^``, ``=`` or
+    ``@`` prefix. Otherwise the entry is dropped at request time, and a
+    search over a misspelt field matches every row."""
+    from .mixins import get_searchable_fields
+    from .views import _is_resolvable_search_path
+
+    for entry in get_searchable_fields(model):
+        if not _is_resolvable_search_path(model, entry):
+            raise ImproperlyConfigured(
+                f"{model.__name__}.searchable_fields entry {entry!r} can't be "
+                f"searched: it must name a column of {model.__name__}, or a "
+                f"'__' path of relations ending on one (an optional '^', '=' "
+                f"or '@' prefix; not '$')."
+            )
+
+
+class _ScopedView:
+    """Dispatches the view in its router's scope (``turbodrf_scope``)."""
+
+    def dispatch(self, request, *args, **kwargs):
+        with use_scope(self.turbodrf_scope):
+            return super().dispatch(request, *args, **kwargs)
+
+
 class TurboDRFRouter(DefaultRouter):
     """
     Router that auto-discovers and registers TurboDRF models.
@@ -492,10 +523,11 @@ class TurboDRFRouter(DefaultRouter):
         elif self.include_root_view is None:
             self.include_root_view = self.scope == TENANT
         if self.gate:
-            # The index lists the routes: gate it like them.
+            # The index lists the routes: gate it like them, in their scope
+            # (a gate reading roles must see the platform roles there).
             self.APIRootView = type(
                 "GatedAPIRootView",
-                (self.APIRootView,),
+                (_ScopedView, self.APIRootView),
                 {
                     "permission_classes": list(self.gate),
                     "turbodrf_scope": self.scope,
@@ -515,12 +547,24 @@ class TurboDRFRouter(DefaultRouter):
         (``title``, ``version``, ...). None with TURBODRF_ENABLE_DOCS = False."""
         from .documentation import get_turbodrf_schema_view
 
-        def views():
-            return {viewset for _prefix, viewset, _basename in self.registry}
-
         return get_turbodrf_schema_view(
-            scope=self.scope, gate=self.gate, views=views, **kwargs
+            scope=self.scope, gate=self.gate, views=self._registered_views, **kwargs
         )
+
+    def get_openapi3_view(self, **kwargs):
+        """An OpenAPI 3 schema view (drf-spectacular, the ``openapi3`` extra)
+        of this router's routes only (see openapi.get_openapi3_view),
+        generated in its scope and guarded by its gate. ``kwargs`` are
+        get_openapi3_view's (``title``, ``version``, ``description``). None
+        with TURBODRF_ENABLE_DOCS = False."""
+        from .openapi import get_openapi3_view
+
+        return get_openapi3_view(
+            scope=self.scope, gate=self.gate, views=self._registered_views, **kwargs
+        )
+
+    def _registered_views(self):
+        return {viewset for _prefix, viewset, _basename in self.registry}
 
     def discover_models(self):
         """
@@ -555,6 +599,7 @@ class TurboDRFRouter(DefaultRouter):
 
         from django.conf import settings as django_settings
 
+        from .backends import role_getter
         from .predicates import Owner, has_tenancy_declaration
         from .properties import validate_property_config
         from .tenancy import _register_tenancy
@@ -568,10 +613,20 @@ class TurboDRFRouter(DefaultRouter):
         require_tenancy = getattr(django_settings, "TURBODRF_REQUIRE_TENANCY", True)
         autodetect = getattr(django_settings, "TURBODRF_AUTODETECT_TENANT", False)
         known_roles = set(getattr(django_settings, "TURBODRF_ROLES", {}).keys())
+        role_getter()  # a bad TURBODRF_ROLE_GETTER fails now
+        configured_pagination_class()  # and a bad TURBODRF_PAGINATION_CLASS
+        mode = getattr(django_settings, "TURBODRF_PERMISSION_MODE", "static")
+        if mode not in ("static", "database"):
+            # Anything else reads as static mode: a misspelt 'database' would
+            # ignore every UserRole / RolePermission row.
+            raise ImproperlyConfigured(
+                f"TURBODRF_PERMISSION_MODE must be 'static' or 'database'; "
+                f"got {mode!r}."
+            )
 
         # Read each model's config once for every pass below.
-        models = [m for m in apps.get_models() if issubclass(m, TurboDRFMixin)]
-        configs = {model: model.turbodrf() for model in models}
+        models = [m for m in apps.get_models() if is_turbodrf_model(m)]
+        configs = {model: turbodrf_config(model) for model in models}
         enabled = [m for m in models if configs[m].get("enabled", True)]
         # A misspelt key drops what it meant to configure, on a disabled model
         # (still a scoped FK / filter target) as much as an enabled one.
@@ -592,28 +647,12 @@ class TurboDRFRouter(DefaultRouter):
         # whether or not a platform router is mounted.
         _validate_platform_blocks(models, configs, resolved)
 
-        for model in enabled:
+        # Every model must declare tenancy, enabled or not: a disabled model
+        # is still a FK / nested-field / filter target, and without a
+        # declaration those checks would read it as unscoped.
+        for model in models:
             config = configs[model]
-
-            # Validate nesting depth for configured fields
-            for field in _configured_field_names(model, config):
-                try:
-                    validate_nesting_depth(field)
-                except Exception as e:
-                    logger.warning(
-                        f"Model {model.__name__} field '{field}' "
-                        f"validation failed: {str(e)}"
-                    )
-
-            # Every configured field and the lookup_field must exist.
-            _validate_fields_and_lookup(model, config)
-
-            # property_relations / unscoped_properties must name
-            # real properties and loadable relation paths.
-            validate_property_config(model)
-
-            tenant_field, predicates, autodetected = resolved[model]
-
+            tenant_field = resolved[model][0]
             # Within-tenant predicates don't count: owner_field, or a
             # visibility list whose bypass roles / Conditional can lift the
             # restriction, would let some callers see every tenant's rows.
@@ -630,7 +669,7 @@ class TurboDRFRouter(DefaultRouter):
                     else ""
                 )
                 raise ImproperlyConfigured(
-                    f"{model.__name__}.turbodrf() declares no tenant "
+                    f"{config_label(model)} declares no tenant "
                     f"boundary{detected}. Add 'tenant_field': '<path to "
                     f"{tenant_model_setting}>', or 'tenancy': 'shared' for "
                     f"reference data. An 'owner_field' alone scopes rows within "
@@ -641,6 +680,29 @@ class TurboDRFRouter(DefaultRouter):
                     f"Set TURBODRF_REQUIRE_TENANCY=False to disable "
                     f"this check."
                 )
+
+        for model in enabled:
+            config = configs[model]
+
+            # Validate nesting depth for configured fields
+            for field in _configured_field_names(model, config):
+                try:
+                    validate_nesting_depth(field)
+                except Exception as e:
+                    logger.warning(
+                        f"Model {model.__name__} field '{field}' "
+                        f"validation failed: {str(e)}"
+                    )
+
+            # Every configured field and the lookup_field must exist.
+            _validate_fields_and_lookup(model, config)
+            _validate_searchable_fields(model)
+
+            # property_relations / unscoped_properties must name
+            # real properties and loadable relation paths.
+            validate_property_config(model)
+
+            tenant_field, predicates, autodetected = resolved[model]
 
             # Validate bypass roles against TURBODRF_ROLES.
             # Runs once per process at first init. Subsequent
@@ -654,7 +716,7 @@ class TurboDRFRouter(DefaultRouter):
                         unknown = pred.bypass - known_roles
                         if unknown:
                             raise ImproperlyConfigured(
-                                f"{model.__name__}.turbodrf() declares "
+                                f"{config_label(model)} declares "
                                 f"bypass_owner_roles={sorted(pred.bypass)} "
                                 f"but {sorted(unknown)} are not in "
                                 f"TURBODRF_ROLES. Typo or stale config?"
@@ -786,8 +848,8 @@ class TurboDRFRouter(DefaultRouter):
 
         logger = logging.getLogger(__name__)
 
-        models = [m for m in apps.get_models() if issubclass(m, TurboDRFMixin)]
-        configs = {model: model.turbodrf() for model in models}
+        models = [m for m in apps.get_models() if is_turbodrf_model(m)]
+        configs = {model: turbodrf_config(model) for model in models}
         for model in models:
             _validate_config_keys(model, configs[model])
         resolved = _register_tenancy(models, configs)
@@ -823,7 +885,8 @@ class TurboDRFRouter(DefaultRouter):
                 raise ImproperlyConfigured(
                     f"{model._meta.label} and {viewset.model._meta.label} both "
                     f"route to '{endpoint}/'. Set a distinct 'endpoint' in one "
-                    f"of their turbodrf() configs."
+                    f"of their turbodrf() configs, e.g. 'endpoint': "
+                    f"'{model._meta.app_label}/{endpoint}'."
                 )
         prefix = f"{PLATFORM}-" if self.scope == PLATFORM else ""
         basename = prefix + model._meta.model_name

@@ -19,6 +19,7 @@ Optional extras (quote them, or zsh expands the brackets):
 
 ```bash
 pip install "turbodrf[fast]"      # msgspec: faster JSON rendering
+pip install "turbodrf[openapi3]"  # drf-spectacular: an OpenAPI 3 schema at /api/openapi/
 pip install "turbodrf[allauth]"   # django-allauth group-to-role mapping (experimental)
 ```
 
@@ -40,7 +41,9 @@ short:
    `INSTALLED_APPS`. `drf_yasg` serves the Swagger / ReDoc pages; without
    them, leave it out and set `TURBODRF_ENABLE_DOCS = False` (with neither,
    Django's system check warns `turbodrf.W001`).
-2. Define `TURBODRF_ROLES` and give users roles through `user.roles` (see
+2. Define `TURBODRF_ROLES` and give users roles: their Django groups with
+   `TURBODRF_ROLE_GETTER = 'turbodrf.backends.group_names'`, a `user.roles`
+   property, or database rows (see
    [Assigning roles to users](permissions.md#assigning-roles-to-users)).
 3. Add `path('api/', include('turbodrf.urls'))` to your URLconf.
 4. Add `TurboDRFMixin` and a `turbodrf()` classmethod to each model the API
@@ -54,15 +57,22 @@ URLconf, which runs TurboDRF's startup checks (see
 ## Troubleshooting
 
 **Every request is a 403.** The user has no role, or no role grants the
-action. Check `user.roles` and `TURBODRF_ROLES`. Anonymous callers get a 403
-unless the model sets `public_access: True`, and then only for reads.
+action. With `DEBUG = True` the 403's detail says which; either way the
+reason is logged at INFO by `turbodrf.permissions`. Anonymous callers are
+refused unless the model sets `public_access: True`, and then only for reads.
+
+**A user can't see a row or a field.** Run
+`python manage.py turbodrf_explain --user <username> --model <app.Model> --pk <pk>`:
+it prints the user's roles and tenant, each field's rule, and which layer
+hides the row (see [Management commands](commands.md#turbodrf_explain)).
 
 **A nested field (`author__name`) is missing.** The caller needs read on the
 related model too (`myapp.author.read`).
 
-**A model has no endpoint.** Check that it inherits `TurboDRFMixin`, defines
-`turbodrf()`, and doesn't set `'enabled': False`. The endpoint is the
-lowercase model name plus `s` (`/api/books/`) unless `'endpoint'` is set.
+**A model has no endpoint.** Check that it inherits `TurboDRFMixin` (or is
+passed to `turbodrf.register()`) and doesn't set `'enabled': False`. The
+endpoint is the lowercase model name plus `s` (`/api/books/`) unless
+`'endpoint'` is set.
 
 **Users see each other's rows.** Roles don't scope rows. Declare
 `owner_field`, `tenant_field` or `visibility` (see [Tenancy](tenancy.md)).

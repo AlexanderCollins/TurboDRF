@@ -6,7 +6,7 @@ const stages = [
   { icon: 'icon-[lucide--badge-check]', title: '2. Does their role allow it?', body: 'The role needs the permission, such as demo.project.read, from TURBODRF_ROLES or the database.' },
   { icon: 'icon-[lucide--building-2]', title: '3. Keep only their rows', body: "Rows outside the user's workspace are removed, then the owner and other row rules apply." },
   { icon: 'icon-[lucide--columns-3]', title: '4. Remove hidden fields', body: "Fields the role can't read are left out. Sensitive fields need an explicit .read permission." },
-  { icon: 'icon-[lucide--zap]', title: '5. Run the query', body: 'List pages read values directly with .values() and joins, without building model objects.' },
+  { icon: 'icon-[lucide--zap]', title: '5. Run the query', body: 'One query for the page, with related fields joined in and one more per to-many field. The row rules run in the database.' },
   { icon: 'icon-[lucide--braces]', title: '6. Return JSON', body: 'Encoded with msgspec or orjson when either is installed.' },
 ];
 ---

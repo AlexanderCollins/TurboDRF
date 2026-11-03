@@ -13,20 +13,34 @@ const code = await modelTokens();
 const keys = { tenant: PIN.tenant.id, owner: PIN.owner.id, sensitive: PIN.sensitive.id };
 
 const features = [
-  { icon: 'icon-[lucide--layers]', title: 'CRUD endpoints and OpenAPI docs', body: 'List, detail, create, update and delete endpoints, and Swagger and ReDoc pages. You don\'t write views or URL files.' },
+  { icon: 'icon-[lucide--layers]', title: 'CRUD endpoints', body: 'List, detail, create, update and delete endpoints, with paging. You don\'t write views, serializers or URL files.' },
   { icon: 'icon-[lucide--sliders-horizontal]', title: 'Search, filtering and ordering', body: 'Filter, sort and pick fields with query parameters. Users can only filter and sort on fields they\'re allowed to read.' },
-  { icon: 'icon-[lucide--git-merge]', title: 'Custom row rules', body: 'Owner, Members, Group, Either and Conditional let you write rules like "visible to its team members" when owner and workspace aren\'t enough.' },
-  { icon: 'icon-[lucide--zap]', title: 'Fast list pages', body: 'List pages read values straight from the database, with joins for related fields. The number of queries stays the same as pages grow.' },
-  { icon: 'icon-[lucide--book-open]', title: 'API docs for each role', body: 'The Swagger and ReDoc pages show each user only the fields their role can read and write.' },
-  { icon: 'icon-[lucide--plug]', title: 'Roles from allauth or Keycloak', body: 'Turn django-allauth groups or Keycloak claims into TurboDRF roles. There\'s also a Sentry integration.' },
+  { icon: 'icon-[lucide--git-merge]', title: 'Custom row rules', body: 'Owner, Members, Group, Either, Conditional and Custom let you write rules like "visible to its team members" when owner and workspace aren\'t enough.' },
+  { icon: 'icon-[lucide--book-open]', title: 'API docs for each user', body: 'Swagger, ReDoc and an OpenAPI 3 schema show each user only the endpoints and fields they can use, so a client generated from it matches their access.' },
+  { icon: 'icon-[lucide--zap]', title: 'The same queries on every page', body: 'Related fields are joined into the page query, and each to-many field adds one query, however long the page. Row rules run in the database.' },
+  { icon: 'icon-[lucide--package-plus]', title: 'Models you don\'t own', body: 'turbodrf.register() serves a model without the mixin: auth.User, another app\'s model, or one you\'d rather keep free of API config.' },
+  { icon: 'icon-[lucide--search-check]', title: '"Why can\'t they see it?"', body: 'manage.py turbodrf_explain shows a user\'s roles and tenant, each field\'s rule, and which rule hides a row.' },
+  { icon: 'icon-[lucide--shield-check]', title: 'A staff API across tenants', body: 'A second router for your own staff, behind a gate you choose, with its own roles. Each model opts in.' },
+  { icon: 'icon-[lucide--plug]', title: 'Roles from groups, allauth or Keycloak', body: 'Read roles from Django groups with one setting, or from django-allauth groups and Keycloak claims. There\'s also a Sentry integration.' },
 ];
 
 const gates = [
-  'A model with no tenancy decision',
+  'A model with no tenancy decision, even one without an endpoint',
   'A tenant_field that doesn\'t lead to your tenant model',
-  'A misspelled turbodrf() key, field or lookup_field',
+  'A misspelled turbodrf() key, field, search field or lookup_field',
   'A permission string with a typo in the app, model or field',
-  'A Tenant() inside Either(...)',
+  'A Custom rule without a write check',
+];
+
+const principles = [
+  ['Deny by default', 'Models, roles and fields expose nothing until you list them.'],
+  ['One place for row rules', 'Every way a request reaches rows goes through the same scope.'],
+  ['The tenant wall stands apart', 'It\'s a setting, applied first. No rule can OR it away.'],
+  ['Reads OR, writes AND', 'Seeing a row through one rule never lifts another rule\'s write check.'],
+  ['Hidden means hidden everywhere', 'Responses, filters, search, ordering and the schema.'],
+  ['Fail closed', 'No tenant or no role means no rows, never all of them.'],
+  ['Fail loud at startup', 'Unsafe configs stop the app, not the first request.'],
+  ['Answers don\'t leak', 'A hidden row is a 404, the same as a missing one.'],
 ];
 ---
 <Layout title="TurboDRF">
@@ -106,7 +120,26 @@ const gates = [
     </div>
   </section>
 
+  <!-- Principles -->
+  <section id="principles" class="wrap py-20 sm:py-24 scroll-mt-20">
+    <div class="max-w-2xl">
+      <h2 class="font-display text-3xl sm:text-[2.6rem] leading-[1.1]" data-reveal>The rules behind it</h2>
+      <p class="mt-4 ink-2 text-lg leading-relaxed" data-reveal>Every generated endpoint follows the same principles, so there's no endpoint where a check was forgotten.</p>
+    </div>
+    <ol class="mt-10 grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {principles.map(([title, body], i) => (
+        <li class="panel p-5" data-reveal style={`--d:${(i % 4) * 0.05}s`}>
+          <span class="font-mono text-xs mint">{String(i + 1).padStart(2, '0')}</span>
+          <h3 class="font-display text-[1.02rem] mt-2">{title}</h3>
+          <p class="mt-1.5 ink-2 text-sm leading-relaxed">{body}</p>
+        </li>
+      ))}
+    </ol>
+    <a href="/docs/principles/" class="btn btn-ghost rounded-full mt-6 px-0 hover:bg-transparent mint" data-reveal>Read the design principles <span class="icon-[lucide--arrow-right] size-4"></span></a>
+  </section>
+
   <!-- Startup gates -->
+  <div class="border-t line"></div>
   <section class="wrap py-20 sm:py-24 grid lg:grid-cols-[1fr_1.2fr] gap-10 items-start">
     <div>
       <h2 class="font-display text-3xl sm:text-[2.6rem] leading-[1.1]" data-reveal>Configuration mistakes stop the app from starting</h2>

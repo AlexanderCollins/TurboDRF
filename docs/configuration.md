@@ -2,14 +2,14 @@
 
 ## The `turbodrf()` method
 
-Every TurboDRF model needs a `turbodrf()` classmethod that returns a config dict:
+A TurboDRF model's `turbodrf()` classmethod returns its config dict (a model without the mixin passes the same dict to [`turbodrf.register()`](#registering-a-model-without-the-mixin)):
 
 ```python
 @classmethod
 def turbodrf(cls):
     return {
         'enabled': True,              # Enable/disable API (default: True)
-        'endpoint': 'books',          # URL segment (default: lowercase model name + 's')
+        'endpoint': 'books',          # URL segment (default: lowercase model name + 's'); may hold '/' ('shop/books')
         'fields': ['title', 'price'], # Fields to expose (default: '__all__'; see below)
         'public_access': False,       # Allow unauthenticated GET (default: False)
         'lookup_field': 'slug',       # URL lookup field (default: pk)
@@ -35,16 +35,20 @@ operator's staff, across tenants): see [Platform scope](platform.md).
   registered, so declare it as for any other model (see
   [Tenancy](tenancy.md#hard-fail-at-startup)).
 
-The router checks each enabled model's config at startup and raises
-`ImproperlyConfigured` on:
+The router checks the configs at startup and raises `ImproperlyConfigured`
+on:
 
-- an unknown key, such as a misspelt `'owner_feild'` (the error lists the
-  valid keys; `sensitive_fields` is a class attribute on the model, not a
-  key);
-- a `fields` entry that isn't a model field, a `@property` or a `__` path
-  through relations, or one that ends on a reverse one-to-one (list a field
-  of the related model instead, e.g. `'profile__bio'`);
-- a `lookup_field` that isn't a unique column of the model.
+- an unknown key in any model's config, enabled or not, such as a misspelt
+  `'owner_feild'` (the error lists the valid keys; `sensitive_fields` is a
+  class attribute on the model, not a key);
+- on an enabled model, a `fields` entry that isn't a model field, a
+  `@property` or a `__` path through relations, or one that ends on a reverse
+  one-to-one (list a field of the related model instead, e.g.
+  `'profile__bio'`);
+- a `lookup_field` that isn't a unique column of the model;
+- a [`searchable_fields`](#searchable-fields) entry that can't be searched;
+- two models routed to the same `endpoint` (the error suggests an
+  app-prefixed one, such as `'shop/books'`).
 
 It checks every model's `'platform'` block the same way, enabled or not (see
 [Platform scope](platform.md#startup-checks)).
@@ -53,7 +57,8 @@ It checks every model's `'platform'` block the same way, enabled or not (see
 
 Always set `fields` explicitly. It defaults to `'__all__'`, which exposes
 every concrete and many-to-many field, including ones added to the model
-later. Three formats:
+later; `manage.py check` warns (`turbodrf.W004`) for each model that uses it.
+Three formats:
 
 ```python
 # All concrete and many-to-many fields
@@ -86,7 +91,7 @@ Access related model fields with `__` notation:
 ]
 ```
 
-FK fields are flattened in responses (`author__name` becomes `author_name`), and the FK itself renders as its raw id. M2M fields are arrays of objects keyed by the path below the M2M (`tags__group__name` gives `{"group__name": ...}`), in the target's `Meta.ordering`:
+FK fields are flattened in responses (`author__name` becomes `author_name`), and the FK itself renders as its raw id. M2M fields are arrays of objects keyed by the path below the M2M (`tags__group__name` gives `{"group__name": ...}`), in the target's `Meta.ordering` when the array shows those columns and the caller can read them (else by primary key):
 
 ```json
 {
@@ -97,7 +102,7 @@ FK fields are flattened in responses (`author__name` becomes `author_name`), and
 }
 ```
 
-An M2M listed on its own (`'tags'`) renders the pks of the targets the caller can see. A reverse relation (`'items'`, `'items__label'`) renders like an M2M, scoped the same way, and is read-only. Nested and M2M values are formatted by the same DRF field a top-level field of that type uses (a Decimal renders as a string by default, `DATETIME_FORMAT` applies, files render as absolute URLs). A path ending on an FK renders the value the parent stores: the related pk, or the `to_field` value.
+An M2M listed on its own (`'tags'`) renders the pks of the targets the caller can see. A reverse relation (`'items'`, `'items__label'`) renders like an M2M, scoped the same way, and is read-only. It's the related model's FK read from the other side, so the caller needs that FK's read grant, or model-level read on the related model when the FK has no rule (see [Security](security.md#reverse-relations)). Nested and M2M values are formatted by the same DRF field a top-level field of that type uses (a Decimal renders as a string by default, `DATETIME_FORMAT` applies, files render as absolute URLs). A path ending on an FK renders the value the parent stores: the related pk, or the `to_field` value.
 
 A nested value renders only when the caller can see the related row through that model's own endpoint; otherwise it's `null`, and M2M targets they can't see are left out. See [Security](security.md#nested-fields-across-scoped-relations).
 
@@ -137,11 +142,11 @@ class Book(models.Model, TurboDRFMixin):
 
 `display_title` appears in every response alongside the real fields.
 
-Both paths render the same property keys: a property is readable by any role that can read the model (it can't carry its own field-level rule), and sensitive-named properties are dropped.
+A property is readable by any role that can read the model (it can't carry its own field-level rule), and sensitive-named properties are dropped.
 
 ### The property sandbox
 
-A property is computed on a **sandbox** copy of the row, the same way on both paths:
+A property is computed on a **sandbox** copy of the row:
 
 - Only the columns the caller may read are loaded. Reading any other column (a field a role has no read rule for, a `sensitive_fields` entry, `password`) would need a query, so it fails. A column a model hook loads while the row is built (a `post_init` handler, `__init__`) is dropped again before the property runs.
 - Related objects are available only if the model declares them in `property_relations`. Each hop is loaded within the caller's scope (the target's own `tenant_field` and predicates, as for `author__name`) and with only the columns the caller may read on that model. A FK whose target is out of scope reads as `None`; out-of-scope rows are missing from a reverse or M2M relation. A hop is loaded only if the caller can read the relation, has model-level read on its target model, and can read the column it joins on; otherwise a property that follows it fails.
@@ -153,6 +158,7 @@ A property that fails is left out of the response and logged (a warning the firs
 ```python
 class Holding(models.Model, TurboDRFMixin):
     name = models.CharField(max_length=100)
+    brokerage = models.ForeignKey(Brokerage, on_delete=models.CASCADE)
     portfolio = models.ForeignKey(Portfolio, null=True, on_delete=models.SET_NULL)
 
     @property
@@ -162,7 +168,8 @@ class Holding(models.Model, TurboDRFMixin):
 
     @property
     def valuation_dates(self):
-        return [v.date for v in self.valuations.all()]   # reverse FK
+        # Valuation.holding = ForeignKey(Holding, related_name='valuations')
+        return [v.date for v in self.valuations.all()]
 
     @classmethod
     def turbodrf(cls):
@@ -184,6 +191,43 @@ A path may end on a plain field (`portfolio__name`), and may be as deep as `TURB
 'unscoped_properties': ['exchange_rate'],   # reads shared reference data
 ```
 
+## Registering a model without the mixin
+
+`turbodrf.register(Model, config)` serves a model that doesn't have
+`TurboDRFMixin`: a model you can't edit (`auth.User`, a third-party app's), or
+one whose API config you'd rather keep out of `models.py`. `config` is what
+its `turbodrf()` would return, as a dict or a zero-argument callable returning
+one. Call it from an `AppConfig.ready()`, before the URLconf builds the
+router:
+
+```python
+# shop/apps.py
+from django.apps import AppConfig
+
+
+class ShopConfig(AppConfig):
+    name = 'shop'
+
+    def ready(self):
+        import turbodrf
+
+        from .models import Book
+
+        turbodrf.register(Book, {
+            'fields': ['id', 'title', 'author__name', 'price'],
+            'tenant_field': 'workspace',
+            'searchable_fields': ['title'],
+        })
+```
+
+Everything else is the same as with the mixin: the startup checks, the
+permission strings (`shop.book.read`), row scoping, the docs. A tenancy error
+raises from `register()` itself; the rest of the config is checked when the
+router is built, as for any model. A model can't have both the mixin and a
+registration. Per-model `sensitive_fields` stays a class attribute; for a
+model you can't edit, give the field a `.read` rule in a role instead (see
+[permissions.md](permissions.md#how-field-permissions-work)).
+
 ## Searchable fields
 
 List the fields available for `?search=` either in the config dict (preferred) or as a `searchable_fields` class attribute. The config key wins whenever it's present, even as an empty list:
@@ -202,7 +246,7 @@ class Book(models.Model, TurboDRFMixin):
 GET /api/books/?search=django
 ```
 
-Entries may be plain field names or `__`-paths ending on a column, optionally with a `^`, `=` or `@` prefix. Search is gated by field-level read permissions -- a caller who cannot read a field cannot search by it. See [Filtering & Search](filtering.md#search) for details.
+Entries may be plain field names or `__`-paths ending on a column, optionally with a `^`, `=` or `@` prefix; any other entry (a typo, a path ending on a relation) raises `ImproperlyConfigured` at startup. Search is gated by field-level read permissions -- a caller who cannot read a field cannot search by it. See [Filtering & Search](filtering.md#search) for details.
 
 ## Read-only endpoints
 
@@ -279,7 +323,7 @@ turbodrf_action(detail=False, methods=None, url_path=None, url_name=None, **kwar
 - `detail=True` → operates on a single object (`/api/<endpoint>/{pk}/<url_path>/`)
 - `detail=False` (the default) → operates on the collection (`/api/<endpoint>/<url_path>/`)
 - `methods` defaults to `["get"]`
-- `url_path` / `url_name` default to the handler's function name
+- `url_path` defaults to the handler's function name, and `url_name` to that name with `-` for `_`
 - Other keyword arguments are DRF's per-action view attributes (`permission_classes`, `throttle_classes`, ...). `serializer_class`, `queryset` and any other argument TurboDRF would ignore raise `TypeError`: TurboDRF builds the action's serializer and queryset from the model's config.
 
 ```python

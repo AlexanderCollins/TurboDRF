@@ -222,28 +222,19 @@ class TestSerializerRefNameUniqueness(TestCase):
             related=self.related,
         )
 
-    def test_different_fields_produce_different_ref_names(self):
-        """Test that serializers with different fields have unique ref_names."""
-        # Create two serializers with different field sets
+    def test_ref_name_doesnt_depend_on_the_field_set(self):
+        """The schema definition's name is stable: a client generated from
+        the schema keeps its type names when a field is added or a role sees
+        a different field set. Each serializer still sets it explicitly
+        (Issue #10: drf_yasg refuses two classes that share an implicit one)."""
         Serializer1 = TurboDRFSerializerFactory.create_serializer(
             SampleModel, ["title", "price"], self.admin_user, view_type="list"
         )
         Serializer2 = TurboDRFSerializerFactory.create_serializer(
             SampleModel, ["title", "description"], self.admin_user, view_type="list"
         )
-
-        # Get ref_names from Meta
-        ref_name_1 = Serializer1.Meta.ref_name
-        ref_name_2 = Serializer2.Meta.ref_name
-
-        # They should be different
-        self.assertNotEqual(ref_name_1, ref_name_2)
-
-        # Both should contain the app_label and model_name
-        self.assertIn("test_app", ref_name_1)
-        self.assertIn("samplemodel", ref_name_1)
-        self.assertIn("test_app", ref_name_2)
-        self.assertIn("samplemodel", ref_name_2)
+        self.assertEqual(Serializer1.Meta.ref_name, "test_app_samplemodel_list")
+        self.assertEqual(Serializer2.Meta.ref_name, "test_app_samplemodel_list")
 
     def test_same_fields_produce_same_ref_name(self):
         """Test that serializers with identical fields have the same ref_name."""
@@ -284,23 +275,11 @@ class TestSerializerRefNameUniqueness(TestCase):
         self.assertIn("detail", detail_ref_name)
 
     def test_ref_name_format(self):
-        """Test that ref_name follows the expected format."""
+        """ref_name is app_label_model_name_view_type."""
         SerializerClass = TurboDRFSerializerFactory.create_serializer(
-            SampleModel, ["title", "price"], self.admin_user, view_type="list"
+            SampleModel, ["title", "price"], self.admin_user, view_type="detail"
         )
-
-        ref_name = SerializerClass.Meta.ref_name
-
-        # Should be in format: app_label_model_name_view_type_hash
-        parts = ref_name.split("_")
-
-        self.assertGreaterEqual(len(parts), 4, "ref_name should have at least 4 parts")
-        self.assertEqual(parts[0], "test")
-        self.assertEqual(parts[1], "app")
-        self.assertEqual(parts[2], "samplemodel")
-        self.assertEqual(parts[3], "list")
-        # Last part should be the hash (8 characters)
-        self.assertEqual(len(parts[4]), 8)
+        self.assertEqual(SerializerClass.Meta.ref_name, "test_app_samplemodel_detail")
 
     def test_field_order_does_not_affect_ref_name(self):
         """Test that field order doesn't affect ref_name (fields are sorted)."""

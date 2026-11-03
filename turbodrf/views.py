@@ -1,7 +1,9 @@
 import copy
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.db import models
+from django.db.models import Subquery
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -56,23 +58,28 @@ class Authorization:
         original two-layer code).
 
         A predicate that crosses a multi-valued relation (``Members``, or an
-        ``Either`` ORing one with another column) is applied as a ``pk__in``
-        subquery: a direct JOIN returns a row once per matching related row,
-        duplicating list rows, inflating counts and making ``get_object()``
-        raise MultipleObjectsReturned. The subquery starts from the
-        tenant-filtered queryset, so it reads one tenant's rows, not the
-        table's."""
+        ``Either`` ORing one with another column) can't be a plain filter: a
+        direct JOIN returns a row once per matching related row, duplicating
+        list rows, inflating counts and making ``get_object()`` raise
+        MultipleObjectsReturned. Each such lookup becomes ``pk__in`` the rows
+        it matches (``without_to_many_joins``); when that can't be done
+        without changing the predicate's meaning, the whole predicate is
+        applied as a ``pk__in`` subquery of the tenant-filtered queryset."""
         if self.tenant_q is not None:
             queryset = queryset.filter(self.tenant_q)
         if self.predicate_q is not None:
-            if self.predicate_q and _q_spans_multivalued(
-                queryset.model, self.predicate_q
-            ):
-                queryset = queryset.filter(
-                    pk__in=queryset.filter(self.predicate_q).values("pk")
-                )
+            model = queryset.model
+            predicate_q = self.predicate_q
+            if predicate_q and _q_spans_multivalued(model, predicate_q):
+                flat = without_to_many_joins(model, predicate_q)
+                if flat is None:
+                    queryset = queryset.filter(
+                        pk__in=queryset.filter(predicate_q).values("pk")
+                    )
+                else:
+                    queryset = queryset.filter(flat)
             else:
-                queryset = queryset.filter(self.predicate_q)
+                queryset = queryset.filter(predicate_q)
         return queryset
 
 
@@ -95,15 +102,28 @@ def _select_configured_fields(fields, wanted):
     ]
 
 
+def _expression_inside(value):
+    """True for a list, tuple or set (an ``__in`` or ``__range`` value) that
+    holds an expression, such as ``F()``: it reads columns like one."""
+    return isinstance(value, (list, tuple, set, frozenset)) and any(
+        hasattr(item, "resolve_expression") for item in value
+    )
+
+
+class RowsMatching(Subquery):
+    """An ``__in`` value: the pks of the rows one lookup matches, built from a
+    plain lookup and value, so it refers to nothing outside itself."""
+
+
 def _q_spans_multivalued(model, q):
     """True if any lookup in ``q`` may traverse an M2M or reverse relation.
 
     A child that isn't a ``(lookup, value)`` pair (an ``Exists()`` or other
     expression, say from a ``Custom`` predicate), or whose value is an
-    expression (``F('team__members')``), can't be inspected, so it counts as
+    expression other than a plain ``F()`` (whose path is checked like the
+    lookup's) or a ``RowsMatching``, can't be inspected, so it counts as
     multi-valued: the subquery form is correct either way."""
-    from django.core.exceptions import FieldDoesNotExist
-    from django.db.models import Q
+    from django.db.models import F, Q
 
     for child in q.children:
         if isinstance(child, Q):
@@ -112,20 +132,140 @@ def _q_spans_multivalued(model, q):
             continue
         if not isinstance(child, tuple) or not isinstance(child[0], str):
             return True
-        if hasattr(child[1], "resolve_expression"):
-            return True
-        current = model
-        for part in child[0].split("__"):
-            if current is None:
-                break
-            try:
-                field = current._meta.get_field(part)
-            except FieldDoesNotExist:
-                break
-            if field.many_to_many or field.one_to_many:
+        value = child[1]
+        if type(value) is F:
+            if _to_many_prefix(model, value.name):
                 return True
-            current = field.related_model if field.is_relation else None
+        elif _expression_inside(value) or (
+            hasattr(value, "resolve_expression") and not isinstance(value, RowsMatching)
+        ):
+            return True
+        if _to_many_prefix(model, child[0]):
+            return True
     return False
+
+
+def _to_many_prefix(model, path):
+    """The part of lookup ``path`` up to and including its first M2M or
+    reverse relation (``team__members`` of ``team__members__name``), or
+    ``None`` when it crosses none."""
+    from django.core.exceptions import FieldDoesNotExist
+
+    current, walked = model, []
+    for part in path.split("__"):
+        if current is None:
+            break
+        try:
+            field = current._meta.get_field(part)
+        except FieldDoesNotExist:
+            break
+        walked.append(part)
+        if field.many_to_many or field.one_to_many:
+            return "__".join(walked)
+        current = field.related_model if field.is_relation else None
+    return None
+
+
+def _leaves(q):
+    """The ``(lookup, value)`` children of ``q`` at any depth, or ``None`` if
+    one isn't such a pair (an expression) or a node is an XOR."""
+    from django.db.models import Q
+
+    if q.connector == "XOR":
+        return None  # its meaning changes when its operands move apart
+    leaves = []
+    for child in q.children:
+        if isinstance(child, Q):
+            nested = _leaves(child)
+            if nested is None:
+                return None
+            leaves.extend(nested)
+        elif isinstance(child, tuple) and isinstance(child[0], str):
+            leaves.append(child)
+        else:
+            return None
+    return leaves
+
+
+def _rebuilt(q, rewrite):
+    """A copy of ``q`` with each ``(lookup, value)`` child replaced by
+    ``rewrite(child)``."""
+    from django.db.models import Q
+
+    children = [
+        _rebuilt(child, rewrite) if isinstance(child, Q) else rewrite(child)
+        for child in q.children
+    ]
+    return Q(*children, _connector=q.connector, _negated=q.negated)
+
+
+def without_to_many_joins(model, q):
+    """``q`` with each lookup that crosses an M2M or reverse relation replaced
+    by ``pk__in`` the rows it matches (``RowsMatching``). The rows are the
+    same, but the outer query has no to-many JOIN: nothing repeats, and no
+    ``pk__in`` wrap of the whole predicate (an OR across a JOIN, which
+    defeats indexes) is needed.
+
+    ``None`` when that could change which rows ``q`` matches: two lookups
+    through the same relation share one JOIN in a ``filter()`` (one related
+    row must match both), an XOR's meaning depends on its operands staying
+    together, and an expression can't be inspected (one inside a list
+    included). Only a plain ``F()`` on a single-valued path, or a
+    ``RowsMatching``, is kept."""
+    from django.db.models import F
+
+    leaves = _leaves(q)
+    if leaves is None:
+        return None
+    seen = set()
+    for lookup, value in leaves:
+        prefix = _to_many_prefix(model, lookup)
+        if type(value) is F:
+            if prefix or _to_many_prefix(model, value.name):
+                return None
+        elif _expression_inside(value) or (
+            hasattr(value, "resolve_expression") and not isinstance(value, RowsMatching)
+        ):
+            return None
+        if prefix:
+            if prefix in seen:
+                return None
+            seen.add(prefix)
+
+    def rewrite(child):
+        lookup, value = child
+        if not _to_many_prefix(model, lookup):
+            return child
+        rows = model._base_manager.filter(**{lookup: value}).order_by()
+        return ("pk__in", RowsMatching(rows.values("pk")))
+
+    return _rebuilt(q, rewrite)
+
+
+def prefixed(q, prefix):
+    """``q`` (a related model's scope) moved onto relation ``prefix`` of
+    another model: each lookup and plain ``F()`` starts with ``prefix__``.
+    ``None`` if a child can't be moved: an XOR, an expression, or a value
+    other than a plain ``F()`` or a ``RowsMatching`` that holds one."""
+    from django.db.models import F
+
+    leaves = _leaves(q)
+    if leaves is None:
+        return None
+    for _lookup, value in leaves:
+        if _expression_inside(value) or (
+            hasattr(value, "resolve_expression")
+            and not (type(value) is F or isinstance(value, RowsMatching))
+        ):
+            return None
+
+    def move(child):
+        lookup, value = child
+        if type(value) is F:
+            value = F(f"{prefix}__{value.name}")
+        return (f"{prefix}__{lookup}", value)
+
+    return _rebuilt(q, move)
 
 
 def _resolve_row_scoping(model):
@@ -172,6 +312,24 @@ def _filter_lookups(field):
         return ["exact", "istartswith"]
     # Booleans, foreign keys, everything else: exact.
     return ["exact"]
+
+
+def configured_pagination_class():
+    """TURBODRF_PAGINATION_CLASS (a dotted path or a class), else
+    TurboDRFPagination."""
+    from django.utils.module_loading import import_string
+
+    setting = getattr(settings, "TURBODRF_PAGINATION_CLASS", None)
+    if setting is None:
+        return TurboDRFPagination
+    if not isinstance(setting, str):
+        return setting
+    try:
+        return import_string(setting)
+    except ImportError as exc:
+        raise ImproperlyConfigured(
+            f"TURBODRF_PAGINATION_CLASS={setting!r} can't be imported: {exc}"
+        ) from exc
 
 
 class TurboDRFPagination(PageNumberPagination):
@@ -357,6 +515,19 @@ class TurboDRFViewSet(*_viewset_bases):
     permission_classes = [TurboDRFPermission]
     metadata_class = TurboDRFMetadata
     pagination_class = TurboDRFPagination
+
+    @property
+    def paginator(self):
+        """DRF's paginator. TURBODRF_PAGINATION_CLASS (read per request, as
+        the permission settings are) replaces the default class; a
+        ``pagination_class`` a subclass or an action sets is kept."""
+        if not hasattr(self, "_paginator"):
+            cls = self.pagination_class
+            if cls is TurboDRFPagination:
+                cls = configured_pagination_class()
+            self._paginator = cls() if cls is not None else None
+        return self._paginator
+
     filter_backends = [
         TurboDRFFilterBackend,
         TurboDRFSearchFilter,
@@ -812,13 +983,17 @@ class TurboDRFViewSet(*_viewset_bases):
         queryset, override `_get_base_queryset()` instead — this
         wrapper still applies the access layer.
         """
+        if getattr(self, "swagger_fake_view", False):
+            # drf_yasg reads only the model while building the schema (once
+            # per operation): no rows, no scope to build.
+            return self.model._default_manager.none()
+
         # Unscoped base — see invariant in the docstring. This MUST be
         # passed through the tenant + predicate filter steps further
         # down before being returned to a request.
         unscoped = self._get_base_queryset()
 
-        # Add default ordering by primary key to avoid pagination warnings
-        queryset = unscoped if unscoped.ordered else unscoped.order_by("pk")
+        queryset = unscoped.order_by(*self._default_ordering(unscoped))
 
         # A delete renders nothing: it needs no JOINs or visibility flags.
         renders_instances = getattr(self, "action", None) != "destroy"
@@ -892,7 +1067,7 @@ class TurboDRFViewSet(*_viewset_bases):
             # where they're rendered).
             if not self._single_valued_prefix(path).startswith(relation_path):
                 continue
-            q = build_traversal_scope_q(self.model, path, request)
+            q = build_traversal_scope_q(self.model, path, request, correlated=True)
             if not q:
                 continue
             alias = f"_tdrf_visible_{len(self._nested_visibility)}"
@@ -947,6 +1122,21 @@ class TurboDRFViewSet(*_viewset_bases):
                 self.model, paths, getattr(request, "user", None)
             )
         return [prefixes[path] + path for path in paths]
+
+    def _default_ordering(self, queryset):
+        """The base queryset's order (its ``order_by``, else ``Meta.ordering``)
+        if the caller may order by it, else the pk: pagination needs a stable
+        order, and the order of the rows mustn't follow a column the caller
+        can't read (see ``readable_ordering``)."""
+        from .filter_backends import readable_ordering
+
+        query = queryset.query
+        ordering = query.order_by or (
+            self.model._meta.ordering if query.default_ordering else ()
+        )
+        if not ordering:
+            return ["pk"]
+        return readable_ordering(self.model, ordering, set(self.ordering_fields))
 
     @property
     def ordering_fields(self):
@@ -1095,20 +1285,19 @@ class TurboDRFViewSet(*_viewset_bases):
         return self.get_filterset_fields()
 
     def create(self, request, *args, **kwargs):
-        """Create a model instance.
-
-        We pre-fill tenant/owner FKs into request.data BEFORE serializer
-        validation, because those FKs are typically non-null on the model
-        and DRF's required-field check would otherwise reject requests that
-        omit them. The serializer then runs its own validate_write and
-        auto_fill on validated_data — the two stages have different roles:
-          - view-level pre-fill: ensure required FKs exist for serializer
-            validation (fills only if missing)
-          - serializer-level auto_fill: always overwrite tenant FK after
-            permission-stripping, so a stripped wrong-tenant value gets
-            replaced with the correct one
-        Both are needed for security AND ergonomics. See predicates.py.
-        """
+        # (Comments, not a docstring: the schema shows a view method's
+        # docstring as the operation's description.)
+        # We pre-fill tenant/owner FKs into request.data BEFORE serializer
+        # validation, because those FKs are typically non-null on the model
+        # and DRF's required-field check would otherwise reject requests that
+        # omit them. The serializer then runs its own validate_write and
+        # auto_fill on validated_data — the two stages have different roles:
+        #   - view-level pre-fill: ensure required FKs exist for serializer
+        #     validation (fills only if missing)
+        #   - serializer-level auto_fill: always overwrite tenant FK after
+        #     permission-stripping, so a stripped wrong-tenant value gets
+        #     replaced with the correct one
+        # Both are needed for security AND ergonomics. See predicates.py.
         data = self._prefill_required_fields(request)
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
@@ -1119,10 +1308,9 @@ class TurboDRFViewSet(*_viewset_bases):
         )
 
     def update(self, request, *args, **kwargs):
-        """Update a model instance. A full update (PUT) that leaves out the
-        tenant FK gets it pre-filled, as on create: it's required, and the
-        row is in the caller's tenant anyway. The owner isn't: an update
-        leaves it as is."""
+        # A full update (PUT) that leaves out the tenant FK gets it
+        # pre-filled, as on create: it's required, and the row is in the
+        # caller's tenant anyway. The owner isn't: an update leaves it as is.
         partial = kwargs.pop("partial", False)
         instance = self.get_object()
         data = request.data

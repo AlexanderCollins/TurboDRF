@@ -8,6 +8,8 @@ runtime permission changes without code deployment.
 from django.conf import settings
 from django.contrib.auth.models import Group
 from django.db import models, transaction
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 
 
 def _get_permission_check_constraint():
@@ -328,16 +330,16 @@ class RolePermission(models.Model):
                 version=models.F("version") + 1, updated_at=models.functions.Now()
             )
 
-    def delete(self, *args, **kwargs):
-        """Update role version on permission deletion for cache invalidation."""
-        role_pk = self.role.pk if self.role else None
-        result = super().delete(*args, **kwargs)
-        # Increment role version to invalidate caches
-        if role_pk:
-            TurboDRFRole.objects.filter(pk=role_pk).update(
-                version=models.F("version") + 1, updated_at=models.functions.Now()
-            )
-        return result
+
+@receiver(post_delete, sender=RolePermission)
+def _bump_role_version_on_delete(sender, instance, **kwargs):
+    """Update the role version when a permission is deleted, for cache
+    invalidation. A receiver, not ``delete()``: with one connected, a QuerySet
+    ``delete()`` (the admin's "delete selected") sends it per row too."""
+    if instance.role_id:
+        TurboDRFRole.objects.filter(pk=instance.role_id).update(
+            version=models.F("version") + 1, updated_at=models.functions.Now()
+        )
 
 
 class UserRole(models.Model):

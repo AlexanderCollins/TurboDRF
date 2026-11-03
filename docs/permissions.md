@@ -59,6 +59,18 @@ TURBODRF_ROLES = {
 }
 ```
 
+A refused request is a 403. With `DEBUG = True` its detail says why: the
+caller has no roles, or none of their roles grants the permission it names
+(`books.book.delete`). Either way the reason is logged at INFO by
+`turbodrf.permissions`. `manage.py check` warns (`turbodrf.W003`) when
+static mode has no `TURBODRF_ROLES` at all.
+
+The generated viewsets' permission check is TurboDRF's own: DRF's
+`DEFAULT_PERMISSION_CLASSES` doesn't apply to them. For a check every route
+needs (staff only, MFA, a suspended-account flag), pass it as the router's
+`gate`: `TurboDRFRouter(gate=[IsNotSuspended])`. Authentication and
+throttling come from your `REST_FRAMEWORK` settings as usual.
+
 ### Permission format
 
 - Model-level: `app_label.model_name.action` (read, create, update, delete)
@@ -115,13 +127,15 @@ can't, and only a role grants that.
 ### Assigning roles to users
 
 In static mode (the default), TurboDRF reads `user.roles` -- an attribute or
-property that returns a list of role names:
+property that returns a list of role names -- or calls the function
+`TURBODRF_ROLE_GETTER` names (a dotted path or a callable, `user -> role
+names`):
 
 ```python
 # From Django groups
-User.add_to_class('roles', property(lambda self: [g.name for g in self.groups.all()]))
+TURBODRF_ROLE_GETTER = 'turbodrf.backends.group_names'
 
-# From a JSONField
+# From a JSONField on a custom user model
 class User(AbstractUser):
     user_roles = models.JSONField(default=list)
 
@@ -130,11 +144,14 @@ class User(AbstractUser):
         return self.user_roles
 ```
 
+A getter that can't be imported raises at startup.
+
 Authenticated users with no roles get 403.
 
-In database mode, roles come from the `UserRole` table and `user.roles` is
-ignored. With the allauth or Keycloak integration on, TurboDRF installs a
-`roles` property for you when the user model doesn't define one (see
+In database mode, roles come from the `UserRole` table, and `user.roles` and
+`TURBODRF_ROLE_GETTER` are ignored. With the allauth or Keycloak integration
+on, TurboDRF installs a `roles` property for you when the user model doesn't
+define one; it's read when `TURBODRF_ROLE_GETTER` isn't set (see
 [Integrations](integrations.md#how-the-integrations-resolve-roles)).
 
 ### Static vs database mode
@@ -147,6 +164,8 @@ ignored. With the allauth or Keycloak integration on, TurboDRF installs a
   `UserRole` tables. Permissions can be mutated at runtime by an admin
   UI without redeploying, and take effect on the next request (see
   [Caching](#caching)).
+
+Any other value raises `ImproperlyConfigured` at startup.
 
 The mode applies to the tenant scope. A platform router (staff across
 tenants) has its own roles and map, `TURBODRF_PLATFORM_ROLE_GETTER` and
@@ -187,16 +206,18 @@ the key prefix `TURBODRF_PERMISSION_CACHE_PREFIX` (default
 `"turbodrf_perm"`).
 
 The cache key covers the user's current roles, the role configuration
-(`TURBODRF_ROLES` in static mode; every role's name and version in
+(`TURBODRF_ROLES` in static mode; every role's id, name and version in
 database mode, for anonymous callers too), and the model's `sensitive_fields`
 and `public_access`. So these take effect on the next request: assigning or
 removing a user's role, changing `TURBODRF_ROLES`, saving or deleting a
-`RolePermission` (which bumps its role's version), and a deploy that changes
-a model's `sensitive_fields` or `public_access`.
+`RolePermission` (which bumps its role's version), deleting a role and
+creating another under its name, and a deploy that changes a model's
+`sensitive_fields` or `public_access`.
 
-A bulk `RolePermission` QuerySet `update()` or `delete()` skips the model's
-`save()` / `delete()`, so it doesn't bump versions, and snapshots stay stale
-until the TTL. Invalidate them after one:
+A QuerySet `delete()` of `RolePermission` rows (the admin's "delete
+selected" included) bumps their roles' versions too. A bulk `update()` or
+`bulk_create()` skips the model's `save()`, so it doesn't, and snapshots stay
+stale until the TTL. Invalidate them after one:
 
 ```python
 from django.contrib.auth.models import AnonymousUser
@@ -216,6 +237,12 @@ Permissions are checked at each level of a nested field path. For `author__publi
 3. Can user read `name` on Publisher?
 
 If any level fails, the field is excluded.
+
+A reverse relation is the related model's FK (or M2M) read from the other
+side. A path through `Book.reviews` (a reverse FK from `Review.book`) also
+needs read on `Review.book`: its `.read` grant if the field has a rule, else
+model-level read on `Review`. The same holds for a bare reverse relation in
+`fields`, a filter, a search path and a `property_relations` hop.
 
 ### Filter permissions
 

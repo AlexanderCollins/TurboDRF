@@ -49,6 +49,82 @@ def check_permissions_enabled(app_configs=None, **kwargs):
     ]
 
 
+def check_roles_configured(app_configs=None, **kwargs):
+    """Warn when static mode has no roles: every authenticated request to a
+    TurboDRF endpoint is then a 403, with nothing saying why."""
+    if (
+        getattr(settings, "TURBODRF_PERMISSION_MODE", "static") != "static"
+        or getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False)
+        or getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False)
+        or getattr(settings, "TURBODRF_ROLES", None)
+    ):
+        return []
+    return [
+        checks.Warning(
+            "TURBODRF_ROLES is empty: no role grants anything, so every "
+            "authenticated request to a TurboDRF endpoint is a 403.",
+            hint=(
+                "Define TURBODRF_ROLES (docs/permissions.md), or set "
+                "TURBODRF_PERMISSION_MODE = 'database' to keep roles in the "
+                "database."
+            ),
+            id="turbodrf.W003",
+        )
+    ]
+
+
+def check_role_source(app_configs=None, **kwargs):
+    """Warn when TURBODRF_ROLE_GETTER is set alongside the allauth or Keycloak
+    integration: the getter decides the roles, so the integration's ``roles``
+    are never read."""
+    integration = [
+        name
+        for name in ("TURBODRF_ALLAUTH_INTEGRATION", "TURBODRF_KEYCLOAK_INTEGRATION")
+        if getattr(settings, name, False)
+    ]
+    if not integration or getattr(settings, "TURBODRF_ROLE_GETTER", None) is None:
+        return []
+    return [
+        checks.Warning(
+            f"TURBODRF_ROLE_GETTER is set, so {', '.join(integration)} has no "
+            f"effect on roles: the getter decides them.",
+            hint="Remove one of them, or have the getter read the integration's roles.",
+            id="turbodrf.W005",
+        )
+    ]
+
+
+def check_explicit_fields(app_configs=None, **kwargs):
+    """Warn for each TurboDRF model whose ``fields`` is ``'__all__'`` (the
+    default): every column is exposed, a column added later included. A model
+    that inherits the mixin from an abstract base without its own
+    ``turbodrf()`` gets that default without anyone choosing it."""
+    from .mixins import turbodrf_config, turbodrf_models
+
+    messages = []
+    for model in turbodrf_models():
+        try:
+            config = turbodrf_config(model)
+        except Exception:
+            continue  # the router reports a broken config
+        if not isinstance(config, dict) or not config.get("enabled", True):
+            continue
+        fields = config.get("fields", "__all__")
+        if fields == "__all__" or (
+            isinstance(fields, dict) and "__all__" in fields.values()
+        ):
+            messages.append(
+                checks.Warning(
+                    f"{model._meta.label} exposes every field ('__all__'), "
+                    f"including any column added later.",
+                    hint="List the fields the API should expose in 'fields'.",
+                    obj=model,
+                    id="turbodrf.W004",
+                )
+            )
+    return messages
+
+
 class TurboDRFConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "turbodrf"
@@ -60,6 +136,9 @@ class TurboDRFConfig(AppConfig):
         """
         checks.register(check_docs_dependencies)
         checks.register(check_permissions_enabled, checks.Tags.security)
+        checks.register(check_roles_configured)
+        checks.register(check_explicit_fields)
+        checks.register(check_role_source)
 
         # Register every TurboDRF model's tenant boundary and predicates now,
         # not when the URLconf first builds a router: FK-injection checks and

@@ -11,7 +11,12 @@ from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist
 from django.core.management.base import BaseCommand
 
-from turbodrf.mixins import TurboDRFMixin, _model_config, _resolve_configured_fields
+from turbodrf.mixins import (
+    _model_config,
+    _resolve_configured_fields,
+    is_turbodrf_model,
+    turbodrf_config,
+)
 from turbodrf.scope import (
     PLATFORM,
     SCOPES,
@@ -45,9 +50,9 @@ class Command(BaseCommand):
         models = []
 
         for model in apps.get_models():
-            if not issubclass(model, TurboDRFMixin):
+            if not is_turbodrf_model(model):
                 continue
-            config = model.turbodrf()
+            config = turbodrf_config(model)
             if scope == PLATFORM:
                 block = platform_block(model, config)
                 if block is None or not block.get("enabled", True):
@@ -233,33 +238,33 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(label))
 
         if predicates:
-            names = [self._describe_predicate(p) for p in predicates]
+            names = [describe_predicate(p) for p in predicates]
             self.stdout.write(f"  Within-tenant predicates: {', '.join(names)}")
 
-    def _describe_predicate(self, p):
-        """One-line describe of a predicate for command output."""
-        from turbodrf.predicates import (
-            Conditional,
-            Custom,
-            Either,
-            Group,
-            Members,
-            Owner,
-        )
 
-        if isinstance(p, Owner):
-            fields = p.fields[0] if len(p.fields) == 1 else p.fields
-            bypass = f", bypass={sorted(p.bypass)}" if p.bypass else ""
-            return f"Owner({fields!r}{bypass})"
-        if isinstance(p, Members):
-            return f"Members({p.m2m_field!r})"
-        if isinstance(p, Group):
-            return f"Group({p.field!r})"
-        if isinstance(p, Conditional):
-            return f"Conditional(require={sorted(p.require_roles)})"
-        if isinstance(p, Either):
-            children = ", ".join(self._describe_predicate(c) for c in p.predicates)
-            return f"Either({children})"
-        if isinstance(p, Custom):
-            return "Custom(...)"
-        return type(p).__name__
+def describe_predicate(p):
+    """One-line description of a predicate for command output."""
+    from turbodrf.predicates import (
+        Conditional,
+        Custom,
+        Either,
+        Group,
+        Members,
+        Owner,
+    )
+
+    if isinstance(p, Owner):
+        fields = p.fields[0] if len(p.fields) == 1 else p.fields
+        bypass = f", bypass={sorted(p.bypass)}" if p.bypass else ""
+        return f"Owner({fields!r}{bypass})"
+    if isinstance(p, Members):
+        return f"Members({p.m2m_field!r})"
+    if isinstance(p, Group):
+        return f"Group({p.field!r})"
+    if isinstance(p, Conditional):
+        return f"Conditional(require={sorted(p.require_roles)})"
+    if isinstance(p, Either):
+        return f"Either({', '.join(describe_predicate(c) for c in p.predicates)})"
+    if isinstance(p, Custom):
+        return "Custom(...)"
+    return type(p).__name__

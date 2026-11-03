@@ -15,17 +15,18 @@ tests/
 │
 ├── test_app/                # Django app for testing
 │   ├── models.py            # Test models with various configurations
-│   ├── apps.py              # Adds user.roles / user.brokerage; set_test_brokerage()
+│   ├── apps.py              # Adds user.roles / user.platform_roles / user.brokerage; set_test_brokerage()
 │   └── migrations/
 │
 ├── unit/                    # Unit tests: permissions, serializers, views,
-│                            # router, compiler, filters, predicates,
-│                            # integrations, swagger, management commands
+│                            # router, filters, predicates, integrations,
+│                            # swagger, management commands
 │
 ├── integration/             # API-level tests: CRUD endpoints, role
 │                            # permissions, tenancy / predicates, FK
-│                            # injection, security regressions,
-│                            # swagger scoping
+│                            # injection, security regressions
+│                            # (test_security_*.py, test_audit_084.py),
+│                            # platform scope, swagger and OpenAPI 3 scoping
 │
 └── conformance/             # An independent policy monitor run against the
                              # real API (deterministic + Hypothesis)
@@ -40,7 +41,7 @@ tests/
 python -m pytest
 
 # Single process, e.g. for pdb
-python -m pytest -p no:xdist
+python -m pytest -n0
 
 # Or using Django's test runner
 python manage.py test
@@ -91,6 +92,7 @@ The test suite uses models defined in `test_app/models.py`, among them:
   tenancy, predicate and IDOR tests
 - **Parity\*** and **Scope\*** / **Rbac\*** models: one column per field
   type (parity_fixtures.py), nested-value scoping and RBAC regression tests
+- **Platform\*** models: the platform scope (`tests/platform_urls.py`)
 
 ## Test Users and Roles
 

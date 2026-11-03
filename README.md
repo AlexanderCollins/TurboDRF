@@ -7,42 +7,97 @@
 [![Django](https://img.shields.io/badge/django-4.2%20%7C%205.2%20%7C%206.0-darkgreen)](https://www.djangoproject.com/)
 [![License](https://img.shields.io/badge/license-MIT-purple)](https://github.com/AlexanderCollins/TurboDRF/blob/main/LICENSE)
 
-**Dead simple Django REST Framework API generator with role-based permissions.**
+**Turn your Django models into a secure REST API.** Describe each model's API
+next to its fields. TurboDRF serves the endpoints and enforces who can see
+which rows and fields on every request.
 
-Turn your Django models into fully-featured REST APIs with a mixin and a method. Zero boilerplate.
+```python
+class Project(models.Model, TurboDRFMixin):
+    title = models.CharField(max_length=200)
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
+    owner = models.ForeignKey(User, on_delete=models.CASCADE)
+    budget = models.DecimalField(max_digits=12, decimal_places=2)
+
+    sensitive_fields = ['budget']                 # only roles granted it see it
+
+    @classmethod
+    def turbodrf(cls):
+        return {
+            'fields': ['id', 'title', 'workspace', 'owner', 'budget'],
+            'tenant_field': 'workspace',          # nobody sees another workspace
+            'owner_field': 'owner',               # members see their own projects
+            'bypass_owner_roles': ['manager'],    # managers see all of the workspace's
+        }
+```
+
+That's a full API at `/api/projects/`: list, detail, create, update, delete,
+search, filters and paging, plus its docs. Each caller only gets the rows and
+fields their role allows, and that applies everywhere: nested fields, filters,
+search, ordering, writes and the API schema.
+
+## Why
+
+In a hand-written DRF API every viewset repeats the same checks: which rows
+this user may see, which fields, and whether the IDs in a request body belong
+to them. Miss one in one place, say a filter on a related model or an FK in a
+POST, and another tenant's data leaks.
+
+TurboDRF writes those checks once, in the framework, and applies them on every
+path. You declare the rules; you can't forget to call them.
+
+## What you get
+
+- **CRUD endpoints** with pagination, search, filters (including OR filters),
+  ordering and `?fields=` selection.
+- **Role-based permissions**, per model and per field, for reading and
+  writing.
+- **Multi-tenant row scoping:** a tenant boundary nothing can bypass, plus
+  owner, member, team and custom rules inside it.
+- **Write protection:** every FK and M2M value in a request must be a row the
+  caller can see, so nobody can attach another tenant's data.
+- **Custom endpoints** that get the same scoping as the generated ones.
+- **API docs:** Swagger, ReDoc and an OpenAPI 3 schema, each showing a caller
+  only what they can use.
+- **A staff API across tenants**, behind its own gate, with its own roles.
+- **Startup checks** that refuse unsafe configs, and `turbodrf_explain` to
+  answer "why can't this user see that?"
 
 ## Install
 
 ```bash
 pip install turbodrf
-
-# Optional: faster JSON rendering with msgspec
-pip install "turbodrf[fast]"
+pip install "turbodrf[openapi3]"   # optional: an OpenAPI 3 schema for typed clients
+pip install "turbodrf[fast]"       # optional: faster JSON rendering (msgspec)
 ```
+
+Django 4.2, 5.2 and 6.0 on Python 3.10–3.14.
 
 ## Quick start
 
-**1. Settings.** Add the apps, and roles that grant each action:
+**1. Settings.** Add the apps, and give each role the actions it may perform:
 
 ```python
 INSTALLED_APPS = [
     # ... Django's default apps ...
     'rest_framework',
-    'drf_yasg',      # serves the Swagger / ReDoc pages
+    'drf_yasg',      # the Swagger / ReDoc pages
     'turbodrf',
     'shop',
 ]
 
 TURBODRF_ROLES = {
     'editor': [
-        'shop.author.read', 'shop.author.create', 'shop.author.update', 'shop.author.delete',
         'shop.book.read', 'shop.book.create', 'shop.book.update', 'shop.book.delete',
+        'shop.author.read',
     ],
-    'viewer': ['shop.author.read', 'shop.book.read'],
+    'viewer': ['shop.book.read', 'shop.author.read'],
 }
+
+# Roles are the names of the user's Django groups.
+TURBODRF_ROLE_GETTER = 'turbodrf.backends.group_names'
 ```
 
-**2. Models.** Add the mixin and a `turbodrf()` classmethod:
+**2. Models.** Add the mixin and say what the API exposes:
 
 ```python
 from django.db import models
@@ -50,11 +105,10 @@ from turbodrf.mixins import TurboDRFMixin
 
 class Author(models.Model, TurboDRFMixin):
     name = models.CharField(max_length=100)
-    email = models.EmailField()
 
     @classmethod
     def turbodrf(cls):
-        return {'fields': ['id', 'name', 'email']}
+        return {'fields': ['id', 'name']}
 
 class Book(models.Model, TurboDRFMixin):
     title = models.CharField(max_length=200)
@@ -64,185 +118,209 @@ class Book(models.Model, TurboDRFMixin):
     @classmethod
     def turbodrf(cls):
         return {
-            'fields': {
-                'list': ['id', 'title', 'author', 'author__name', 'price'],
-                'detail': ['id', 'title', 'author', 'author__name', 'author__email', 'price'],
-            },
+            'fields': ['id', 'title', 'author', 'author__name', 'price'],
             'searchable_fields': ['title'],
         }
 ```
 
-**3. Give users roles.** TurboDRF reads `user.roles`, a list of role names.
-For example, use the names of the user's Django groups, in your app's
-`AppConfig.ready()`:
-
-```python
-from django.contrib.auth.models import User
-
-User.add_to_class('roles', property(lambda user: [g.name for g in user.groups.all()]))
-```
-
-Other options: [Assigning roles to users](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/permissions.md#assigning-roles-to-users).
-
-**4. URLs.**
+**3. URLs.**
 
 ```python
 from django.urls import include, path
 
-urlpatterns = [
-    path('api/', include('turbodrf.urls')),
-]
+urlpatterns = [path('api/', include('turbodrf.urls'))]
 ```
 
-Run `makemigrations` and `migrate`, put a user in the `editor` group, and
-the API is up:
+**4. Run it.** Run `makemigrations` and `migrate`, then put a user in the
+`editor` group:
 
 ```
-GET    /api/books/                          # List
-GET    /api/books/1/                        # Detail
-POST   /api/books/                          # Create
-PUT    /api/books/1/                        # Update
-DELETE /api/books/1/                        # Delete
-GET    /api/books/?search=django            # Search
-GET    /api/books/?price__lt=20             # Filter
-GET    /api/books/?fields=title,price       # Select fields
+GET    /api/books/                       list (paged)
+GET    /api/books/1/                     detail
+POST   /api/books/                       create
+PATCH  /api/books/1/                     update
+DELETE /api/books/1/                     delete
+GET    /api/books/?search=django         search
+GET    /api/books/?price__lt=20          filter
+GET    /api/books/?ordering=-price       order
+GET    /api/books/?fields=title,price    pick fields
+GET    /api/swagger/                     docs, for this caller
 ```
 
-A user with no role gets a 403 on every endpoint, and a nested field such as
-`author__name` needs read on the related model (`shop.author.read`). Roles
-don't scope rows: every editor sees every book until the model declares an
-`owner_field` or `tenant_field` (see [Tenancy](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/tenancy.md)).
+Run `python manage.py check` in CI: it runs every startup check. The
+[quick start guide](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/quickstart.md)
+walks through these steps in a new project.
 
-The [quick start guide](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/quickstart.md) runs these steps in a new
-project, with users and requests.
+## How access works
+
+Every request passes three checks, and all three must pass:
+
+| Check | Question | Declared in |
+|---|---|---|
+| **Role** | May this user read, create, update or delete this model? | `TURBODRF_ROLES`: `shop.book.read` |
+| **Rows** | Which rows may they touch? | the model's `tenant_field`, `owner_field`, `visibility` |
+| **Fields** | Which fields may they read or write? | `TURBODRF_ROLES`: `shop.book.price.read` / `.write` |
+
+The row rules are applied in one place in the framework, so they hold on every
+path, not just the list. For the `Project` model above, a `member` named Alice
+in workspace ABC gets:
+
+```sql
+WHERE project.workspace_id = <ABC>      -- the tenant boundary: always, first
+  AND project.owner_id = <Alice>        -- the owner rule (managers skip it)
+```
+
+And these attempts all fail:
+
+| Alice tries | She gets |
+|---|---|
+| `GET /api/projects/<XYZ's project>/` | 404, the same as a project that doesn't exist |
+| `PATCH` her project with `{"workspace": <XYZ>}` | 400: it can't leave her workspace |
+| `POST /api/tasks/` with `{"project": <XYZ's project>}` | 400: she can't point at rows she can't see |
+| reading `budget` | it isn't in the response: no role of hers grants `budget.read` |
+| `?budget__gte=100000` | ignored: a field she can't read can't be filtered, searched or ordered by either |
+
+The tenant boundary is a setting, not a rule you compose. A manager's bypass,
+or an `Either(...)` of rules, can widen what someone sees inside their
+workspace, but never outside it.
+
+### Row rules for common cases
+
+```python
+{'tenant_field': 'store', 'owner_field': 'customer', 'bypass_owner_roles': ['staff']}  # most SaaS models
+{'tenant_field': 'workspace', 'owner_field': ['author', 'reviewer']}                   # several owner columns
+{'tenant_field': 'workspace', 'visibility': [Members('participants')]}                 # M2M membership
+{'tenant_field': 'workspace', 'visibility': [Group('team')]}                           # the row's team
+{'tenant_field': 'workspace',                                                          # owner, or shared with you
+ 'visibility': [Either(Owner('owner'), Members('shared_with'))]}
+{'tenancy': 'shared'}                                                                  # reference data
+```
+
+With `TURBODRF_TENANT_MODEL` set, a model that makes no tenancy decision
+doesn't start. See [Tenancy](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/tenancy.md)
+for the full rule set.
+
+## More features
+
+### Models you can't edit
+
+Skip the mixin and register the same config from an `AppConfig.ready()`.
+This works for `auth.User` and other apps' models:
+
+```python
+from django.contrib.auth import get_user_model
+import turbodrf
+
+turbodrf.register(get_user_model(), {
+    'fields': ['id', 'username', 'first_name'],
+    'tenant_field': 'workspace',      # a FK on your user model
+    'read_only': True,
+})
+```
+
+### Custom endpoints
+
+```python
+from rest_framework.response import Response
+from turbodrf import turbodrf_action
+
+@turbodrf_action(detail=True, methods=['post'])
+def archive(self, request, pk=None):
+    project = self.get_object()      # scoped: another workspace's project is a 404
+    project.archived = True
+    project.save(update_fields=['archived'])
+    return Response({'status': 'archived'})
+
+# in turbodrf():  'actions': [archive]
+```
+
+### Typed clients
+
+With the `openapi3` extra, `/api/openapi/` serves an OpenAPI 3 schema scoped to
+the caller. Fetch it as the user whose client you're generating:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://example.com/api/openapi/ -o openapi.json
+npx openapi-typescript openapi.json -o src/api/schema.d.ts
+```
+
+`python manage.py turbodrf_schema --role editor` prints the Swagger schema a
+role sees, offline, for CI.
+
+### "Why can't this user see that?"
+
+```
+$ python manage.py turbodrf_explain --user sam --model demo.Project --pk 1
+Caller: sam (pk 1)
+  Roles: viewer
+  Tenant: Acme (pk 1, from user.workspace)
+...
+  budget [list, detail]
+    read:  no (in the model's sensitive_fields: needs demo.project.budget.read, not granted)
+    write: no (not readable, so not in the serializer)
+
+Row 1: exists (base manager)
+  Default manager (Project.objects): includes it
+  Tenant boundary (workspace): passes (row's tenant 1, caller's 1)
+  Owner('owner', bypass=['admin', 'manager']): EXCLUDES it
+  Verdict: NOT visible through the API: Owner('owner', bypass=['admin', 'manager']) excludes it
+```
+
+With `DEBUG = True`, a 403 response also says which permission was missing.
+
+### Staff across tenants
+
+Your own staff console gets a second router with a required gate and its own
+roles. Each model opts in with a `'platform'` block:
+
+```python
+console = TurboDRFRouter(scope='platform', gate=[IsPlatformStaff])
+```
+
+See [Platform scope](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/platform.md).
+
+## Design principles
+
+The security model rests on a few rules the code holds on every path:
+
+1. Nothing is exposed until you say so: models, roles, fields.
+2. Rows are scoped in one place, for every way a request reaches them.
+3. The tenant boundary sits outside the rule logic, so nothing can OR it away.
+4. Rules OR for reads and AND for writes: seeing a row through one rule never
+   lifts another rule's write check.
+5. A hidden field is hidden everywhere: responses, filters, search, ordering,
+   the schema.
+6. When in doubt, deny: no tenant or no role means no rows.
+7. Unsafe configs fail at startup, not on the first request.
+8. A hidden row looks like a missing one.
+
+[Design principles](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/principles.md)
+explains each one, the guarantees they add up to and how they're tested.
+
+## When to use it
+
+TurboDRF fits a backend serving its own frontend: a multi-tenant SaaS, an
+internal tool, an app with many CRUD models and real access rules. The API
+mirrors your models, which is what makes the generated checks possible.
+
+For a public API with a long-lived contract that has to stay different from
+your models, write those endpoints by hand. Hand-written DRF views can sit
+next to TurboDRF's in the same project.
 
 ## Documentation
 
 Full docs: <https://turbodrf.com/docs/>
 
-- [Installation](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/installation.md) -- requirements, extras, checking the configuration
-- [Configuration](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/configuration.md) -- all `turbodrf()` options: field selection, nested & computed fields, custom endpoints (`actions`), read-only endpoints, method allow-lists, `full_clean` validation
-- [Permissions](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/permissions.md) -- role-based, field-level, and Django default permissions
-- [Tenancy & row-level access](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/tenancy.md) -- predicates, multi-tenancy, FK injection defense
-- [Platform scope](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/platform.md) -- an API for your own staff across tenants: opt-in per model, a gate on every route, separate roles
-- [Performance](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/performance.md) -- queries per request, indexes, fast JSON rendering
-- [Filtering & Search](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/filtering.md) -- filtering, search, ordering, OR queries
-- [Integrations](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/integrations.md) -- allauth, Keycloak, drf-api-tracking, Sentry (all experimental)
-- [Security](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/security.md) -- sensitive fields, secure defaults, error responses
-- [Management Commands](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/commands.md) -- turbodrf_check
-- **[Settings Reference](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/settings_reference.md)** -- every TURBODRF_* setting in one place
-
-## Permissions and access control
-
-TurboDRF answers four standard authorization questions, in three layers
-that all apply to every request (AND'd together):
-
-| Question | Layer | Mechanism |
-|---|---|---|
-| Can this user reach this endpoint? | **RBAC** (Role-Based Access Control) | Roles in `TURBODRF_ROLES` map to permissions. `permissions.py` checks `<app>.<model>.<action>` for the request method. |
-| Which rows can this user see? | **Row-level access** | Predicates declared in `turbodrf()` config. Mandatory **tenant boundary** + discretionary **within-tenant predicates** (Owner, Members, Either, Custom). |
-| Which fields can this user read or write? | **Field-level permissions** | Per-field rules `<app>.<model>.<field>.read` / `.write` in `TURBODRF_ROLES`. Hidden fields are stripped from responses, search, ordering, filters, and OPTIONS metadata. |
-| Are FK targets the user provides actually theirs? | **Write validation** | On every create/update, FK and M2M values in the request body are validated against the related model's tenant boundary and predicate stack, on every model (shared ones included). Cross-tenant or invisible targets return 400. |
-
-Field rules bind anonymous callers too: `public_access: True` gives them model-level read, and a field that any role has a read rule for needs a grant from a `guest` role. See [Permissions](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/permissions.md#anonymous-callers-and-the-guest-role).
-
-### How it actually works (concrete walk-through)
-
-A multi-tenant SaaS has two workspaces (ABC and XYZ) and three roles: `member`, `manager`, `admin`. A `Project` model is configured:
-
-```python
-class Project(models.Model, TurboDRFMixin):
-    title = models.CharField(max_length=200)
-    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE)
-    owner = models.ForeignKey(User, on_delete=models.CASCADE)
-
-    @classmethod
-    def turbodrf(cls):
-        return {
-            'tenant_field': 'workspace',                       # mandatory wall
-            'owner_field': 'owner',             # within-tenant rule
-            'bypass_owner_roles': ['manager', 'admin'],        # roles ignore owner check
-            'fields': ['title', 'workspace', 'owner'],
-        }
-```
-
-Plus two project-wide settings:
-
-```python
-TURBODRF_TENANT_MODEL = 'accounts.Workspace'
-TURBODRF_TENANT_USER_FIELD = 'workspace'   # request.user.workspace → tenant
-```
-
-Now a request `GET /api/projects/` from Alice (member at ABC) goes through:
-
-1. **Permission gate** — Alice's role `member` has `app.project.read`. Pass.
-2. **Tenant filter** (mandatory, applied first, never bypassable):
-   ```sql
-   WHERE project.workspace_id = <Alice's workspace>
-   ```
-3. **Owner filter** (Alice has no bypass role, so this layer applies):
-   ```sql
-   AND project.owner_id = <Alice's user id>
-   ```
-4. **Field stripping** — Alice's role has read on `title`, `workspace`, `owner` but maybe not all configured fields. Hidden ones are removed from the response.
-
-If Alice tries cross-tenant tricks:
-- `GET /api/projects/<XYZ_project_id>/` → 404 (not 403, no existence leak)
-- `PATCH /api/projects/<her_project_id>/ {"workspace": <XYZ>}` → 400 (tenant reassignment rejected)
-- `POST /api/tasks/ {"project": <XYZ_project_id>}` → 400 (FK injection: she can't reference another tenant's project)
-
-If a manager (with bypass) at ABC asks for `/api/projects/`:
-
-```sql
-WHERE project.workspace_id = <ABC's workspace id>
--- no owner filter (manager bypassed it)
-```
-
-Manager sees all ABC projects, but still can't see XYZ — the tenant boundary is **mandatory** and applied separately from the predicate algebra (it's a setting, not a predicate). This rules out an entire class of compositional bugs where bypass roles could OR-compose their way past the tenant wall.
-
-### Quick recipes
-
-```python
-# Multi-tenant SaaS — most common case
-{'tenant_field': 'store', 'owner_field': 'customer', 'bypass_owner_roles': ['staff']}
-
-# Personal data app (no TURBODRF_TENANT_MODEL; with one, owner_field alone fails the startup check)
-{'owner_field': 'author', 'bypass_owner_roles': ['admin']}
-
-# Reference data (currencies, country codes — not tenant-scoped)
-{'tenancy': 'shared'}
-
-# M2M membership (Slack channels, Linear projects)
-{'tenant_field': 'workspace', 'visibility': [Members('participants')]}
-
-# Several owner columns (a match on any of them shows the row)
-{'tenant_field': 'workspace', 'owner_field': ['author', 'reviewer']}
-
-# Power-form composition: shared_with users can edit the row, not reassign its owner
-{'tenant_field': 'workspace', 'visibility': [Either(Owner('owner'), Members('shared_with'))]}
-```
-
-See [Tenancy](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/tenancy.md) for the full predicate vocabulary, hard-fail-at-startup behavior, and 404-vs-403 semantics.
-
-### Staff across tenants
-
-An operator's own staff console reads and acts on every tenant's rows. Give a
-model a `'platform'` block and mount a second router with a gate:
-
-```python
-# Job.turbodrf(): no tenant endpoint, a read-only console endpoint
-{'enabled': False, 'tenant_field': 'workspace',
- 'platform': {'endpoint': 'jobs', 'read_only': True,
-              'fields': ['id', 'kind', 'status', 'workspace__name'],
-              'actions': [retry]}}
-
-# console/urls.py
-console = TurboDRFRouter(scope='platform', gate=[IsPlatformStaff])
-```
-
-Platform roles (`TURBODRF_PLATFORM_ROLES`) are separate from tenant roles. See
-[Platform scope](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/platform.md).
+- [Quick start](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/quickstart.md) and [Installation](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/installation.md)
+- [Configuration](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/configuration.md): every `turbodrf()` option, custom endpoints, `register()`
+- [Permissions](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/permissions.md): roles, field rules, anonymous access, database-backed roles
+- [Tenancy](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/tenancy.md): the tenant boundary and the row rules
+- [Design principles](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/principles.md) and [Security](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/security.md): the model, the threat model, known limitations
+- [Platform scope](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/platform.md): a staff API across tenants
+- [Filtering & search](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/filtering.md), [Performance](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/performance.md), [Management commands](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/commands.md), [Integrations](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/integrations.md)
+- [Settings reference](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/settings_reference.md): every `TURBODRF_*` setting
+- [AGENTS.md](https://github.com/AlexanderCollins/TurboDRF/blob/main/AGENTS.md): the rules in one page, for AI coding agents
 
 ## License
 
-MIT License. See [LICENSE](https://github.com/AlexanderCollins/TurboDRF/blob/main/LICENSE) for details.
+MIT. See [LICENSE](https://github.com/AlexanderCollins/TurboDRF/blob/main/LICENSE).
