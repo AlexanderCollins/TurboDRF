@@ -126,10 +126,11 @@ def get_permission_mode() -> str:
 
 class RoleOnlyIdentity:
     """A permission-only caller holding just a list of role names: the
-    schema's ``?role=`` narrowing. No primary key, so its snapshots are never
+    schema's ``?role=`` narrowing and the ``turbodrf_schema`` /
+    ``turbodrf_explain`` commands. No primary key, so its snapshots are never
     cached. It holds the same roles on both scopes: ``roles`` on the tenant
-    scope (static mode) and ``platform_roles`` on the platform scope, whatever
-    TURBODRF_PLATFORM_ROLE_GETTER reads for a real user."""
+    scope (in either permission mode) and ``platform_roles`` on the platform
+    scope, whatever TURBODRF_PLATFORM_ROLE_GETTER reads for a real user."""
 
     is_authenticated = True
     is_anonymous = False
@@ -248,6 +249,8 @@ def _resolve_user_roles(user) -> list:
             if TurboDRFRole.objects.filter(name="guest").exists():
                 return ["guest"]
         return []
+    if isinstance(user, RoleOnlyIdentity):
+        return list(user.roles)  # no UserRole rows: it's not a database user
 
     mode = get_permission_mode()
 
