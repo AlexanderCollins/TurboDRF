@@ -34,7 +34,7 @@ Each entry is a column or a `__`-path that ends on one (`author__name`). It may 
 
 - A caller who can't read a field can't search by it, and sensitive fields are never searched.
 - A `__`-path term only matches related rows the caller can see through that model's own endpoint (its tenant and predicates).
-- A search with more than 20 distinct terms, or a term longer than `TURBODRF_MAX_FILTER_VALUE_LENGTH` (default 1000), returns nothing.
+- A search with more than 20 distinct terms, or whose terms together are longer than `TURBODRF_MAX_FILTER_VALUE_LENGTH` (default 200), returns nothing.
 
 ## Filtering
 
@@ -56,7 +56,7 @@ GET /api/books/?author__name__istartswith=smith    # Related field: 'author__nam
 - An M2M filters by one target pk (`?tags=3`); `exact` is its only lookup. `?tags__in=`, `?tags__isnull=` and `?tags_or=` are ignored. A filter across an M2M or reverse relation (`?tags__name=`) matches each row once.
 - A related-field filter is permission-checked at every hop (a reverse relation by the related model's FK, see [Security](security.md#reverse-relations)) and only matches related rows the caller can see through that model's own endpoint. A related field named like a lookup (`folder__date`, where `date` is a field of the folder) is treated as that field.
 - An FK or M2M filter naming a row the caller can't see returns an empty `200`, exactly as a pk that doesn't exist does. When another filter in the request is invalid, the 400 lists only that filter's error.
-- A filter value longer than `TURBODRF_MAX_FILTER_VALUE_LENGTH` (default 1000) returns nothing.
+- A filter value longer than `TURBODRF_MAX_FILTER_VALUE_LENGTH` (default 200), or an `_or` filter with more than 20 values, returns nothing.
 
 ### OR filtering
 
@@ -112,6 +112,10 @@ Response format:
 ```
 
 Default page size: 20. Max: 100.
+
+The browsable API shows no filter form: its choice lists would name rows of
+the related models (another tenant's users included). Filters work the same
+from the URL.
 
 To use your own pagination class, and so your API's own response envelope,
 set `TURBODRF_PAGINATION_CLASS` to it (a dotted path or the class). A

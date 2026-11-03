@@ -69,10 +69,35 @@ def turbodrf_action(detail=False, methods=None, url_path=None, url_name=None, **
             f"permission-filtered and row-scoped; supported: "
             f"{', '.join(sorted(_ACTION_KWARGS))}."
         )
-    return action(
+    decorate = action(
         detail=detail,
         methods=methods or ["get"],
         url_path=url_path,
         url_name=url_name,
         **kwargs,
     )
+
+    def wrap(func):
+        return decorate(_without_format(func))
+
+    return wrap
+
+
+def _without_format(func):
+    """``func``, called without the ``format`` keyword argument the router's
+    format-suffix URLs (``.../ping.json``) pass, unless it takes one: the
+    documented ``(self, request, pk=None)`` signature doesn't, and those URLs
+    were a 500."""
+    import functools
+    import inspect
+
+    params = inspect.signature(func).parameters
+    if "format" in params or any(p.kind is p.VAR_KEYWORD for p in params.values()):
+        return func
+
+    @functools.wraps(func)
+    def handler(self, request, *args, **kwargs):
+        kwargs.pop("format", None)
+        return func(self, request, *args, **kwargs)
+
+    return handler

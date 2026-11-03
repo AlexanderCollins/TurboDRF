@@ -1,5 +1,97 @@
 # Changelog
 
+## 0.8.5 — Second audit
+
+Six auditors attacked 0.8.4 as a hostile tenant, a field-secrecy attacker, a
+write-path attacker, a fuzzer of the query rewrites, a reviewer of the auth
+plumbing and of the supply chain. Each fix has a test that sends the attack
+that worked (`tests/integration/test_audit_085.py`), and the fuzzer stays in
+the suite (`tests/conformance/test_rewrite_equivalence.py`).
+
+### Security: reads
+
+- The browsable API's filter form listed every row of an FK filter's target,
+  the tenant model's and the user model's included (every tenant's name,
+  every username). It's gone: filters work from the URL as before.
+- A `@property` of a related model in `fields` (`'author__display_name'`)
+  ran on the whole related row, outside the property sandbox. It's refused at
+  startup.
+- An FK with `to_field` rendered, filtered and ordered by the target's
+  column, which the caller might not be allowed to read. It now needs that
+  column's read grant.
+- A `lookup_field` the caller can't read is a 404 (a detail URL would confirm
+  guesses of its value), and a sensitive one is refused at startup.
+- A to-many array no longer follows its target manager's own order, nor a
+  property's relation hop its target's order, on a column the caller can't
+  read.
+- With `full_clean`, a PUT no longer validates (and echoes in an error) the
+  columns it didn't send.
+
+### Security: writes
+
+- A DELETE runs the write checks a PATCH would: a `Custom`'s
+  `write_validator`, and an `Owner` inside an `Either`.
+- The post-write checks (`Conditional`, `Owner` over a path) read the row
+  from the database it was written to, not a router's read replica.
+- A `tenant_field` running through a shared TurboDRF model is refused at
+  startup: any tenant could move that model's rows, and these with them.
+- A write naming a row in another tenant gets the same error as one naming
+  nothing, through a chained `tenant_field`'s first hop and through an owner
+  column too.
+- A generic FK whose `content_type` the create left to its default is
+  checked.
+- A proxy of a `register()`-ed model takes the model's rules.
+- `owner_field: 'owner_id'` (a column name) is refused at startup: the write
+  check never saw the value.
+- A field's write grant no longer stands in for the model-level action.
+- A platform move checks references to the rows that move with the row too.
+
+### Denial of service
+
+- An `_or` filter takes at most 20 values, and a search's terms together at
+  most `TURBODRF_MAX_FILTER_VALUE_LENGTH` characters, now 200 by default
+  (was 1000 per term): a `LIKE` costs the pattern's length times the stored
+  text's.
+- A write's M2M ids are looked up in one query per 500, not one per id, and
+  at most 10,000 at once.
+- `/openapi/` no longer takes `?lang=` values outside `settings.LANGUAGES`
+  (each was cached for good) or puts `?version=` in a header, and works for
+  a model without a manager named `objects`.
+- A JSON body nested thousands deep is a 400, not a 500, and a custom
+  action's format-suffix URL (`/ping.json`) no longer 500s.
+
+### Startup checks
+
+- `sensitive_fields` entries must be the model's field names.
+- `enabled`, `public_access`, `read_only` and `full_clean` must be booleans
+  (`'false'` read as true).
+- `register()` refuses a model registered twice.
+- A cached permission snapshot's key names users as `user:<pk>`, so a string
+  pk can't share the anonymous key.
+
+### Supply chain
+
+- The publish workflow builds without permission to upload, refuses a
+  release that isn't on `main`, and uploads from a separate job. The coverage
+  badge's token is out of the test job.
+- Dependabot watches the website's npm packages. The Django and DRF floors
+  move past known CVEs (`Django>=4.2.26,!=5.0.*,!=5.1.*`,
+  `djangorestframework>=3.15.2`).
+- turbodrf.com: HSTS for subdomains, a Content-Security-Policy, null MX, SPF,
+  DMARC and CAA records, docs pages from an allow-list, and a deploy that
+  checks its AWS account and refuses uncommitted site sources.
+
+### Upgrading
+
+- A `fields` entry naming a related model's property, a misspelt
+  `sensitive_fields` entry, a string where a boolean key goes, an
+  `owner_field` naming a column, and a `tenant_field` through a shared
+  TurboDRF model now refuse to start. The errors say what to change.
+- `TURBODRF_MAX_FILTER_VALUE_LENGTH` defaults to 200, and bounds a search's
+  terms together.
+- Cached permission snapshots are rebuilt once after the upgrade (their keys
+  changed).
+
 ## 0.8.4 — Audit fixes, register(), OpenAPI 3
 
 A full audit (reads, writes, auth plumbing, performance, adoption) found

@@ -315,6 +315,23 @@ def _reverse_side_readable(model, name, snapshot_for):
     return _field_readable(snapshot_for(field.related_model), field.remote_field.name)
 
 
+def fk_value_readable(model, name, snapshot_for):
+    """For an FK with ``to_field``, may the caller read the target column its
+    value is? True for any other field."""
+    try:
+        field = model._meta.get_field(name)
+    except FieldDoesNotExist:
+        return True
+    if not (field.concrete and (field.many_to_one or field.one_to_one)):
+        return True
+    target = field.target_field
+    if target.primary_key:
+        return True
+    return not is_field_path_sensitive(target.name) and _field_readable(
+        snapshot_for(field.related_model), target.name
+    )
+
+
 def _path_readable(model, field_path, snapshot_for):
     """``check_nested_field_permissions`` with the snapshot of each model on
     the path from ``snapshot_for(model)``, so a caller checking many paths can
@@ -332,8 +349,11 @@ def _path_readable(model, field_path, snapshot_for):
             logger.debug(f"Permission denied: {current_model.__name__}.{part}")
             return False
         # A reverse relation is the related model's FK / M2M read from the
-        # other side: which rows point at this one is that field's value.
-        if not _reverse_side_readable(current_model, part, snapshot_for):
+        # other side: which rows point at this one is that field's value. An
+        # FK with to_field shows the target's column as its value.
+        if not _reverse_side_readable(
+            current_model, part, snapshot_for
+        ) or not fk_value_readable(current_model, part, snapshot_for):
             logger.debug(
                 f"Permission denied: {current_model.__name__}.{part} "
                 f"(the related model's field isn't readable)"

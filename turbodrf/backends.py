@@ -508,6 +508,9 @@ def get_cache_key(user, model) -> Optional[str]:
             # sharing one snapshot across distinct identities is exactly the
             # bug being fixed here.
             return None
+        # Prefixed: a string pk ("anonymous", "all") never names another
+        # identity's key.
+        user_id = f"user:{user_id}"
     else:
         # All anonymous callers legitimately share one identity: they resolve
         # to the same guest/none role, and row-level visibility (predicates)
@@ -681,7 +684,7 @@ def invalidate_user_permissions(user=None):
         user_id = getattr(user, "pk", None)
         if user_id is None:
             return  # never cached (see get_cache_key)
-        key = _generation_key(cache_prefix, user_id)
+        key = _generation_key(cache_prefix, f"user:{user_id}")
     # A fresh token, never a counter: an evicted counter restarted from the
     # same value would bring back keys of stale snapshots.
     cache.set(key, secrets.token_hex(8), None)
