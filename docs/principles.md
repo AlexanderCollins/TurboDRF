@@ -151,8 +151,11 @@ generated endpoint:
   doesn't call TurboDRF's own scoping code. It then checks real API responses
   against that across callers, roles, models and access paths, including
   property-based (Hypothesis) runs.
+- **A differential fuzzer** (`tests/conformance/test_rewrite_equivalence.py`)
+  generates random rules and data and checks that the faster query shapes
+  TurboDRF builds match the rows Django's own reading of each rule does.
 - **Attack tests** (`tests/integration/test_security_*.py`,
-  `test_audit_084.py` and others) each send a request that broke an
+  `test_audit_084.py`, `test_audit_085.py` and others) each send a request that broke an
   invariant in an earlier release, and assert that it no longer does.
 - **`manage.py turbodrf_explain`** shows how the rules apply to one user, row
   and field, using the same code paths as a request.

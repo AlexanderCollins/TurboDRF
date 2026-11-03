@@ -67,6 +67,15 @@ def _authed_user(request):
     return user
 
 
+def _has_condition(q):
+    """True if ``q`` holds a condition. ``Q()`` and ``Q(Q())`` hold none:
+    Django drops an empty child from an OR, so an unrestricted ``Either``
+    branch would silently become the other branches."""
+    return any(
+        not isinstance(child, Q) or _has_condition(child) for child in q.children
+    )
+
+
 def _no_match_q():
     """Q that matches zero rows. Used for fail-closed."""
     return Q(pk__in=[])
@@ -250,7 +259,7 @@ class Either(Predicate):
         combined = None
         for pred in self.predicates:
             child_q = pred.q(request, user_roles)
-            if not child_q:
+            if not _has_condition(child_q):
                 return Q()
             combined = child_q if combined is None else combined | child_q
         return combined if combined is not None else Q()
