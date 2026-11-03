@@ -114,8 +114,11 @@ urlpatterns = [
 ```
 
 `turbodrf.urls` registers every TurboDRF model, plus `/api/swagger/` and
-`/api/redoc/` when the docs are enabled. (To mount only the API, include
-`TurboDRFRouter().urls` from `turbodrf.router` instead.)
+`/api/redoc/` when the docs are enabled, and an OpenAPI 3 schema at
+`/api/openapi/` with the `openapi3` extra (see
+[OpenAPI 3 and typed clients](settings_reference.md#openapi-3-and-typed-clients)).
+(To mount only the API, include `TurboDRFRouter().urls` from
+`turbodrf.router` instead.)
 
 ## 6. Migrate, create users, run
 

@@ -6,8 +6,11 @@ URLconf for the platform-scope tests (``ROOT_URLCONF="tests.platform_urls"``):
 - ``console-audited/``: a router subclass (``scope`` / ``gate`` as class
   attributes) that wraps each generated viewset in a mixin, as downstream
   apps do, here to log platform reads of a raw payload;
-- ``console-swagger/``: the platform router's own schema view.
+- ``console-swagger/``: the platform router's own schema view;
+- ``console-openapi/``: its OpenAPI 3 schema view, with drf-spectacular.
 """
+
+from importlib.util import find_spec
 
 from django.urls import include, path
 from rest_framework.permissions import BasePermission
@@ -72,5 +75,12 @@ if platform_schema_view:
         path(
             "console-swagger/",
             platform_schema_view.with_ui("swagger", cache_timeout=0),
+        )
+    )
+if find_spec("drf_spectacular"):
+    urlpatterns.append(
+        path(
+            "console-openapi/",
+            platform_router.get_openapi3_view(title="Console API"),
         )
     )
