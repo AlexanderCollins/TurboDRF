@@ -547,12 +547,24 @@ class TurboDRFRouter(DefaultRouter):
         (``title``, ``version``, ...). None with TURBODRF_ENABLE_DOCS = False."""
         from .documentation import get_turbodrf_schema_view
 
-        def views():
-            return {viewset for _prefix, viewset, _basename in self.registry}
-
         return get_turbodrf_schema_view(
-            scope=self.scope, gate=self.gate, views=views, **kwargs
+            scope=self.scope, gate=self.gate, views=self._registered_views, **kwargs
         )
+
+    def get_openapi3_view(self, **kwargs):
+        """An OpenAPI 3 schema view (drf-spectacular, the ``openapi3`` extra)
+        of this router's routes only (see openapi.get_openapi3_view),
+        generated in its scope and guarded by its gate. ``kwargs`` are
+        get_openapi3_view's (``title``, ``version``, ``description``). None
+        with TURBODRF_ENABLE_DOCS = False."""
+        from .openapi import get_openapi3_view
+
+        return get_openapi3_view(
+            scope=self.scope, gate=self.gate, views=self._registered_views, **kwargs
+        )
+
+    def _registered_views(self):
+        return {viewset for _prefix, viewset, _basename in self.registry}
 
     def discover_models(self):
         """

@@ -362,7 +362,9 @@ router's routes only, guarded by its gate and generated with the caller's
 platform roles. The tenant schema (`turbodrf.urls`, or
 `get_turbodrf_schema_view()`) never documents platform routes, and mounting a
 platform router doesn't change it. `?role=<name>` narrows the platform schema
-to a platform role the caller holds.
+to a platform role the caller holds. With the `openapi3` extra,
+`router.get_openapi3_view(**kwargs)` serves the same routes as an OpenAPI 3
+schema, the same way: `path("console-api/openapi/", console.get_openapi3_view(title="Console API"))`.
 
 ## Commands
 

@@ -56,7 +56,7 @@ tenant model, plus (opt-in) auto-detection.
 
 | Setting | Default | Purpose | Details |
 |---|---|---|---|
-| `TURBODRF_ENABLE_DOCS` | **`True`** | Generate Swagger / ReDoc docs at `/swagger/` and `/redoc/`. Set to `False` to disable doc URLs entirely (e.g. on production deployments where you don't want a public schema). Requires `'drf_yasg'` in `INSTALLED_APPS`; TurboDRF raises system-check warning `turbodrf.W001` if it's missing. | — |
+| `TURBODRF_ENABLE_DOCS` | **`True`** | Generate Swagger / ReDoc docs at `/swagger/` and `/redoc/`, and the OpenAPI 3 schema at `/openapi/` with the `openapi3` extra. Set to `False` to disable doc URLs entirely (e.g. on production deployments where you don't want a public schema). Requires `'drf_yasg'` in `INSTALLED_APPS`; TurboDRF raises system-check warning `turbodrf.W001` if it's missing. | — |
 
 The schema is scoped to whoever requests it. It lists only TurboDRF
 operations that the caller's roles allow (and that the endpoint's
@@ -69,6 +69,41 @@ read operations of `public_access` models, with only the fields it can read
 By default the schema reflects all of
 the caller's roles; `?role=<name>` narrows it to one role the caller
 already holds (static permission mode only) and can never widen it.
+
+### OpenAPI 3 and typed clients
+
+The Swagger / ReDoc schema is Swagger 2.0. Client generators such as
+openapi-typescript, orval and openapi-generator's TypeScript targets need
+OpenAPI 3: install the `openapi3` extra, which adds drf-spectacular.
+
+```bash
+pip install "turbodrf[openapi3]"
+```
+
+`turbodrf.urls` then also serves `/api/openapi/` (URL name
+`turbodrf-openapi`): JSON, or YAML with `?format=yaml` or
+`Accept: application/yaml`. It is scoped to the caller exactly as the
+Swagger schema is, `?role=` included, and only lists the components its
+operations use. drf-spectacular needs no settings, and `drf_spectacular`
+doesn't have to be in `INSTALLED_APPS`. With your own router, mount
+`router.get_openapi3_view(title="My API")`; `turbodrf.openapi.get_openapi3_view()`
+documents every tenant route. Don't serve drf-spectacular's own
+`SpectacularAPIView` for TurboDRF routes: it isn't scoped to the caller.
+
+Because the schema is the caller's, fetch it as a user with the roles the
+client is for, then generate the client from the file:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://example.com/api/openapi/ -o openapi.json
+npx openapi-typescript openapi.json -o src/api/schema.d.ts
+```
+
+Components are named after the serializers: `<app>_<model>_list`,
+`<app>_<model>_detail`, `<app>_<model>_write` (a request body; PATCH's is
+`Patched<app>_<model>_write`, all fields optional) and
+`<app>_<model>_list_page` (the `{"pagination": ..., "data": [...]}` list
+envelope). Operation IDs are `<endpoint>_list`, `_retrieve`, `_create`,
+`_update`, `_partial_update` and `_destroy`.
 
 `TURBODRF_SWAGGER_SHOW_ALL_FIELDS` has been removed. It never had an
 effect; setting it does nothing.
