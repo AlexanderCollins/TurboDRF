@@ -228,6 +228,10 @@ invalidate_user_permissions(AnonymousUser())  # anonymous callers'
 invalidate_user_permissions()                 # everyone's
 ```
 
+The snapshots live in Django's cache, so with the default `LocMemCache` an
+invalidation reaches only the process that runs it. Use a shared cache
+(Redis, Memcached) in production.
+
 ### Nested field permissions
 
 Permissions are checked at each level of a nested field path. For `author__publisher__name`:

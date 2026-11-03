@@ -59,7 +59,7 @@ _TRANSFORMS = {
 def _max_filter_value_length():
     from django.conf import settings
 
-    return getattr(settings, "TURBODRF_MAX_FILTER_VALUE_LENGTH", 1000)
+    return getattr(settings, "TURBODRF_MAX_FILTER_VALUE_LENGTH", 200)
 
 
 class TurboDRFFilterBackend(DjangoFilterBackend):
@@ -114,10 +114,16 @@ class TurboDRFFilterBackend(DjangoFilterBackend):
             raise utils.translate_validation(errors)
         return filterset.qs
 
+    def to_html(self, request, queryset, view):
+        """No filter form in the browsable API: django-filter renders every FK
+        target's ``str()`` as a choice, the tenant model's and the user
+        model's included, which have no row rules to narrow them."""
+        return None
+
 
 class TurboDRFSearchFilter(SearchFilter):
-    """SearchFilter that bounds ``?search=``: at most 20 distinct terms, each
-    at most ``TURBODRF_MAX_FILTER_VALUE_LENGTH`` long (1000 by default). Every
+    """SearchFilter that bounds ``?search=``: at most 20 distinct terms, at
+    most ``TURBODRF_MAX_FILTER_VALUE_LENGTH`` long together (200 by default). Every
     term is matched against every search field, so an unbounded search is a
     DoS: SQLite raises ("LIKE pattern too complex", "Expression tree is too
     large") → 500, Postgres burns terms × fields × length of ILIKE. A search
@@ -144,9 +150,13 @@ class TurboDRFSearchFilter(SearchFilter):
         search_terms = self.get_search_terms(request)
         if not search_fields or not search_terms:
             return queryset
+        # Each term is matched (LIKE) against each field's whole stored text:
+        # its cost grows with the term's length, so the terms' total length is
+        # bounded, not just each one's.
         max_len = _max_filter_value_length()
-        if len(search_terms) > _MAX_SEARCH_TERMS or any(
-            len(term) > max_len for term in search_terms
+        if (
+            len(search_terms) > _MAX_SEARCH_TERMS
+            or sum(len(term) for term in search_terms) > max_len
         ):
             return queryset.none()
 
@@ -366,9 +376,8 @@ class ORFilterBackend(BaseFilterBackend):
 
         # Bound filter value length. Beyond this, SQLite raises "LIKE
         # pattern too complex" and Postgres burns CPU O(N×len) — both DoS
-        # vectors. 1000 covers normal use (UUIDs, long titles, multi-word
-        # search) and the framework would not run an unbounded
-        # icontains scan in practice.
+        # vectors. 200 covers normal use (UUIDs, titles, multi-word search):
+        # a LIKE's cost is the pattern's length times the stored text's.
         max_filter_value_len = _max_filter_value_length()
 
         filters = []  # (param, field path, lookup, [values], is_or)
@@ -398,8 +407,9 @@ class ORFilterBackend(BaseFilterBackend):
                         model.__name__,
                     )
                     continue
-            # Reject excessively long filter values (DoS guard).
-            if any(
+            # Reject excessively long filter values, and more OR values than
+            # search takes terms (DoS guard: a deep OR tree is a 500 on SQLite).
+            if len(values) > _MAX_SEARCH_TERMS or any(
                 v is not None and len(str(v)) > max_filter_value_len for v in values
             ):
                 return queryset.none()

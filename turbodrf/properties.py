@@ -341,6 +341,15 @@ def _hop_queryset(field, target, request, columns):
     manager = target._base_manager if single else target._default_manager
     scoped = scoped_target_queryset(target, request, base_manager=single)
     qs = manager.all() if scoped is None else scoped
+    ordering = qs.query.order_by or (
+        target._meta.ordering if qs.query.default_ordering else ()
+    )
+    if not single and ordering:
+        # A to-many hop's rows come in their model's order only where it's
+        # on columns the property may read: the order would leak the rest.
+        from .filter_backends import readable_ordering
+
+        qs = qs.order_by(*readable_ordering(target, ordering, set(columns)))
     return qs.only(target._meta.pk.name, *columns)
 
 

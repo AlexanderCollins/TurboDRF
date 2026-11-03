@@ -43,6 +43,11 @@ def register(model, config):
             f"zero-argument callable returning one."
         )
     previous = _registered.get(model)
+    if previous is not None and previous is not config:
+        raise ImproperlyConfigured(
+            f"register(): {model.__name__} is already registered; register each "
+            f"model once."
+        )
     _registered[model] = config
     if apps.models_ready:
         # turbodrf's own ready() may have registered tenancy already: redo it,

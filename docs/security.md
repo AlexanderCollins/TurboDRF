@@ -185,6 +185,10 @@ and configuration reference.
   is rejected with a 400. With a chained `tenant_field` (`ledger__firm`),
   a create, or an update that changes the first hop (`ledger`), must point
   it at a row in the caller's tenant.
+- **Delete** — a delete passes the write checks a write would: each
+  `Custom`'s `write_validator` runs, and an `Owner` inside an `Either` must
+  hold for the row. Seeing a row through `Members` doesn't let a caller delete
+  a row that `Owner` gives to someone else.
 - **FK injection defense** — every FK and M2M value in the request body must
   resolve to a row visible under the related model's tenant boundary and
   predicates. This runs on every model, shared ones included, and an
@@ -195,7 +199,8 @@ and configuration reference.
   (typically a user) must be in the caller's tenant. A generic FK
   (`content_type` + `object_id`) is checked like an FK to the content type's
   model. Rejected targets return 400 with the same message whether they're
-  hidden or don't exist.
+  hidden or don't exist, and this check runs before the predicates' own
+  write checks, so their messages can't tell the two apart either.
 - **M2M writes** — a write replaces only the links the caller can see; links
   to rows they can't reference are kept.
 - **Tenant reassignment rejection** — PATCH cannot change a row's tenant FK to
@@ -454,6 +459,21 @@ an operator's staff. What keeps it contained (details in
 - **The API root lists every route.** `GET /api/` names each endpoint,
   whatever the caller may use. Pass `include_root_view=False` to the router
   to drop it.
+- **Uniqueness is checked before the row rules.** A `UniqueConstraint` that
+  includes an owner column can answer "already exists" about a row the caller
+  can't see, within their tenant.
+- **Rules are per model.** A multi-table child or a proxy doesn't inherit the
+  field rules of its parent: give the inherited fields their rules on the
+  child too. A row's rules are checked when it's written, not when a row its
+  `Owner` path or `Conditional` runs through is edited.
+- **Database cascades** (`on_delete=CASCADE`, `SET_NULL`) change rows the
+  deleter can't see, as Django does them.
+- **Request size** is your web server's to limit: DRF doesn't apply
+  `DATA_UPLOAD_MAX_MEMORY_SIZE` to JSON bodies.
+- **`TURBODRF_TENANT_USER_FIELD` should be a column** (a foreign key). A
+  property can't narrow a write form's user choices to the caller's tenant,
+  so an error can then differ between "another tenant's user" and "no such
+  user".
 - **Bypassed permission modes** (`TURBODRF_DISABLE_PERMISSIONS`,
   `TURBODRF_USE_DEFAULT_PERMISSIONS`) have no field rules, so per-model
   `sensitive_fields` don't apply.

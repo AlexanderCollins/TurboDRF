@@ -111,7 +111,8 @@ route is still an FK, nested-field and filter target.
 `tenant_field` must be a chain of forward foreign keys / one-to-ones, named
 by field (`workspace`, not `workspace_id`), that ends at
 `TURBODRF_TENANT_MODEL`; the last one must reference the tenant's primary key
-(no `to_field`). `owner_field` alone doesn't count as a tenancy
+(no `to_field`), and a TurboDRF model it runs through needs a `tenant_field`
+of its own (not `'tenancy': 'shared'`). `owner_field` alone doesn't count as a tenancy
 decision. Nor does a `visibility` list without a `tenant_field`, unless one
 of its predicates restricts every caller: an `Owner` without bypass roles,
 `Members`, `Group` or `Custom` (an `Either` only if all its children do).
@@ -267,7 +268,9 @@ instead: the writer must still see it, and inside an `Either` it must hold
 on its own (on create, and before and after an update that changes the
 path's first hop). A several-column `Owner` is checked on the saved row too:
 a create must name the caller in one of its columns. `Custom` adds its
-`write_validator`; `Members`, `Group` and `Conditional` add none.
+`write_validator`; `Members`, `Group` and `Conditional` add none. A DELETE
+gets the same checks: a `Members` viewer can't delete a row `Owner` gives to
+someone else.
 On create, `Either` fills a single-column `Owner` child's column with the
 caller.
 

@@ -485,9 +485,9 @@ class TestRolesAndSnapshotsByScope(TestCase):
         with use_scope(PLATFORM):
             platform_key = get_cache_key(self.user, PlatformAccount)
         self.assertNotEqual(tenant_key, platform_key)
-        self.assertTrue(tenant_key.startswith(f"turbodrf_perm:{self.user.pk}:"))
+        self.assertTrue(tenant_key.startswith(f"turbodrf_perm:user:{self.user.pk}:"))
         self.assertTrue(
-            platform_key.startswith(f"turbodrf_perm:platform:{self.user.pk}:")
+            platform_key.startswith(f"turbodrf_perm:platform:user:{self.user.pk}:")
         )
 
     def test_a_cached_platform_snapshot_never_serves_the_tenant_scope(self):

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "turbodrf"
-version = "0.8.4"
+version = "0.8.5"
 description = "Turn Django models into a secure REST API: CRUD endpoints, field-level permissions and multi-tenant row scoping"
 readme = "README.md"
 authors = [

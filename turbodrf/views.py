@@ -658,6 +658,9 @@ class TurboDRFViewSet(*_viewset_bases):
         elif isinstance(exc, (TooManyFieldsSent, RequestDataTooBig)):
             # Raised while DRF reads the request; a 400, not a 500.
             exc = exceptions.ParseError("Request has too many fields or is too big.")
+        elif isinstance(exc, RecursionError):
+            # A JSON body nested thousands deep, raised while DRF parses it.
+            exc = exceptions.ParseError("Request body is nested too deeply.")
         return super().handle_exception(exc)
 
     def initial(self, request, *args, **kwargs):
@@ -669,6 +672,36 @@ class TurboDRFViewSet(*_viewset_bases):
             from rest_framework.exceptions import MethodNotAllowed
 
             raise MethodNotAllowed(request.method)
+        self._check_lookup_readable(request)
+
+    def _check_lookup_readable(self, request):
+        """A detail URL by a ``lookup_field`` other than the pk is a match on
+        that column's value: a caller who can't read the column gets a 404,
+        or the URL would confirm guesses of it."""
+        from rest_framework.exceptions import NotFound
+
+        lookup = self.lookup_field
+        if (
+            lookup in ("pk", self.model._meta.pk.name)
+            or (self.lookup_url_kwarg or lookup) not in self.kwargs
+            or permissions_bypassed()
+        ):
+            return
+        snapshot = self._caller_snapshot(request)
+        if snapshot.has_read_rule(lookup) and not snapshot.can_read_field(lookup):
+            raise NotFound()
+
+    def perform_destroy(self, instance):
+        """A delete passes the write checks a write would (see
+        ``serializers._delete_errors``)."""
+        from rest_framework.exceptions import PermissionDenied
+
+        from .serializers import _delete_errors
+
+        errors = _delete_errors(self.model, instance, self.request)
+        if errors:
+            raise PermissionDenied(errors[0])
+        super().perform_destroy(instance)
 
     def get_permissions(self):
         """Resolve permission instances per request from current settings.
@@ -1253,9 +1286,23 @@ class TurboDRFViewSet(*_viewset_bases):
         if not request:
             return None
 
+        from .backends import build_permission_snapshot
+        from .validation import fk_value_readable
+
         snapshot = self._caller_snapshot(request)
         readable = set(snapshot.readable_fields) if snapshot else set()
-        return readable & self._configured_base_fields()
+        user = getattr(request, "user", None)
+        return {
+            name
+            for name in readable & self._configured_base_fields()
+            if fk_value_readable(
+                self.model,
+                name,
+                lambda m: (
+                    snapshot if m is self.model else build_permission_snapshot(user, m)
+                ),
+            )
+        }
 
     def _caller_snapshot(self, request):
         """The caller's permission snapshot (anonymous when the request has no

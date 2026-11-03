@@ -51,8 +51,8 @@ _bypass_roles_validated = False
 
 def _field_path_resolves(model, path):
     """True if ``path`` names something the serializer can render: a model
-    field or attribute (``@property``), or a ``__`` path whose hops before the
-    last are relations."""
+    field or attribute (``@property``), or a ``__`` path of relations ending
+    on a field."""
     parts = path.split("__")
     current = model
     for i, part in enumerate(parts):
@@ -60,7 +60,10 @@ def _field_path_resolves(model, path):
         try:
             field = current._meta.get_field(part)
         except FieldDoesNotExist:
-            return last and bool(part) and hasattr(current, part)
+            # A @property only at the top level, where it runs in the
+            # property sandbox: through a '__' path it would run on the full
+            # related row, outside every field rule.
+            return last and i == 0 and bool(part) and hasattr(current, part)
         if not last:
             current = getattr(field, "related_model", None)
             if current is None:
@@ -91,6 +94,27 @@ def _configured_field_names(model, config, where=None):
             f"{fields!r}."
         )
     return list(fields)
+
+
+def _sensitive_fields(model):
+    return list(getattr(model, "sensitive_fields", None) or ())
+
+
+def _validate_sensitive_fields(model):
+    """Every ``sensitive_fields`` entry must name a field of the model, by its
+    name: a typo, or an FK's column name (``owner_id``), would protect
+    nothing."""
+    for name in _sensitive_fields(model):
+        try:
+            field = model._meta.get_field(name) if isinstance(name, str) else None
+        except FieldDoesNotExist:
+            field = None
+        if field is None or field.name != name or field.auto_created:
+            raise ImproperlyConfigured(
+                f"{model.__name__}.sensitive_fields lists {name!r}, which isn't "
+                f"a field of {model.__name__}: it would protect nothing. Use the "
+                f"field's name ('owner', not 'owner_id')."
+            )
 
 
 def _is_unique_alone(model, field):
@@ -135,7 +159,21 @@ _CONFIG_KEYS = frozenset(
 _PLATFORM_KEYS = _CONFIG_KEYS - TENANCY_KEYS - {"platform"}
 
 
+# Keys whose value is a switch. A string ('false') would read as true.
+_BOOLEAN_KEYS = ("enabled", "public_access", "read_only", "full_clean")
+
+
+def _validate_booleans(config, where):
+    for key in _BOOLEAN_KEYS:
+        if key in config and not isinstance(config[key], bool):
+            raise ImproperlyConfigured(
+                f"{where} '{key}' must be True or False; got {config[key]!r}, "
+                f"which Python would read as {bool(config[key])}."
+            )
+
+
 def _validate_config_keys(model, config):
+    _validate_booleans(config, config_label(model))
     unknown = sorted(set(config) - _CONFIG_KEYS)
     if not unknown:
         return
@@ -179,7 +217,10 @@ def _validate_fields_and_lookup(model, config, where=None):
         raise ImproperlyConfigured(
             f"{where} 'fields' lists {bad}, which "
             f"{model.__name__} doesn't have. Each entry must be a model field, "
-            f"a @property, or a '__' path through relations."
+            f"a @property, or a '__' path through relations ending on a field "
+            f"(a property of a related model runs outside the property "
+            f"sandbox: list it in that model's own 'fields', or list the "
+            f"column it reads)."
         )
     reverse = [name for name in names if _ends_on_reverse_one_to_one(model, name)]
     if reverse:
@@ -200,6 +241,13 @@ def _validate_fields_and_lookup(model, config, where=None):
         raise ImproperlyConfigured(
             f"{where} 'lookup_field' {lookup!r} is not a "
             f"column of {model.__name__}."
+        )
+    from .validation import is_field_path_sensitive
+
+    if is_field_path_sensitive(lookup) or lookup in _sensitive_fields(model):
+        raise ImproperlyConfigured(
+            f"{where} 'lookup_field' {lookup!r} is a sensitive field: a detail "
+            f"URL would confirm guesses of its value."
         )
     if not _is_unique_alone(model, field):
         raise ImproperlyConfigured(
@@ -282,6 +330,7 @@ def _validate_platform_block(model, config, tenant_field):
             f"boundary and no predicates, so tenancy keys belong at the top "
             f"level of turbodrf() only."
         )
+    _validate_booleans(block, where)
     unknown = sorted(set(block) - _PLATFORM_KEYS)
     if unknown:
         hint = ""
@@ -632,6 +681,7 @@ class TurboDRFRouter(DefaultRouter):
         # (still a scoped FK / filter target) as much as an enabled one.
         for model in models:
             _validate_config_keys(model, configs[model])
+            _validate_sensitive_fields(model)
 
         # ---------------------------------------------------------------
         # Resolve and register tenancy for EVERY model, enabled or not: a

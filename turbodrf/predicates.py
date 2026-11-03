@@ -566,13 +566,22 @@ def register_predicates(model, predicates):
     _model_predicates[model] = list(predicates)
 
 
+def _registered_as(model, registry):
+    """The key ``model``'s rules are registered under: itself, or for a proxy
+    with no entry of its own, its concrete model (a proxy of a model passed
+    to ``register()`` isn't registered itself, but holds the same rows)."""
+    if model in registry or not getattr(getattr(model, "_meta", None), "proxy", False):
+        return model
+    return model._meta.concrete_model
+
+
 def get_predicates(model):
     """The within-tenant predicates of ``model`` on the current scope. On the
     platform scope a reachable model has none, and any other model a rule
     that matches no row."""
     if is_platform():
         return [] if platform_reachable(model) else [_PlatformUnreachable()]
-    return _model_predicates.get(model, [])
+    return _model_predicates.get(_registered_as(model, _model_predicates), [])
 
 
 def register_tenant_field(model, tenant_field):
@@ -589,14 +598,14 @@ def get_tenant_field(model):
     ``registered_tenant_field``)."""
     if is_platform():
         return None
-    return _model_tenant_fields.get(model)
+    return _model_tenant_fields.get(_registered_as(model, _model_tenant_fields))
 
 
 def registered_tenant_field(model):
     """The model's registered tenant_field, whatever the scope: the platform
     scope's write checks use it to keep a row and the rows it points at in
     one tenant."""
-    return _model_tenant_fields.get(model)
+    return _model_tenant_fields.get(_registered_as(model, _model_tenant_fields))
 
 
 def clear_predicates():

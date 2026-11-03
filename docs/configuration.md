@@ -41,11 +41,16 @@ on:
 - an unknown key in any model's config, enabled or not, such as a misspelt
   `'owner_feild'` (the error lists the valid keys; `sensitive_fields` is a
   class attribute on the model, not a key);
+- `enabled`, `public_access`, `read_only` or `full_clean` set to anything but
+  `True` or `False` (the string `'false'` would read as true);
+- a `sensitive_fields` entry that isn't a field of the model, by its name
+  (`'owner'`, not `'owner_id'`);
 - on an enabled model, a `fields` entry that isn't a model field, a
-  `@property` or a `__` path through relations, or one that ends on a reverse
-  one-to-one (list a field of the related model instead, e.g.
+  `@property` or a `__` path of relations ending on a field, or one that ends
+  on a reverse one-to-one (list a field of the related model instead, e.g.
   `'profile__bio'`);
-- a `lookup_field` that isn't a unique column of the model;
+- a `lookup_field` that isn't a unique column of the model, or is a
+  sensitive one;
 - a [`searchable_fields`](#searchable-fields) entry that can't be searched;
 - two models routed to the same `endpoint` (the error suggests an
   app-prefixed one, such as `'shop/books'`).
@@ -142,13 +147,13 @@ class Book(models.Model, TurboDRFMixin):
 
 `display_title` appears in every response alongside the real fields.
 
-A property is readable by any role that can read the model (it can't carry its own field-level rule), and sensitive-named properties are dropped.
+A property is readable by any role that can read the model (it can't carry its own field-level rule), and sensitive-named properties are dropped. Only a model's own properties can be listed: a property of a related model (`'author__display_name'`) would run on the whole related row, outside the sandbox below, so it's refused at startup. List it in the related model's own `fields`, or list the column it reads.
 
 ### The property sandbox
 
 A property is computed on a **sandbox** copy of the row:
 
-- Only the columns the caller may read are loaded. Reading any other column (a field a role has no read rule for, a `sensitive_fields` entry, `password`) would need a query, so it fails. A column a model hook loads while the row is built (a `post_init` handler, `__init__`) is dropped again before the property runs.
+- Only the columns the caller may read are loaded. Reading any other column (a field a role has no read rule for, a `sensitive_fields` entry, `password`) would need a query, so it fails. A column a model hook loads while the row is built (a `post_init` handler, `__init__`) is dropped again before the property runs; a value the hook copies elsewhere on the instance isn't, so don't copy hidden columns in model hooks.
 - Related objects are available only if the model declares them in `property_relations`. Each hop is loaded within the caller's scope (the target's own `tenant_field` and predicates, as for `author__name`) and with only the columns the caller may read on that model. A FK whose target is out of scope reads as `None`; out-of-scope rows are missing from a reverse or M2M relation. A hop is loaded only if the caller can read the relation, has model-level read on its target model, and can read the column it joins on; otherwise a property that follows it fails.
 - The property can't query the database. `Book.objects.count()`, `self.tags.filter(...)` and `self.tags.values_list(...)` all fail; `self.tags.all()` on a declared relation works.
 - The result becomes plain data (dicts, lists, scalars) before the sandbox closes. A property that returns a model instance, a manager or a queryset fails: return the values instead (`[t.name for t in self.tags.all()]`).
