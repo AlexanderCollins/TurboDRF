@@ -96,7 +96,7 @@ Access related model fields with `__` notation:
 ]
 ```
 
-FK fields are flattened in responses (`author__name` becomes `author_name`), and the FK itself renders as its raw id. M2M fields are arrays of objects keyed by the path below the M2M (`tags__group__name` gives `{"group__name": ...}`), in the target's `Meta.ordering` when the array shows those columns and the caller can read them (else by primary key):
+FK fields are flattened in responses (`author__name` becomes `author_name`), and the FK itself renders as its raw id. Listing a nested path puts its FK (`author`) in the API even if `fields` doesn't list it: rendered, and accepted on writes by a role that may write it (checked like any FK value). M2M fields are arrays of objects keyed by the path below the M2M (`tags__group__name` gives `{"group__name": ...}`), in the target's `Meta.ordering` when the array shows those columns and the caller can read them (else by primary key):
 
 ```json
 {
