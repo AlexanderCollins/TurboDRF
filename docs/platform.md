@@ -368,10 +368,14 @@ to a platform role the caller holds.
 
 ```bash
 python manage.py turbodrf_check --scope platform
+python manage.py turbodrf_explain --user alice --model Job --scope platform
+python manage.py turbodrf_schema --role support --scope platform
 ```
 
 `turbodrf_check --scope platform` lists the models with an enabled platform
-block, each with its fields and tenant path.
+block, each with its fields and tenant path. `turbodrf_explain` and
+`turbodrf_schema` answer with platform roles there (see
+[Management Commands](commands.md)).
 
 ## Not covered
 

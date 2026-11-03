@@ -50,9 +50,18 @@ attack that worked on 0.8.3 (`tests/integration/test_audit_084.py`).
   longer takes the subquery form.
 - The primary-key tie-breaker follows the last sort term's direction, so an
   index on `(tenant, column, id)` serves descending sorts too.
-- Schema generation doesn't build row scope for each operation.
+- Schema generation doesn't build row scope for each operation or related
+  field.
 
 ### Quality of life
+
+- `manage.py turbodrf_explain --user U --model M [--pk P]` says why a user
+  can or can't read a model, a field or a row: their roles and tenant, each
+  action and the roles granting it, each field's rule, and which layer (the
+  tenant boundary, which predicate) hides the row. `manage.py turbodrf_schema
+  --role R` (or `--anonymous`) prints the schema the docs view serves those
+  roles, with no database user, for CI and client generation. See
+  [Management Commands](docs/commands.md).
 
 - With `DEBUG = True`, a 403 says why: no roles, or the permission string no
   role grants. The reason is logged at INFO either way.

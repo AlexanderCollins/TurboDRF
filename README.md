@@ -129,7 +129,7 @@ Full docs: <https://turbodrf.com/docs/>
 - [Filtering & Search](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/filtering.md) -- filtering, search, ordering, OR queries
 - [Integrations](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/integrations.md) -- allauth, Keycloak, drf-api-tracking, Sentry (all experimental)
 - [Security](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/security.md) -- sensitive fields, secure defaults, error responses
-- [Management Commands](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/commands.md) -- turbodrf_check
+- [Management Commands](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/commands.md) -- turbodrf_check, turbodrf_explain (why a user can't see a row or field), turbodrf_schema
 - **[Settings Reference](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/settings_reference.md)** -- every TURBODRF_* setting in one place
 
 ## Permissions and access control
