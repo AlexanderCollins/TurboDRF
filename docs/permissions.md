@@ -59,6 +59,18 @@ TURBODRF_ROLES = {
 }
 ```
 
+A refused request is a 403. With `DEBUG = True` its detail says why: the
+caller has no roles, or none of their roles grants the permission it names
+(`books.book.delete`). Either way the reason is logged at INFO by
+`turbodrf.permissions`. `manage.py check` warns (`turbodrf.W003`) when
+static mode has no `TURBODRF_ROLES` at all.
+
+The generated viewsets' permission check is TurboDRF's own: DRF's
+`DEFAULT_PERMISSION_CLASSES` doesn't apply to them. For a check every route
+needs (staff only, MFA, a suspended-account flag), pass it as the router's
+`gate`: `TurboDRFRouter(gate=[IsNotSuspended])`. Authentication and
+throttling come from your `REST_FRAMEWORK` settings as usual.
+
 ### Permission format
 
 - Model-level: `app_label.model_name.action` (read, create, update, delete)
@@ -148,6 +160,8 @@ ignored. With the allauth or Keycloak integration on, TurboDRF installs a
   UI without redeploying, and take effect on the next request (see
   [Caching](#caching)).
 
+Any other value raises `ImproperlyConfigured` at startup.
+
 The mode applies to the tenant scope. A platform router (staff across
 tenants) has its own roles and map, `TURBODRF_PLATFORM_ROLE_GETTER` and
 `TURBODRF_PLATFORM_ROLES`, always static: see
@@ -194,9 +208,10 @@ removing a user's role, changing `TURBODRF_ROLES`, saving or deleting a
 `RolePermission` (which bumps its role's version), and a deploy that changes
 a model's `sensitive_fields` or `public_access`.
 
-A bulk `RolePermission` QuerySet `update()` or `delete()` skips the model's
-`save()` / `delete()`, so it doesn't bump versions, and snapshots stay stale
-until the TTL. Invalidate them after one:
+A QuerySet `delete()` of `RolePermission` rows (the admin's "delete
+selected" included) bumps their roles' versions too. A bulk `update()` or
+`bulk_create()` skips the model's `save()`, so it doesn't, and snapshots stay
+stale until the TTL. Invalidate them after one:
 
 ```python
 from django.contrib.auth.models import AnonymousUser

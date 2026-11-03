@@ -23,7 +23,7 @@ def get_turbodrf_schema_view(
     description="Auto-generated API with role-based access control powered by TurboDRF",
     terms_of_service=None,
     contact_email=None,
-    license_name="MIT License",
+    license_name=None,
     scope="tenant",
     gate=None,
     views=None,
@@ -44,7 +44,7 @@ def get_turbodrf_schema_view(
             schema unless given.
         contact_email (str): Contact email for API support. Left out of the
             schema unless given.
-        license_name (str): License name. Defaults to "MIT License".
+        license_name (str): License name, if any. Defaults to none.
         scope (str): ``"tenant"`` (default) documents the tenant scope's
             endpoints; ``"platform"`` documents the platform router's only,
             with platform roles. The two are separate documents.
@@ -146,7 +146,7 @@ def get_turbodrf_schema_view(
             description=description,
             terms_of_service=terms_of_service,
             contact=openapi.Contact(email=contact_email) if contact_email else None,
-            license=openapi.License(name=license_name),
+            license=openapi.License(name=license_name) if license_name else None,
         ),
         # public=False: drf-yasg runs each endpoint's permission classes for
         # the caller instead of documenting every endpoint.

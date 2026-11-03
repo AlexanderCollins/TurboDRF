@@ -100,10 +100,10 @@ def _q_spans_multivalued(model, q):
 
     A child that isn't a ``(lookup, value)`` pair (an ``Exists()`` or other
     expression, say from a ``Custom`` predicate), or whose value is an
-    expression (``F('team__members')``), can't be inspected, so it counts as
-    multi-valued: the subquery form is correct either way."""
-    from django.core.exceptions import FieldDoesNotExist
-    from django.db.models import Q
+    expression other than a plain ``F()`` (whose path is checked like the
+    lookup's), can't be inspected, so it counts as multi-valued: the subquery
+    form is correct either way."""
+    from django.db.models import F, Q
 
     for child in q.children:
         if isinstance(child, Q):
@@ -112,19 +112,32 @@ def _q_spans_multivalued(model, q):
             continue
         if not isinstance(child, tuple) or not isinstance(child[0], str):
             return True
-        if hasattr(child[1], "resolve_expression"):
-            return True
-        current = model
-        for part in child[0].split("__"):
-            if current is None:
-                break
-            try:
-                field = current._meta.get_field(part)
-            except FieldDoesNotExist:
-                break
-            if field.many_to_many or field.one_to_many:
+        value = child[1]
+        if type(value) is F:
+            if _path_multivalued(model, value.name):
                 return True
-            current = field.related_model if field.is_relation else None
+        elif hasattr(value, "resolve_expression"):
+            return True
+        if _path_multivalued(model, child[0]):
+            return True
+    return False
+
+
+def _path_multivalued(model, path):
+    """True if the lookup ``path`` crosses an M2M or reverse relation."""
+    from django.core.exceptions import FieldDoesNotExist
+
+    current = model
+    for part in path.split("__"):
+        if current is None:
+            break
+        try:
+            field = current._meta.get_field(part)
+        except FieldDoesNotExist:
+            break
+        if field.many_to_many or field.one_to_many:
+            return True
+        current = field.related_model if field.is_relation else None
     return False
 
 
@@ -812,13 +825,17 @@ class TurboDRFViewSet(*_viewset_bases):
         queryset, override `_get_base_queryset()` instead — this
         wrapper still applies the access layer.
         """
+        if getattr(self, "swagger_fake_view", False):
+            # drf_yasg reads only the model while building the schema (once
+            # per operation): no rows, no scope to build.
+            return self.model._default_manager.none()
+
         # Unscoped base — see invariant in the docstring. This MUST be
         # passed through the tenant + predicate filter steps further
         # down before being returned to a request.
         unscoped = self._get_base_queryset()
 
-        # Add default ordering by primary key to avoid pagination warnings
-        queryset = unscoped if unscoped.ordered else unscoped.order_by("pk")
+        queryset = unscoped.order_by(*self._default_ordering(unscoped))
 
         # A delete renders nothing: it needs no JOINs or visibility flags.
         renders_instances = getattr(self, "action", None) != "destroy"
@@ -892,7 +909,7 @@ class TurboDRFViewSet(*_viewset_bases):
             # where they're rendered).
             if not self._single_valued_prefix(path).startswith(relation_path):
                 continue
-            q = build_traversal_scope_q(self.model, path, request)
+            q = build_traversal_scope_q(self.model, path, request, correlated=True)
             if not q:
                 continue
             alias = f"_tdrf_visible_{len(self._nested_visibility)}"
@@ -947,6 +964,21 @@ class TurboDRFViewSet(*_viewset_bases):
                 self.model, paths, getattr(request, "user", None)
             )
         return [prefixes[path] + path for path in paths]
+
+    def _default_ordering(self, queryset):
+        """The base queryset's order (its ``order_by``, else ``Meta.ordering``)
+        if the caller may order by it, else the pk: pagination needs a stable
+        order, and the order of the rows mustn't follow a column the caller
+        can't read (see ``readable_ordering``)."""
+        from .filter_backends import readable_ordering
+
+        query = queryset.query
+        ordering = query.order_by or (
+            self.model._meta.ordering if query.default_ordering else ()
+        )
+        if not ordering:
+            return ["pk"]
+        return readable_ordering(self.model, ordering, set(self.ordering_fields))
 
     @property
     def ordering_fields(self):
@@ -1095,20 +1127,19 @@ class TurboDRFViewSet(*_viewset_bases):
         return self.get_filterset_fields()
 
     def create(self, request, *args, **kwargs):
-        """Create a model instance.
-
-        We pre-fill tenant/owner FKs into request.data BEFORE serializer
-        validation, because those FKs are typically non-null on the model
-        and DRF's required-field check would otherwise reject requests that
-        omit them. The serializer then runs its own validate_write and
-        auto_fill on validated_data — the two stages have different roles:
-          - view-level pre-fill: ensure required FKs exist for serializer
-            validation (fills only if missing)
-          - serializer-level auto_fill: always overwrite tenant FK after
-            permission-stripping, so a stripped wrong-tenant value gets
-            replaced with the correct one
-        Both are needed for security AND ergonomics. See predicates.py.
-        """
+        # (Comments, not a docstring: the schema shows a view method's
+        # docstring as the operation's description.)
+        # We pre-fill tenant/owner FKs into request.data BEFORE serializer
+        # validation, because those FKs are typically non-null on the model
+        # and DRF's required-field check would otherwise reject requests that
+        # omit them. The serializer then runs its own validate_write and
+        # auto_fill on validated_data — the two stages have different roles:
+        #   - view-level pre-fill: ensure required FKs exist for serializer
+        #     validation (fills only if missing)
+        #   - serializer-level auto_fill: always overwrite tenant FK after
+        #     permission-stripping, so a stripped wrong-tenant value gets
+        #     replaced with the correct one
+        # Both are needed for security AND ergonomics. See predicates.py.
         data = self._prefill_required_fields(request)
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
@@ -1119,10 +1150,9 @@ class TurboDRFViewSet(*_viewset_bases):
         )
 
     def update(self, request, *args, **kwargs):
-        """Update a model instance. A full update (PUT) that leaves out the
-        tenant FK gets it pre-filled, as on create: it's required, and the
-        row is in the caller's tenant anyway. The owner isn't: an update
-        leaves it as is."""
+        # A full update (PUT) that leaves out the tenant FK gets it
+        # pre-filled, as on create: it's required, and the row is in the
+        # caller's tenant anyway. The owner isn't: an update leaves it as is.
         partial = kwargs.pop("partial", False)
         instance = self.get_object()
         data = request.data

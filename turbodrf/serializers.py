@@ -1,8 +1,7 @@
 import base64
-import hashlib
 import logging
 
-from django.core.exceptions import FieldDoesNotExist
+from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.db import IntegrityError, models, transaction
 from rest_framework import serializers
 from rest_framework.relations import ManyRelatedField, RelatedField
@@ -206,10 +205,24 @@ def _in_caller_tenant(value, target, tenant_model, tenant_user_field, tenant_pk)
     return value_pk is not None and value_pk == tenant_pk
 
 
+def _co_tenant_binds(host, tenant_pk):
+    """Does the co-tenant rule (``_in_caller_tenant``) bind writes to
+    ``host``? On a scoped host (a tenant_field or predicates), always. On a
+    shared one, when the caller has a tenant, outside the platform scope: a
+    shared row pointing at another tenant's user would show that user to
+    every tenant."""
+    from .predicates import get_predicates, get_tenant_field
+    from .scope import is_platform
+
+    if get_tenant_field(host) or get_predicates(host):
+        return True
+    return tenant_pk is not None and not is_platform()
+
+
 def _co_tenant_queryset(host, queryset, request):
     """``queryset`` (a related field's choices) narrowed by the co-tenant rule
-    ``_in_caller_tenant`` applies to written values, for a tenant-scoped
-    ``host`` and a target without a ``tenant_field`` of its own. A tenant
+    ``_in_caller_tenant`` applies to written values, where it binds ``host``
+    (``_co_tenant_binds``) and the target has no ``tenant_field`` of its own. A tenant
     attribute that isn't a column (a property) can only be checked row by row,
     so it narrows only the choices an HTML page renders; a write is checked
     value by value in ``_check_fk_injection_writes``."""
@@ -218,12 +231,13 @@ def _co_tenant_queryset(host, queryset, request):
     from .predicates import get_tenant_field
 
     tenant_user_field = getattr(django_settings, "TURBODRF_TENANT_USER_FIELD", None)
-    host_tenant_field = get_tenant_field(host)
     target = queryset.model
-    if not (tenant_user_field and host_tenant_field) or get_tenant_field(target):
+    if not tenant_user_field or get_tenant_field(target):
         return queryset
     tenant_pk = _caller_tenant_pk(request)
-    tenant_model = _tenant_model(host, host_tenant_field)
+    if not _co_tenant_binds(host, tenant_pk):
+        return queryset
+    tenant_model = _tenant_model(host, get_tenant_field(host) or "")
     is_tenant = _same_model(target, tenant_model)
     if not is_tenant and not hasattr(target, tenant_user_field):
         return queryset
@@ -368,7 +382,9 @@ def _require_unwritable_columns(model, validated_data):
         raise serializers.ValidationError(missing)
 
 
-def _check_fk_injection_writes(model, validated_data, request, tenant_field):
+def _check_fk_injection_writes(
+    model, validated_data, request, tenant_field, instance=None
+):
     """Layer 3: FK / M2M injection + co-tenant checks. Returns a
     ``{field: [errors]}`` dict ({} when every provided target is allowed).
 
@@ -378,7 +394,7 @@ def _check_fk_injection_writes(model, validated_data, request, tenant_field):
     Layer 3a: every provided FK / M2M target must be visible under the related
       model's tenant boundary + predicate stack (as through its own endpoint;
       an anonymous caller can't reach a tenant-scoped target).
-    Layer 3b: when the host is scoped (a tenant_field, or predicates alone), a
+    Layer 3b: where the co-tenant rule binds the host (``_co_tenant_binds``), a
       target of the tenant model must be the caller's tenant, and a target with
       a tenant attribute (via TURBODRF_TENANT_USER_FIELD) must share the
       caller's tenant — catches cross-tenant User-FK and Members assignment
@@ -386,11 +402,14 @@ def _check_fk_injection_writes(model, validated_data, request, tenant_field):
     Layer 3c: unified error text (same whether the target doesn't exist or just
       isn't visible) so an attacker can't enumerate other tenants' PKs.
 
+    A generic FK (``content_type`` + ``object_id``) is checked like an FK to
+    the content type's model.
+
     Without a request (programmatic use) there is no caller to check against.
     """
     from django.conf import settings as django_settings
 
-    from .predicates import get_predicates, get_tenant_field
+    from .predicates import get_tenant_field
     from .validation import scoped_target_queryset
 
     fk_errors = {}
@@ -398,9 +417,26 @@ def _check_fk_injection_writes(model, validated_data, request, tenant_field):
         return fk_errors
 
     tenant_user_field = getattr(django_settings, "TURBODRF_TENANT_USER_FIELD", None)
-    co_tenant = bool(tenant_user_field and (tenant_field or get_predicates(model)))
-    tenant_pk = _caller_tenant_pk(request) if co_tenant else None
+    tenant_pk = _caller_tenant_pk(request) if tenant_user_field else None
+    co_tenant = bool(tenant_user_field) and _co_tenant_binds(model, tenant_pk)
     tenant_model = _tenant_model(model, tenant_field or "") if co_tenant else None
+
+    def allowed(target, values):
+        scoped = scoped_target_queryset(target, request)
+        if scoped is not None:
+            pks = {getattr(v, "pk", v) for v in values}
+            if set(scoped.filter(pk__in=pks).values_list("pk", flat=True)) != pks:
+                return False
+        # Co-tenant check, even when the related model has no predicates
+        # (typical for User). A target with a tenant_field of its own was just
+        # checked against the caller's tenant by its scope (one query, not one
+        # per value).
+        if co_tenant and not get_tenant_field(target):
+            return all(
+                _in_caller_tenant(v, target, tenant_model, tenant_user_field, tenant_pk)
+                for v in values
+            )
+        return True
 
     relations = [f for f in model._meta.fields if f.many_to_one or f.one_to_one] + list(
         model._meta.many_to_many
@@ -411,35 +447,28 @@ def _check_fk_injection_writes(model, validated_data, request, tenant_field):
         value = validated_data[field.name]
         values = list(value) if field.many_to_many else [value]
         values = [v for v in values if v is not None]
-        if not values:
+        if values and not allowed(field.related_model, values):
+            fk_errors[field.name] = [
+                f"Invalid {field.name}: not found or not accessible."
+            ]
+
+    # Generic FKs, duck-typed: django.contrib.contenttypes may not be installed.
+    for gfk in model._meta.private_fields:
+        ct_name = getattr(gfk, "ct_field", None)
+        id_name = getattr(gfk, "fk_field", None)
+        if not ct_name or not ({ct_name, id_name} & set(validated_data)):
             continue
-        message = [f"Invalid {field.name}: not found or not accessible."]
-
-        scoped = scoped_target_queryset(field.related_model, request)
-        if scoped is not None:
-            pks = {getattr(v, "pk", v) for v in values}
-            visible = set(scoped.filter(pk__in=pks).values_list("pk", flat=True))
-            if visible != pks:
-                fk_errors[field.name] = message
-                continue
-
-        # Co-tenant check, even when the related model has no predicates
-        # (typical for User). Unified message (identical to the not-visible
-        # case) so the error can't be used as a cross-tenant PK existence
-        # oracle. A target with a tenant_field of its own was just checked
-        # against the caller's tenant by its scope (one query, not one per
-        # value).
-        if (
-            co_tenant
-            and not get_tenant_field(field.related_model)
-            and not all(
-                _in_caller_tenant(
-                    v, field.related_model, tenant_model, tenant_user_field, tenant_pk
-                )
-                for v in values
-            )
-        ):
-            fk_errors[field.name] = message
+        content_type = validated_data.get(ct_name, getattr(instance, ct_name, None))
+        object_id = validated_data.get(id_name, getattr(instance, id_name, None))
+        if content_type is None or object_id is None:
+            continue
+        target = content_type.model_class()
+        try:
+            row = target and target._base_manager.filter(pk=object_id).first()
+        except (TypeError, ValueError, ValidationError):
+            row = None
+        if row is None or not allowed(target, [row]):
+            fk_errors[id_name] = [f"Invalid {id_name}: not found or not accessible."]
     return fk_errors
 
 
@@ -494,7 +523,9 @@ def _apply_predicate_writes(model, validated_data, instance, request):
         )
 
     # Layer 3: FK-injection + co-tenant checks.
-    fk_errors = _check_fk_injection_writes(model, validated_data, request, tenant_field)
+    fk_errors = _check_fk_injection_writes(
+        model, validated_data, request, tenant_field, instance
+    )
     if fk_errors:
         _report_write_security_event(
             "fk_injection_rejected",
@@ -521,7 +552,7 @@ def _apply_platform_writes(model, validated_data, instance, request):
       tenant differs from the row's is a 400. When an update moves the row to
       another tenant, the relations it keeps are checked too.
     """
-    errors = _check_fk_injection_writes(model, validated_data, request, None)
+    errors = _check_fk_injection_writes(model, validated_data, request, None, instance)
     if not errors:
         errors = _platform_tenant_errors(model, validated_data, instance)
     if errors:
@@ -617,7 +648,31 @@ def _platform_tenant_errors(model, validated_data, instance):
                     f"this row."
                 ]
                 break
+    if moved and _platform_referenced(model, instance):
+        errors[hop] = [
+            "Cannot move this row to another tenant while rows of its tenant "
+            "point at it: move or delete them first."
+        ]
     return errors
+
+
+def _platform_referenced(model, instance):
+    """Do rows of a tenant-scoped model point at ``instance`` and stay in its
+    current tenant when it moves (their ``tenant_field`` doesn't run through
+    the relation)? A move would leave them pointing at another tenant's row."""
+    from .predicates import registered_tenant_field
+
+    for rel in model._meta.related_objects:
+        their_tenant = registered_tenant_field(rel.related_model)
+        if not their_tenant:
+            continue
+        if not rel.many_to_many and their_tenant.split("__")[0] == rel.field.name:
+            continue  # their tenant follows this row
+        if rel.related_model._base_manager.filter(
+            **{rel.field.name: instance}
+        ).exists():
+            return True
+    return False
 
 
 def _platform_row_tenant(model, tenant_field, validated_data, instance):
@@ -685,20 +740,67 @@ def _role_filters_writes(request):
     return bool(user and user.is_authenticated and not permissions_bypassed())
 
 
-def _verify_written_row(model, instance, request):
+def _verify_written_row(model, instance, request, owners=()):
     """After a write, re-check predicates that can only be judged on the saved
-    row (``Conditional``): the row must still be visible to the caller, or the
-    write is rolled back. Called inside the write's transaction."""
+    row (``Conditional``, ``Owner`` over a ``__`` path): the row must still be
+    visible to the caller, and satisfy each of ``owners`` (from
+    ``_owner_paths_written``), or the write is rolled back. Called inside the
+    write's transaction."""
     from .predicates import get_predicates, predicates_q
 
     predicates = get_predicates(model)
     if not request or not any(_needs_post_write_check(p) for p in predicates):
         return
-    visible = predicates_q(predicates, request)
-    if not model._base_manager.filter(visible, pk=instance.pk).exists():
+    row = model._base_manager.filter(pk=instance.pk)
+    if not row.filter(predicates_q(predicates, request)).exists():
         raise serializers.ValidationError(
             {"detail": ["This write would create a row you are not allowed to see."]}
         )
+    for owner in owners:
+        if not row.filter(predicates_q([owner], request)).exists():
+            raise serializers.ValidationError(
+                {"detail": [f"{' or '.join(owner.fields)} must be you."]}
+            )
+
+
+def _owner_paths_written(model, validated_data, instance, request):
+    """The ``Owner``-over-a-``__``-path children of an ``Either`` this write
+    must satisfy on their own: every one on create, and on update those whose
+    path starts at a relation the write changes. Another branch's visibility
+    mustn't let a writer put a row on someone else's parent, or move one off
+    it: on update the row must satisfy the Owner before the write too."""
+    from .predicates import Either, Owner, _current_pk, get_predicates, predicates_q
+
+    def nested(predicates, inside_either=False):
+        for p in predicates:
+            if isinstance(p, Either):
+                yield from nested(p.predicates, True)
+            elif inside_either and isinstance(p, Owner):
+                if any("__" in f for f in p.fields):
+                    yield p
+
+    def changed(hop):
+        if hop not in validated_data:
+            return False
+        value = validated_data[hop]
+        return getattr(value, "pk", value) != _current_pk(instance, hop)
+
+    if request is None:
+        return []
+    owners = [
+        owner
+        for owner in nested(get_predicates(model))
+        if instance is None
+        or any(changed(f.split("__")[0]) for f in owner.fields if "__" in f)
+    ]
+    if instance is not None:
+        row = model._base_manager.filter(pk=instance.pk)
+        for owner in owners:
+            if not row.filter(predicates_q([owner], request)).exists():
+                raise serializers.ValidationError(
+                    {"detail": ["Cannot move this row: it belongs to another user."]}
+                )
+    return owners
 
 
 def _needs_post_write_check(predicate):
@@ -903,7 +1005,10 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         )
 
         model = type(instance)
-        unscoped = unscoped_properties(model)
+        # Read once per serializer, not per row: it calls turbodrf().
+        if "_tdrf_unscoped" not in self.__dict__:
+            self.__dict__["_tdrf_unscoped"] = unscoped_properties(model)
+        unscoped = self.__dict__["_tdrf_unscoped"]
         values = {}
         for name in names:
             if name in unscoped:
@@ -1051,19 +1156,35 @@ class TurboDRFSerializer(serializers.ModelSerializer):
 
     def _to_many_relation(self, target, accessor, sub_paths):
         """How one to-many relation loads: the target rows the caller can see
-        through the target's own endpoint (in the target's default manager
-        and ordering), with the single-valued hops of ``sub_paths`` joined in
-        and, per hop, whether its row is in the caller's scope — one query
-        for the page, not one per row and hop."""
+        through the target's own endpoint (in the target's default manager,
+        and its ordering where the caller may order by it), with the
+        single-valued hops of ``sub_paths`` joined in and, per hop, whether
+        its row is in the caller's scope — one query for the page, not one
+        per row and hop."""
         from django.core.exceptions import ImproperlyConfigured
         from django.db.models import BooleanField, Case, Prefetch, Value, When
 
-        from .properties import _single_valued, relation_hops
+        from .backends import build_permission_snapshot
+        from .filter_backends import readable_ordering
+        from .permissions import permissions_bypassed
+        from .properties import _readable_columns, _single_valued, relation_hops
         from .validation import build_traversal_scope_q, scoped_target_queryset
 
         request = self.context.get("request")
         scoped = scoped_target_queryset(target, request)
         queryset = target._default_manager.all() if scoped is None else scoped
+        if target._meta.ordering:
+            # The target's order, if the caller may order by it (as a list
+            # of that model would be).
+            user = getattr(request, "user", None) if request else None
+            orderable = _readable_columns(
+                target,
+                lambda m: build_permission_snapshot(user, m),
+                permissions_bypassed(),
+            )
+            queryset = queryset.order_by(
+                *readable_ordering(target, target._meta.ordering, orderable)
+            )
 
         hops = {}  # a sub-path's relation prefix -> its visibility alias, or None
         annotations = {}
@@ -1080,7 +1201,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
             hops[prefix] = None
             if request is None:
                 continue  # programmatic use: no caller to scope the hop to
-            q = build_traversal_scope_q(target, sub_path, request)
+            q = build_traversal_scope_q(target, sub_path, request, correlated=True)
             if q:
                 alias = f"_tdrf_visible_{len(annotations)}"
                 hops[prefix] = alias
@@ -1317,10 +1438,11 @@ class TurboDRFSerializer(serializers.ModelSerializer):
             model, validated_data, instance, request
         )
         validated_data = self._keep_hidden_links(instance, validated_data, request)
+        owners = _owner_paths_written(model, validated_data, instance, request)
 
         with transaction.atomic():
             instance = super().update(instance, validated_data)
-            _verify_written_row(model, instance, request)
+            _verify_written_row(model, instance, request, owners)
         self._forget_read_state(instance)
         return instance
 
@@ -1337,6 +1459,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         model = self.Meta.model
         validated_data = self._writable(validated_data, model, "create")
         validated_data = _apply_predicate_writes(model, validated_data, None, request)
+        owners = _owner_paths_written(model, validated_data, None, request)
 
         with transaction.atomic():
             try:
@@ -1344,7 +1467,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
             except IntegrityError:
                 _require_unwritable_columns(model, validated_data)
                 raise
-            _verify_written_row(model, instance, request)
+            _verify_written_row(model, instance, request, owners)
         return instance
 
 
@@ -1489,13 +1612,14 @@ class TurboDRFSerializerFactory:
         )
         nested_fields_meta = nested_fields if nested_fields else {}
 
-        # Generate unique ref_name for swagger schema generation
+        # The schema definition's name. Stable, so a client generated from
+        # the schema keeps its type names: the schema is built for one
+        # caller, who has one field set per model and view.
         from .scope import TENANT, current_scope
 
-        fields_hash = hashlib.md5(",".join(sorted(all_fields)).encode()).hexdigest()[:8]
         app_label = model_class._meta.app_label
         model_name = model_class._meta.model_name
-        ref_name_value = f"{app_label}_{model_name}_{view_type}_{fields_hash}"
+        ref_name_value = f"{app_label}_{model_name}_{view_type}"
         if current_scope() != TENANT:
             ref_name_value = f"{current_scope()}_{ref_name_value}"
 

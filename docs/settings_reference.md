@@ -9,11 +9,11 @@ that's not strictly required is gated and off by default.
 
 | Setting | Default | Purpose | Details |
 |---|---|---|---|
-| `TURBODRF_ROLES` | **`{}`** | Role → permissions mapping (static mode). Unset, no role grants anything. | [permissions.md](permissions.md) |
-| `TURBODRF_PERMISSION_MODE` | **`"static"`** | `"static"` (use `TURBODRF_ROLES` dict) or `"database"` (use `TurboDRFRole` model) | [permissions.md](permissions.md#static-vs-database-mode) |
+| `TURBODRF_ROLES` | **`{}`** | Role → permissions mapping (static mode). Unset, no role grants anything, and `manage.py check` warns (`turbodrf.W003`). | [permissions.md](permissions.md) |
+| `TURBODRF_PERMISSION_MODE` | **`"static"`** | `"static"` (use `TURBODRF_ROLES` dict) or `"database"` (use `TurboDRFRole` model). Anything else raises at startup. | [permissions.md](permissions.md#static-vs-database-mode) |
 | `TURBODRF_USE_DEFAULT_PERMISSIONS` | **`False`** | Use Django's built-in model permissions instead of TurboDRF roles | [permissions.md](permissions.md) |
 | `TURBODRF_DISABLE_PERMISSIONS` | **`False`** | Disable all permission checks, authentication included: anonymous callers can create, update and delete through the generated endpoints. **Local development only.** With `DEBUG = False`, `manage.py check` warns (`turbodrf.W002`). | [permissions.md](permissions.md#1-no-permissions-local-development-only) |
-| `TURBODRF_PERMISSION_CACHE_TIMEOUT` | **`300`** | Permission snapshot cache TTL in seconds. Role changes already take effect on the next request; the TTL only bounds how long snapshots stay stale after a bulk `RolePermission` QuerySet `update()` / `delete()` (or call `invalidate_user_permissions()`). | [permissions.md](permissions.md#caching) |
+| `TURBODRF_PERMISSION_CACHE_TIMEOUT` | **`300`** | Permission snapshot cache TTL in seconds. Role changes already take effect on the next request; the TTL only bounds how long snapshots stay stale after a bulk `RolePermission` QuerySet `update()` or `bulk_create()` (or call `invalidate_user_permissions()`). | [permissions.md](permissions.md#caching) |
 | `TURBODRF_PERMISSION_CACHE_PREFIX` | **`"turbodrf_perm"`** | Prefix for cache keys | — |
 
 ## Platform scope

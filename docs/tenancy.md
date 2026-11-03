@@ -450,7 +450,8 @@ closes the "developer forgot to scope this model" failure mode.
 
 A model with `'enabled': False` gets no endpoint, but its tenancy is still
 registered: other models' FK checks and nested fields that reach it use its
-`tenant_field` and predicates. Declare it like any other model's.
+`tenant_field` and predicates. Declare it like any other model's: the
+startup check above covers it too.
 
 Run `python manage.py turbodrf_check` to see what each model resolves to.
 

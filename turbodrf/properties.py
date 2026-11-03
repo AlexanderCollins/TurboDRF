@@ -287,8 +287,13 @@ def _readable_columns(model, snapshot_for, bypassed):
 def _hop_readable(model, field, snapshot_for, bypassed):
     """May the caller follow ``field`` from ``model``? Same rule as a nested
     ``__`` field: an explicit read rule if the field has one, else
-    model-level read; and the caller must be able to read the target model."""
-    from .validation import is_field_path_sensitive
+    model-level read; for a reverse relation, the same for the related
+    model's FK / M2M; and the caller must be able to read the target model."""
+    from .validation import (
+        _field_readable,
+        _reverse_side_readable,
+        is_field_path_sensitive,
+    )
 
     names = {field.name}
     if isinstance(field, ForeignObjectRel):
@@ -297,12 +302,11 @@ def _hop_readable(model, field, snapshot_for, bypassed):
         return False
     if bypassed:
         return True
-    snapshot = snapshot_for(model)
-    if snapshot.has_read_rule(field.name):
-        readable = snapshot.can_read_field(field.name)
-    else:
-        readable = snapshot.can_perform_action("read")
-    return readable and snapshot_for(field.related_model).can_perform_action("read")
+    return (
+        _field_readable(snapshot_for(model), field.name)
+        and _reverse_side_readable(model, field.name, snapshot_for)
+        and snapshot_for(field.related_model).can_perform_action("read")
+    )
 
 
 def _join_column(field):
