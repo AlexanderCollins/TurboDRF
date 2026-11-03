@@ -27,6 +27,16 @@ the suite (`tests/conformance/test_rewrite_equivalence.py`).
 - With `full_clean`, a PUT no longer validates (and echoes in an error) the
   columns it didn't send.
 
+- A rule with a negated lookup through a to-many relation, next to another
+  JOIN of the same table (`Q(partner__name='a') & ~Q(targets__name='x',
+  targets__amount=5)`), could return a row it hides: Django's `split_exclude`
+  correlated the negated subquery to the wrong JOIN. Each negated lookup is
+  now its own subquery, which is what Django means by it, so the rule never
+  reaches that code. Found by the new differential fuzzer.
+- A rule with no condition in it (`Q(Q())`) no longer narrows a filter
+  through its model to rows with no related row, and as an `Either` branch it
+  lifts the `Either` (Django dropped it from the OR).
+
 ### Security: writes
 
 - A DELETE runs the write checks a PATCH would: a `Custom`'s

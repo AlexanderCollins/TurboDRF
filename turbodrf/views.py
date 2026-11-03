@@ -72,12 +72,14 @@ class Authorization:
             predicate_q = self.predicate_q
             if predicate_q and _q_spans_multivalued(model, predicate_q):
                 flat = without_to_many_joins(model, predicate_q)
-                if flat is None:
-                    queryset = queryset.filter(
-                        pk__in=queryset.filter(predicate_q).values("pk")
-                    )
-                else:
+                if flat is not None and not _q_spans_multivalued(model, flat):
                     queryset = queryset.filter(flat)
+                else:
+                    # What's left still JOINs a to-many relation: match by pk.
+                    rest = predicate_q if flat is None else flat
+                    queryset = queryset.filter(
+                        pk__in=queryset.filter(rest).values("pk")
+                    )
             else:
                 queryset = queryset.filter(predicate_q)
         return queryset
@@ -200,25 +202,48 @@ def _rebuilt(q, rewrite):
 
 
 def without_to_many_joins(model, q):
-    """``q`` with each lookup that crosses an M2M or reverse relation replaced
-    by ``pk__in`` the rows it matches (``RowsMatching``). The rows are the
-    same, but the outer query has no to-many JOIN: nothing repeats, and no
-    ``pk__in`` wrap of the whole predicate (an OR across a JOIN, which
-    defeats indexes) is needed.
+    """``q`` with its lookups across M2M or reverse relations replaced by
+    ``pk__in`` the rows each matches (``RowsMatching``), where that keeps
+    ``q``'s meaning. The outer query then has no to-many JOIN for them:
+    nothing repeats, and no ``pk__in`` wrap of the whole predicate (an OR
+    across a JOIN, which defeats indexes) is needed.
 
-    ``None`` when that could change which rows ``q`` matches: two lookups
-    through the same relation share one JOIN in a ``filter()`` (one related
-    row must match both), an XOR's meaning depends on its operands staying
-    together, and an expression can't be inspected (one inside a list
-    included). Only a plain ``F()`` on a single-valued path, or a
-    ``RowsMatching``, is kept."""
-    from django.db.models import F
+    - A lookup under a NOT: Django matches each one on its own, in a subquery
+      of its own (as ``exclude()`` does), so this is the same rows. It also
+      keeps Django's subquery from reusing another JOIN to the same table by
+      mistake (its ``split_exclude`` alias reuse returned rows a rule hid).
+    - Any other lookup only when no other lookup runs through its relation:
+      in one ``filter()`` they'd share a JOIN, one related row matching both.
 
-    leaves = _leaves(q)
-    if leaves is None:
+    Lookups it can't rewrite are left as they are: the caller checks the
+    result with ``_q_spans_multivalued``. ``None`` when ``q`` holds an XOR (its
+    meaning changes when its operands move apart) or an expression it can't
+    inspect (one inside a list included); only a plain ``F()`` on a
+    single-valued path, or a ``RowsMatching``, is kept."""
+    from collections import Counter
+
+    from django.db.models import F, Q
+
+    entries = []  # ((lookup, value), under a NOT)
+
+    def walk(node, negated):
+        if node.connector == "XOR":
+            return False
+        negated = negated or node.negated
+        for child in node.children:
+            if isinstance(child, Q):
+                if not walk(child, negated):
+                    return False
+            elif isinstance(child, tuple) and isinstance(child[0], str):
+                entries.append((child, negated))
+            else:
+                return False
+        return True
+
+    if not walk(q, False):
         return None
-    seen = set()
-    for lookup, value in leaves:
+    positive, negative = Counter(), set()
+    for (lookup, value), negated in entries:
         prefix = _to_many_prefix(model, lookup)
         if type(value) is F:
             if prefix or _to_many_prefix(model, value.name):
@@ -228,18 +253,32 @@ def without_to_many_joins(model, q):
         ):
             return None
         if prefix:
-            if prefix in seen:
-                return None
-            seen.add(prefix)
+            if negated:
+                negative.add(prefix)
+            else:
+                positive[prefix] += 1
 
-    def rewrite(child):
+    def rewrite(child, negated):
         lookup, value = child
-        if not _to_many_prefix(model, lookup):
+        prefix = _to_many_prefix(model, lookup)
+        if not prefix:
             return child
+        if negated and positive[prefix]:
+            return child  # tied to a positive lookup's JOIN: left to Django
+        if not negated and (positive[prefix] > 1 or prefix in negative):
+            return child  # shares a JOIN with another lookup
         rows = model._base_manager.filter(**{lookup: value}).order_by()
         return ("pk__in", RowsMatching(rows.values("pk")))
 
-    return _rebuilt(q, rewrite)
+    def rebuild(node, negated):
+        negated = negated or node.negated
+        children = [
+            rebuild(child, negated) if isinstance(child, Q) else rewrite(child, negated)
+            for child in node.children
+        ]
+        return Q(*children, _connector=node.connector, _negated=node.negated)
+
+    return rebuild(q, False)
 
 
 def prefixed(q, prefix):

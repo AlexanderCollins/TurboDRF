@@ -215,15 +215,20 @@ def _scope_on_joined_row(target, request, prefix):
     from django.db.models import Q
 
     from .predicates import get_predicates, get_tenant_field, predicates_q, tenant_q
-    from .views import _q_spans_multivalued, prefixed, without_to_many_joins
+    from .views import _leaves, _q_spans_multivalued, prefixed, without_to_many_joins
 
     predicate_q = predicates_q(get_predicates(target), request)
     if predicate_q and _q_spans_multivalued(target, predicate_q):
         predicate_q = without_to_many_joins(target, predicate_q)
-        if predicate_q is None:
+        if predicate_q is None or _q_spans_multivalued(target, predicate_q):
             return None
     scope = tenant_q(get_tenant_field(target), request) & predicate_q
-    return prefixed(scope, prefix) if scope else Q()
+    if _leaves(scope) == []:
+        # No condition (Q(), or one that only nests empty ones): moved into
+        # the caller's `isnull | scope`, Django would drop it from the OR.
+        # (None, for an XOR, isn't empty: prefixed() refuses it.)
+        return Q()
+    return prefixed(scope, prefix)
 
 
 def _relation_may_be_empty(field):
