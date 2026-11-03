@@ -3,8 +3,8 @@
 ## Requirements
 
 - Python 3.10+
-- Django 4.2+
-- Django REST Framework 3.14+
+- Django 4.2 (4.2.26 or later), 5.2 or 6.0
+- Django REST Framework 3.15.2+
 
 `pyproject.toml` is the source of truth for supported versions.
 
