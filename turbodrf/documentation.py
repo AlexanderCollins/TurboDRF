@@ -23,7 +23,7 @@ def get_turbodrf_schema_view(
     description="Auto-generated API with role-based access control powered by TurboDRF",
     terms_of_service=None,
     contact_email=None,
-    license_name="MIT License",
+    license_name=None,
     scope="tenant",
     gate=None,
     views=None,
@@ -44,7 +44,7 @@ def get_turbodrf_schema_view(
             schema unless given.
         contact_email (str): Contact email for API support. Left out of the
             schema unless given.
-        license_name (str): License name. Defaults to "MIT License".
+        license_name (str): License name, if any. Defaults to none.
         scope (str): ``"tenant"`` (default) documents the tenant scope's
             endpoints; ``"platform"`` documents the platform router's only,
             with platform roles. The two are separate documents.
@@ -111,19 +111,10 @@ def get_turbodrf_schema_view(
     if not getattr(settings, "TURBODRF_ENABLE_DOCS", True):
         return None
 
-    from .scope import PLATFORM, SCOPES
+    from .scope import PLATFORM
     from .swagger import PlatformSchemaGenerator, RoleBasedSchemaGenerator
 
-    if scope not in SCOPES:
-        raise ImproperlyConfigured(
-            f"get_turbodrf_schema_view scope must be one of {SCOPES}; got {scope!r}."
-        )
-    gate = list(gate or ())
-    if scope == PLATFORM and not gate:
-        raise ImproperlyConfigured(
-            "The platform schema view requires a gate: pass the platform "
-            "router's (router.get_schema_view() does)."
-        )
+    gate = _schema_gate("get_turbodrf_schema_view", scope, gate)
     generator_class = (
         PlatformSchemaGenerator if scope == PLATFORM else RoleBasedSchemaGenerator
     )
@@ -146,7 +137,7 @@ def get_turbodrf_schema_view(
             description=description,
             terms_of_service=terms_of_service,
             contact=openapi.Contact(email=contact_email) if contact_email else None,
-            license=openapi.License(name=license_name),
+            license=openapi.License(name=license_name) if license_name else None,
         ),
         # public=False: drf-yasg runs each endpoint's permission classes for
         # the caller instead of documenting every endpoint.
@@ -158,6 +149,24 @@ def get_turbodrf_schema_view(
         schema_view = _platform_schema_view(schema_view)
 
     return schema_view
+
+
+def _schema_gate(caller, scope, gate):
+    """``gate`` as a list, once ``scope`` is known and, on the platform
+    scope, a gate is given."""
+    from .scope import PLATFORM, SCOPES
+
+    if scope not in SCOPES:
+        raise ImproperlyConfigured(
+            f"{caller} scope must be one of {SCOPES}; got {scope!r}."
+        )
+    gate = list(gate or ())
+    if scope == PLATFORM and not gate:
+        raise ImproperlyConfigured(
+            "The platform schema view requires a gate: pass the platform "
+            "router's (router.get_schema_view() and get_openapi3_view() do)."
+        )
+    return gate
 
 
 def _platform_schema_view(schema_view):

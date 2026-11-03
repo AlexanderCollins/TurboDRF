@@ -55,9 +55,21 @@ Like any field rule it gates responses, filters, search, ordering and
 OPTIONS. It restricts reads only: add a `.write` rule to restrict writes. It's
 a role rule, so it has no effect when permissions are bypassed.
 
+### Reverse relations
+
+A read rule on an FK or M2M binds its reverse side too. Which events point at
+a holding is `HoldingEvent.holding` read from the other side, so a `Holding`
+field, nested path, search or filter through `events`, or a property relation
+over it, needs the caller to read `HoldingEvent.holding`: its grant if it has
+a rule, else model-level read of `HoldingEvent`.
+
 ## No-roles denial
 
 Authenticated users with no assigned roles get 403 on all endpoints. This prevents accidental access when a user account exists but hasn't been configured.
+
+A 403's detail says why (no roles, or the permission string no role grants)
+only with `DEBUG = True`. Otherwise it's DRF's generic message, and the
+reason is logged at INFO by `turbodrf.permissions`.
 
 ## Filter security
 
@@ -75,10 +87,16 @@ fields are ignored and logged.
 - An M2M filters only by `exact` (`?tags=3`), matched against the targets the
   caller can see. Its other lookups and `_or` are ignored.
 - An FK or M2M filter naming a row the caller can't see returns an empty 200,
-  the same as a pk that doesn't exist.
+  the same as a pk that doesn't exist. Next to another filter's 400, its own
+  error is left out, so the response is the same either way.
 - `__regex` / `__iregex` lookups aren't accepted.
 - `?ordering=` takes concrete, single-valued columns only, and `<fk>` orders
   by the stored FK column, not by the target's `Meta.ordering`.
+- The default order follows the same rule. A model's `Meta.ordering` applies
+  when the caller could pass it as `?ordering=`; otherwise the list is in
+  primary-key order. An M2M or reverse array follows its target's
+  `Meta.ordering` only when the array shows those columns and the caller can
+  read them.
 
 ## OPTIONS metadata
 
@@ -159,8 +177,9 @@ and configuration reference.
 
 - **List/detail/PATCH/DELETE** — every queryset and `get_object()` is AND'd with
   the user's predicate Q. Detail/PATCH/DELETE return 404 (not 403) on filtered
-  rows to avoid existence leaks. A predicate that crosses an M2M or reverse
-  relation is applied as a subquery, so it can't duplicate rows.
+  rows to avoid existence leaks. A predicate lookup that crosses an M2M or
+  reverse relation is applied as `pk IN (the rows it matches)`, so it can't
+  duplicate rows.
 - **Tenant on writes** — a direct `tenant_field` missing from the request is
   filled from `request.user`. A client-supplied value for a different tenant
   is rejected with a 400. With a chained `tenant_field` (`ledger__firm`),
@@ -170,11 +189,13 @@ and configuration reference.
   resolve to a row visible under the related model's tenant boundary and
   predicates. This runs on every model, shared ones included, and an
   anonymous writer can't reference a tenant-scoped target. On a model scoped
-  by a `tenant_field` or predicates, a target that is the tenant model must be
-  the caller's tenant, and a target with a `TURBODRF_TENANT_USER_FIELD`
-  attribute (typically a user) must be in the caller's tenant. Rejected
-  targets return 400 with the same message whether they're hidden or don't
-  exist.
+  by a `tenant_field` or predicates, or a shared model written by a caller who
+  has a tenant, a target that is the tenant model must be the caller's
+  tenant, and a target with a `TURBODRF_TENANT_USER_FIELD` attribute
+  (typically a user) must be in the caller's tenant. A generic FK
+  (`content_type` + `object_id`) is checked like an FK to the content type's
+  model. Rejected targets return 400 with the same message whether they're
+  hidden or don't exist.
 - **M2M writes** — a write replaces only the links the caller can see; links
   to rows they can't reference are kept.
 - **Tenant reassignment rejection** — PATCH cannot change a row's tenant FK to
@@ -186,10 +207,16 @@ and configuration reference.
   create only; an update leaves it as is. An owner reached through a `__`
   path (`Owner('project__owner')`) is checked after the save, in the same
   transaction: a write that would leave the row invisible to the writer (a
-  task moved onto someone else's project) is rolled back with a 400.
+  task moved onto someone else's project) is rolled back with a 400. So is a
+  write to a multi-column `owner_field`, which fills none of them in: a
+  create naming no owner would leave a row its writer can't see.
 - **`Either` writes** — a write must pass every child's write check, so the
   `Owner` check above holds for users who see a row through another branch
-  (`Members`, `Group`, `Custom`).
+  (`Members`, `Group`, `Custom`). An `Owner` over a `__` path inside an
+  `Either` is checked on its own: on a create, the saved row must satisfy
+  it; on an update that changes the path's first hop, the row must satisfy
+  it before and after. Another branch's visibility doesn't let a writer put
+  a row on someone else's parent or move one off it.
 - **`Conditional` write check** — the row is re-checked after the save, in the
   same transaction. A write that would leave it invisible to the writer is
   rolled back with a 400.
@@ -325,28 +352,32 @@ not apply the target's own `tenant_field` or registered predicates.
 
 ### Runtime JOIN scoping
 
-`turbodrf.filter_backends.ORFilterBackend` wraps every `__`-path
-filter with a target-scoping subquery built by
-`validation.build_traversal_scope_q()`. For each model along the JOIN
-chain that has registered predicates or a `tenant_field`, an AND
-clause of the form
-`<prefix>__in=<visible target pks>` is added to the queryset, the visible
-rows being the target's tenant boundary and predicates as its own endpoint
-applies them (`validation.scoped_target_queryset`), so the JOIN can never
-return rows outside them.
+`turbodrf.filter_backends.ORFilterBackend` ANDs every `__`-path filter,
+in the same `filter()` call, with the scope of each JOIN target along it,
+built by `validation.build_traversal_scope_q()`. For each model along the
+chain that has registered predicates or a `tenant_field`, the target's
+tenant boundary and predicates, as its own endpoint applies them
+(`validation.scoped_target_queryset`), must hold for the joined row:
 
-The subquery uses the target's **base** manager, as Django's own JOINs
-and FK descriptors do (the serializer path renders the same related row).
-A default-manager filter such as soft delete is not a scoping layer: a row
-whose FK points at a soft-deleted target in the caller's scope stays
+- through single-valued hops (FKs, one-to-ones), they're checked on the row
+  the query already joins (`author__workspace=<tenant>`);
+- through an M2M or reverse hop, or for a predicate that can't be moved onto
+  the joined row, as `<prefix>__in=<the target's visible rows>`.
+
+Either way the JOIN can never match rows outside them.
+
+The scope reads the target as Django's own JOINs and FK descriptors do,
+through its **base** manager (the serializer path renders the same related
+row). A default-manager filter such as soft delete is not a scoping layer: a
+row whose FK points at a soft-deleted target in the caller's scope stays
 listed. Hide rows with `tenant_field` or a predicate, not a manager.
 
 For paths through targets with no predicates and no `tenant_field`,
-the scope is a no-op `Q()` — no extra subquery cost.
+the scope is a no-op `Q()`.
 
 A parent row with an **empty** relation at a scoped step (a NULL FK, or
 no rows across a reverse / M2M relation, at that hop or an earlier one)
-is kept: each step is `<prefix>__isnull=True OR <prefix>__in=...`
+is kept: each step is `<prefix>__isnull=True OR <the step's scope>`
 when the relation can be empty. An empty relation joins nothing, so it
 can't reveal a target row; a relation pointing at an out-of-scope
 target is still excluded. The same scope decides whether a nested FK
@@ -381,8 +412,9 @@ an operator's staff. What keeps it contained (details in
   per scope. No anonymous access, and the permission bypass settings don't
   apply.
 - **Writes stay in one tenant.** A create names its tenant (nothing is filled
-  in from the staff member), and FK / M2M values must belong to the row's
-  tenant.
+  in from the staff member), FK / M2M values must belong to the row's
+  tenant, and a row that other rows of its tenant point at can't be moved to
+  another tenant.
 
 ## Known limitations
 
@@ -406,17 +438,31 @@ an operator's staff. What keeps it contained (details in
   `self.get_queryset()`. (Generated viewsets have no `queryset` attribute:
   `self.queryset` is `None`.)
 - **Bulk permission edits stay cached.** A bulk `RolePermission` QuerySet
-  `update()` / `delete()` doesn't invalidate cached permission snapshots;
-  call `turbodrf.backends.invalidate_user_permissions()` (see
+  `update()` or `bulk_create()` doesn't invalidate cached permission
+  snapshots (a QuerySet `delete()` does); call
+  `turbodrf.backends.invalidate_user_permissions()` (see
   [permissions.md](permissions.md#caching)).
+- **Unique values are global.** A unique column, a client-chosen primary key
+  on create included, answers "already exists" for a value another tenant
+  holds. Put the tenant FK in the `UniqueConstraint`, and let the server
+  generate primary keys.
+- **An update saves the whole row**, as in DRF: a concurrent write between
+  the update's read and its save is overwritten.
+- **`DEFAULT_PERMISSION_CLASSES` doesn't apply** to the generated viewsets:
+  their permission check is TurboDRF's. Use the router's `gate` for a
+  project-wide check.
+- **The API root lists every route.** `GET /api/` names each endpoint,
+  whatever the caller may use. Pass `include_root_view=False` to the router
+  to drop it.
 - **Bypassed permission modes** (`TURBODRF_DISABLE_PERMISSIONS`,
   `TURBODRF_USE_DEFAULT_PERMISSIONS`) have no field rules, so per-model
   `sensitive_fields` don't apply.
 - **Keycloak roles are captured at login.** See
   [integrations.md](integrations.md#where-the-roles-come-from).
-- **Most startup checks run when the URLconf is imported.** Tenancy errors
-  raise when Django starts (`AppConfig.ready()`), but the router's other
-  checks run only when the URLconf is first imported. A process that doesn't
+- **Most startup checks run when the URLconf is imported.** A broken tenancy
+  declaration raises when Django starts (`AppConfig.ready()`), but the
+  router's checks, a model with no tenancy declaration included, run only
+  when the URLconf is first imported. A process that doesn't
   import it (`get_wsgi_application()` before the first request) starts with
   a broken config and fails on the first request. Run
   `python manage.py check`, which imports the URLconf, in CI and before each

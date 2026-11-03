@@ -9,11 +9,12 @@ that's not strictly required is gated and off by default.
 
 | Setting | Default | Purpose | Details |
 |---|---|---|---|
-| `TURBODRF_ROLES` | **`{}`** | Role → permissions mapping (static mode). Unset, no role grants anything. | [permissions.md](permissions.md) |
-| `TURBODRF_PERMISSION_MODE` | **`"static"`** | `"static"` (use `TURBODRF_ROLES` dict) or `"database"` (use `TurboDRFRole` model) | [permissions.md](permissions.md#static-vs-database-mode) |
+| `TURBODRF_ROLES` | **`{}`** | Role → permissions mapping (static mode). Unset, no role grants anything, and `manage.py check` warns (`turbodrf.W003`). | [permissions.md](permissions.md) |
+| `TURBODRF_PERMISSION_MODE` | **`"static"`** | `"static"` (use `TURBODRF_ROLES` dict) or `"database"` (use `TurboDRFRole` model). Anything else raises at startup. | [permissions.md](permissions.md#static-vs-database-mode) |
 | `TURBODRF_USE_DEFAULT_PERMISSIONS` | **`False`** | Use Django's built-in model permissions instead of TurboDRF roles | [permissions.md](permissions.md) |
 | `TURBODRF_DISABLE_PERMISSIONS` | **`False`** | Disable all permission checks, authentication included: anonymous callers can create, update and delete through the generated endpoints. **Local development only.** With `DEBUG = False`, `manage.py check` warns (`turbodrf.W002`). | [permissions.md](permissions.md#1-no-permissions-local-development-only) |
-| `TURBODRF_PERMISSION_CACHE_TIMEOUT` | **`300`** | Permission snapshot cache TTL in seconds. Role changes already take effect on the next request; the TTL only bounds how long snapshots stay stale after a bulk `RolePermission` QuerySet `update()` / `delete()` (or call `invalidate_user_permissions()`). | [permissions.md](permissions.md#caching) |
+| `TURBODRF_PERMISSION_CACHE_TIMEOUT` | **`300`** | Permission snapshot cache TTL in seconds. Role changes already take effect on the next request; the TTL only bounds how long snapshots stay stale after a bulk `RolePermission` QuerySet `update()` or `bulk_create()` (or call `invalidate_user_permissions()`). | [permissions.md](permissions.md#caching) |
+| `TURBODRF_ROLE_GETTER` | **`None`** (`user.roles`) | Where a user's roles come from in static mode: a dotted path or a callable `user -> list of role names`. `'turbodrf.backends.group_names'` reads the user's Django groups. | [permissions.md](permissions.md#assigning-roles-to-users) |
 | `TURBODRF_PERMISSION_CACHE_PREFIX` | **`"turbodrf_perm"`** | Prefix for cache keys | — |
 
 ## Platform scope
@@ -34,6 +35,7 @@ apply to the platform scope: every platform request is checked against
 | `TURBODRF_SENSITIVE_FIELDS` | **`['password', 'password_hash', 'secret_key', 'api_key', 'token', 'access_token', 'refresh_token', 'session_key']`** | Field names never exposed, at every `__` segment of a path: stripped from responses (`"__all__"` included), filters, search, ordering, OPTIONS metadata and the schema, in every permission mode. Your list is added to the defaults; it can't remove them. | [security.md](security.md#sensitive-fields) |
 | `TURBODRF_MAX_NESTING_DEPTH` | **`3`** | Maximum number of `__` in nested fields and filters. Deeper fields are skipped with a warning. Values >3 are unsupported. | [configuration.md](configuration.md#nested-fields) |
 | `TURBODRF_MAX_FILTER_VALUE_LENGTH` | **`1000`** | Maximum length of a filter value or `?search=` term. A request with a longer one returns no rows, which bounds filter and search cost. | [filtering.md](filtering.md) |
+| `TURBODRF_PAGINATION_CLASS` | **`None`** (TurboDRF's `{pagination, data}` envelope, 20 per page, max 100) | Your own DRF pagination class for list responses: a dotted path or the class. Give it a `max_page_size`. | [filtering.md](filtering.md#pagination) |
 
 ## Row-level access control (predicates)
 
@@ -54,7 +56,7 @@ tenant model, plus (opt-in) auto-detection.
 
 | Setting | Default | Purpose | Details |
 |---|---|---|---|
-| `TURBODRF_ENABLE_DOCS` | **`True`** | Generate Swagger / ReDoc docs at `/swagger/` and `/redoc/`. Set to `False` to disable doc URLs entirely (e.g. on production deployments where you don't want a public schema). Requires `'drf_yasg'` in `INSTALLED_APPS`; TurboDRF raises system-check warning `turbodrf.W001` if it's missing. | — |
+| `TURBODRF_ENABLE_DOCS` | **`True`** | Generate Swagger / ReDoc docs at `/swagger/` and `/redoc/`, and the OpenAPI 3 schema at `/openapi/` with the `openapi3` extra. Set to `False` to disable doc URLs entirely (e.g. on production deployments where you don't want a public schema). Requires `'drf_yasg'` in `INSTALLED_APPS`; TurboDRF raises system-check warning `turbodrf.W001` if it's missing. | — |
 
 The schema is scoped to whoever requests it. It lists only TurboDRF
 operations that the caller's roles allow (and that the endpoint's
@@ -67,6 +69,41 @@ read operations of `public_access` models, with only the fields it can read
 By default the schema reflects all of
 the caller's roles; `?role=<name>` narrows it to one role the caller
 already holds (static permission mode only) and can never widen it.
+
+### OpenAPI 3 and typed clients
+
+The Swagger / ReDoc schema is Swagger 2.0. Client generators such as
+openapi-typescript, orval and openapi-generator's TypeScript targets need
+OpenAPI 3: install the `openapi3` extra, which adds drf-spectacular.
+
+```bash
+pip install "turbodrf[openapi3]"
+```
+
+`turbodrf.urls` then also serves `/api/openapi/` (URL name
+`turbodrf-openapi`): JSON, or YAML with `?format=yaml` or
+`Accept: application/yaml`. It is scoped to the caller exactly as the
+Swagger schema is, `?role=` included, and only lists the components its
+operations use. drf-spectacular needs no settings, and `drf_spectacular`
+doesn't have to be in `INSTALLED_APPS`. With your own router, mount
+`router.get_openapi3_view(title="My API")`; `turbodrf.openapi.get_openapi3_view()`
+documents every tenant route. Don't serve drf-spectacular's own
+`SpectacularAPIView` for TurboDRF routes: it isn't scoped to the caller.
+
+Because the schema is the caller's, fetch it as a user with the roles the
+client is for, then generate the client from the file:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" https://example.com/api/openapi/ -o openapi.json
+npx openapi-typescript openapi.json -o src/api/schema.d.ts
+```
+
+Components are named after the serializers: `<app>_<model>_list`,
+`<app>_<model>_detail`, `<app>_<model>_write` (a request body; PATCH's is
+`Patched<app>_<model>_write`, all fields optional) and
+`<app>_<model>_list_page` (the `{"pagination": ..., "data": [...]}` list
+envelope). Operation IDs are `<endpoint>_list`, `_retrieve`, `_create`,
+`_update`, `_partial_update` and `_destroy`.
 
 `TURBODRF_SWAGGER_SHOW_ALL_FIELDS` has been removed. It never had an
 effect; setting it does nothing.
@@ -97,6 +134,8 @@ effect; setting it does nothing.
 These are model-level toggles, not project settings. Documented here for
 completeness. The table lists every valid key: any other key raises
 `ImproperlyConfigured` at startup, with the valid keys in the message.
+(`'compiled'` is also accepted so older configs boot; it has done nothing
+since 0.8.2.)
 
 | Key | Default | Purpose | Details |
 |---|---|---|---|
@@ -107,7 +146,7 @@ completeness. The table lists every valid key: any other key raises
 | `'unscoped_properties'` | `[]` | Properties that run outside the sandbox, on the full instance with unrestricted queries. | [configuration.md](configuration.md#the-property-sandbox) |
 | `'endpoint'` | model name + `s` | Custom URL endpoint name. The default is the lowercase model name plus `s`, not a real plural (`categorys`). | [configuration.md](configuration.md) |
 | `'lookup_field'` | `'pk'` | URL lookup field (e.g. `'slug'`). Must be a unique column of the model, or the router raises at startup. | [configuration.md](configuration.md) |
-| `'searchable_fields'` | — | Field names / `__`-paths enabled for `?search=` (gated by field-level read perms). Also settable as a class attribute; the key wins when present, even as an empty list (`[]` turns search off). | [configuration.md](configuration.md#searchable-fields) |
+| `'searchable_fields'` | — | Field names / `__`-paths enabled for `?search=` (gated by field-level read perms). An entry that can't be searched raises at startup. Also settable as a class attribute; the key wins when present, even as an empty list (`[]` turns search off). | [configuration.md](configuration.md#searchable-fields) |
 | `'read_only'` | **`False`** | Serve `list` / `retrieve` only; CRUD writes (POST/PUT/PATCH/DELETE) return `405`. Declared `actions` keep their own methods. | [configuration.md](configuration.md#read-only-endpoints) |
 | `'http_methods'` | all | Explicit HTTP method allow-list (e.g. `['get', 'post']`); disallowed verbs return `405`. `read_only` is the common shorthand. | [configuration.md](configuration.md#restricting-http-methods) |
 | `'full_clean'` | **`False`** | Run Django model validation (`clean()` / constraints) on write, so business-rule violations return `400` instead of `500`. | [configuration.md](configuration.md#model-validation-full_clean) |

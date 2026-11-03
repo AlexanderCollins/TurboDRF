@@ -3,7 +3,7 @@
 TurboDRF
 ========
 
-Dead simple Django REST Framework API generator with role-based permissions.
+Turn Django models into a secure REST API: CRUD endpoints, field-level permissions and multi-tenant row scoping, declared next to the model.
 
 .. toctree::
    :maxdepth: 2
@@ -27,6 +27,7 @@ Dead simple Django REST Framework API generator with role-based permissions.
    :maxdepth: 2
    :caption: Authorization & Tenancy:
 
+   principles
    tenancy
    platform
    security

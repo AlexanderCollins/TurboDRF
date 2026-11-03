@@ -6,6 +6,7 @@ policy snapshots once per request and caching them for reuse.
 """
 
 import contextvars
+import copy
 import hashlib
 import secrets
 from contextlib import contextmanager
@@ -126,10 +127,11 @@ def get_permission_mode() -> str:
 
 class RoleOnlyIdentity:
     """A permission-only caller holding just a list of role names: the
-    schema's ``?role=`` narrowing. No primary key, so its snapshots are never
+    schema's ``?role=`` narrowing and the ``turbodrf_schema`` /
+    ``turbodrf_explain`` commands. No primary key, so its snapshots are never
     cached. It holds the same roles on both scopes: ``roles`` on the tenant
-    scope (static mode) and ``platform_roles`` on the platform scope, whatever
-    TURBODRF_PLATFORM_ROLE_GETTER reads for a real user."""
+    scope (in either permission mode) and ``platform_roles`` on the platform
+    scope, whatever TURBODRF_PLATFORM_ROLE_GETTER reads for a real user."""
 
     is_authenticated = True
     is_anonymous = False
@@ -157,6 +159,11 @@ def get_user_roles(user) -> list:
     return list(roles)
 
 
+def _default_roles(user):
+    """The default TURBODRF_ROLE_GETTER: ``user.roles``."""
+    return getattr(user, "roles", None)
+
+
 def _default_platform_roles(user):
     """The default TURBODRF_PLATFORM_ROLE_GETTER: ``user.platform_roles``."""
     return getattr(user, "platform_roles", None)
@@ -165,19 +172,30 @@ def _default_platform_roles(user):
 _role_getters = {}
 
 
+def role_getter():
+    """The callable TURBODRF_ROLE_GETTER names (a dotted path or a callable
+    ``user -> role names``); ``user.roles`` by default. Static mode only:
+    database mode reads ``UserRole`` rows."""
+    return _role_getter("TURBODRF_ROLE_GETTER", _default_roles)
+
+
 def platform_role_getter():
     """The callable TURBODRF_PLATFORM_ROLE_GETTER names (a dotted path or a
     callable ``user -> list[str]``); ``user.platform_roles`` by default."""
+    return _role_getter("TURBODRF_PLATFORM_ROLE_GETTER", _default_platform_roles)
+
+
+def _role_getter(setting_name, default):
     from django.utils.module_loading import import_string
 
-    setting = getattr(settings, "TURBODRF_PLATFORM_ROLE_GETTER", None)
+    setting = getattr(settings, setting_name, None)
     if setting is None:
-        return _default_platform_roles
+        return default
     if callable(setting):
         return setting
     if not isinstance(setting, str):
         raise ImproperlyConfigured(
-            f"TURBODRF_PLATFORM_ROLE_GETTER must be a dotted path or a callable "
+            f"{setting_name} must be a dotted path or a callable "
             f"(user -> list of role names); got {type(setting).__name__}."
         )
     getter = _role_getters.get(setting)
@@ -186,14 +204,18 @@ def platform_role_getter():
             getter = import_string(setting)
         except ImportError as exc:
             raise ImproperlyConfigured(
-                f"TURBODRF_PLATFORM_ROLE_GETTER={setting!r} can't be imported: {exc}"
+                f"{setting_name}={setting!r} can't be imported: {exc}"
             ) from exc
         if not callable(getter):
-            raise ImproperlyConfigured(
-                f"TURBODRF_PLATFORM_ROLE_GETTER={setting!r} isn't callable."
-            )
+            raise ImproperlyConfigured(f"{setting_name}={setting!r} isn't callable.")
         _role_getters[setting] = getter
     return getter
+
+
+def group_names(user):
+    """A TURBODRF_ROLE_GETTER: the names of the user's Django groups
+    (``TURBODRF_ROLE_GETTER = "turbodrf.backends.group_names"``)."""
+    return list(user.groups.values_list("name", flat=True))
 
 
 def platform_roles_config():
@@ -223,27 +245,19 @@ def _resolve_user_roles(user) -> list:
             if "guest" in getattr(settings, "TURBODRF_ROLES", {}):
                 return ["guest"]
         elif mode == "database":
-            from .models import TurboDRFRole
-
-            if TurboDRFRole.objects.filter(name="guest").exists():
+            if any(name == "guest" for _pk, name, _v, _h in _database_roles(user)):
                 return ["guest"]
         return []
+    if isinstance(user, RoleOnlyIdentity):
+        return list(user.roles)  # no UserRole rows: it's not a database user
 
     mode = get_permission_mode()
 
     if mode == "database":
-        # Get roles from UserRole table
-        from .models import UserRole
-
-        role_names = list(
-            UserRole.objects.filter(user=user)
-            .select_related("role")
-            .values_list("role__name", flat=True)
-        )
-        return role_names
-    elif hasattr(user, "roles"):
-        return _role_names(user.roles)
-    return []
+        return [name for _pk, name, _version, held in _database_roles(user) if held]
+    if getattr(settings, "TURBODRF_ROLE_GETTER", None) is None:
+        return _role_names(getattr(user, "roles", None))
+    return _role_names(role_getter()(user), what="TURBODRF_ROLE_GETTER")
 
 
 def _role_names(roles, what="user.roles") -> list:
@@ -289,8 +303,10 @@ def _grants_public_read(user, model) -> bool:
         return False  # the platform scope has no anonymous access
     if user is not None and getattr(user, "is_authenticated", False):
         return False
+    from .mixins import turbodrf_config
+
     try:
-        config = model.turbodrf()
+        config = turbodrf_config(model)
     except Exception:
         return False
     return isinstance(config, dict) and bool(config.get("public_access"))
@@ -509,11 +525,7 @@ def get_cache_key(user, model) -> Optional[str]:
     # role map is slow to repr, and every key folds it in); bumped by
     # invalidate_user_permissions(): a new generation is a new key.
     sig = (
-        _memoised(
-            ("roles_signature", scope),
-            None,
-            lambda: hashlib.sha256(repr(_roles_signature()).encode()).hexdigest(),
-        ),
+        _memoised(("roles_signature", scope), None, lambda: _roles_digest(user)),
         _memoised(
             ("generations", user_id),
             None,
@@ -541,41 +553,82 @@ def get_cache_key(user, model) -> Optional[str]:
     )
 
 
-def _roles_signature():
-    """The role configuration every snapshot depends on."""
+def _roles_digest(user):
+    """A digest of the role configuration every snapshot depends on."""
     if is_platform():
-        return _static_signature(platform_roles_config())
+        return _static_digest(platform_roles_config())
     if get_permission_mode() == "database":
-        from .models import TurboDRFRole
-
-        # (name, version) of EVERY role, not only the user's, and for anonymous
-        # callers too: a field rule added to any role restricts that field for
-        # all roles (and for anonymous callers on a public_access model), so it
-        # must invalidate every cached snapshot. Role identity is included so
-        # two roles that share a version number don't produce the same key.
-        return tuple(sorted(TurboDRFRole.objects.values_list("name", "version")))
+        # (pk, name, version) of EVERY role, not only the user's, and for
+        # anonymous callers too: a field rule added to any role restricts that
+        # field for all roles (and for anonymous callers on a public_access
+        # model), so it must invalidate every cached snapshot. The name and pk
+        # tell roles apart: two roles can share a version number, and a role
+        # deleted and recreated under its name starts at the same version.
+        rows = sorted(row[:3] for row in _database_roles(user))
+        return hashlib.sha256(repr(rows).encode()).hexdigest()
     # Static mode: fold in TURBODRF_ROLES so the key changes when the role
     # configuration changes — including override_settings(TURBODRF_ROLES=...)
     # in tests. Without this a snapshot built under restricted roles in one
     # test pollutes the cache for later tests reusing the same user.pk.
-    return _static_signature(getattr(settings, "TURBODRF_ROLES", {}))
+    return _static_digest(getattr(settings, "TURBODRF_ROLES", {}))
 
 
-def _static_signature(roles):
+# A static role map -> (the map, a copy of it, its digest). Hashing a large map
+# costs more than the snapshot it keys, so it's done once per map: settings
+# don't change at runtime, and override_settings replaces the whole object.
+# Comparing with the copy (no sort, repr or hash) still catches a test editing
+# the map in place.
+_static_digests = {}
+
+
+def _static_digest(roles):
+    entry = _static_digests.get(id(roles))
     try:
-        return tuple(
-            sorted((role, tuple(sorted(perms))) for role, perms in roles.items())
+        if entry is not None and entry[0] is roles and entry[1] == roles:
+            return entry[2]
+        snapshot = {role: copy.copy(perms) for role, perms in roles.items()}
+        signature = sorted(
+            (role, tuple(sorted(perms))) for role, perms in roles.items()
         )
     except (TypeError, AttributeError):
-        return ("__unhashable__",)
+        return "__unhashable__"
+    digest = hashlib.sha256(repr(signature).encode()).hexdigest()
+    if len(_static_digests) >= 32:
+        _static_digests.clear()  # many override_settings maps in a test run
+    _static_digests[id(roles)] = (roles, snapshot, digest)
+    return digest
+
+
+def _database_roles(user):
+    """Database mode: ``(pk, name, version, held)`` of every role, ``held``
+    when ``user`` has it. One query per request serves both the user's roles
+    and the snapshot key's role versions."""
+    from django.db.models import Exists, OuterRef, Value
+
+    from .models import TurboDRFRole, UserRole
+
+    def load():
+        if getattr(user, "is_authenticated", False) and user.pk is not None:
+            held = Exists(UserRole.objects.filter(role=OuterRef("pk"), user=user))
+        else:
+            held = Value(False)
+        return list(
+            TurboDRFRole.objects.annotate(held=held).values_list(
+                "pk", "name", "version", "held"
+            )
+        )
+
+    return _memoised(("database_roles", id(user)), user, load)
 
 
 def _model_signature(model):
     """The model's own declarations a snapshot depends on, so a deploy that
     changes them (with a cache shared across the rolling deploy) can't serve a
     snapshot built under the old ones."""
+    from .mixins import turbodrf_config
+
     try:
-        config = model.turbodrf()
+        config = turbodrf_config(model)
     except Exception:
         config = None
     public = (

@@ -1,5 +1,123 @@
 # Changelog
 
+## 0.8.4 — Audit fixes, register(), OpenAPI 3
+
+A full audit (reads, writes, auth plumbing, performance, adoption) found
+three medium and about a dozen low issues. Each fix has a test that sends the
+attack that worked on 0.8.3 (`tests/integration/test_audit_084.py`). The
+adoption findings brought a way to serve a model without the mixin, an
+OpenAPI 3 schema and two debugging commands.
+
+### Security
+
+- A model with `'enabled': False` had to declare tenancy only in the docs:
+  the startup check skipped it, and other models' FK checks, nested fields
+  and filters then read it as unscoped. It's checked like any other model.
+- A read rule on an FK or M2M now binds its reverse side. A model reaching it
+  through the reverse relation (a bare `fields` entry, a nested path, search,
+  a filter, a property relation) needs that field's grant, or the related
+  model's read when the field has no rule.
+- Inside an `Either`, an `Owner` over a `__` path holds on its own: a user
+  who saw a row through the other branch could create one on a colleague's
+  parent, or move a colleague's row onto their own.
+- A nested path through an FK with `to_field` was scoped against the
+  target's pk instead of the stored `to_field` value.
+- An FK filter next to an invalid filter told an existing user's or tenant's
+  pk from a missing one. A 400 now leaves relation filters' errors out.
+- The default order (`Meta.ordering`, and a to-many array's target order)
+  follows the `?ordering=` rule: on a column the caller can't read, or
+  through an FK, the rows come in primary-key order.
+- A generic FK's `object_id` is checked like an FK to its content type's
+  model.
+- A shared model written by a caller with a tenant gets the co-tenant check
+  on user and tenant FKs.
+- A platform move of a row other rows of its tenant point at is refused.
+- A create on a several-column `owner_field` must name the caller in one of
+  its columns (it made a row only bypass roles could see).
+- Database mode: a role deleted and recreated under its name no longer gets
+  the old role's cached snapshots, and a QuerySet `delete()` of
+  `RolePermission` rows (the admin's "delete selected") takes effect at once.
+- A misspelt `TURBODRF_PERMISSION_MODE` raises at startup (it read as static
+  mode, ignoring the database roles).
+- The platform router's optional API root runs its gate in the platform scope.
+
+### Performance
+
+- Nested FK values check the target's visibility with a lookup correlated on
+  the FK column, not a subquery over every visible target row: on a large
+  tenant (Postgres, 1M rows) a detail request went from 28 ms to 2.5 ms and a
+  list page from 41 ms to 14 ms.
+- A predicate lookup through a to-many relation (`Members`, `Group`) is
+  checked as `pk IN (the rows it matches)`, not by wrapping the whole
+  predicate: an `Either(Owner, Members)` list went from 43 ms to 12 ms
+  (Postgres, 200k rows per tenant).
+- A filter or search through a foreign key checks the target's rules on the
+  row it already joins, not against every visible target row: a nested
+  filter went from 47 ms to 33 ms and a search from 152 ms to 101 ms.
+- Static mode hashes `TURBODRF_ROLES` once per process, not per request; in
+  database mode a request reads the roles in one query, not two.
+- A request without filters doesn't build the generated django-filter
+  FilterSet (a view's own `filterset_class` still runs).
+- A `Custom` predicate comparing columns of the same row (`F('limit')`) no
+  longer takes the subquery form.
+- The primary-key tie-breaker follows the last sort term's direction, so an
+  index on `(tenant, column, id)` serves descending sorts too.
+- Schema generation doesn't build row scope for each operation or related
+  field.
+
+### Added
+
+- `turbodrf.register(Model, config)` serves a model without the mixin: one you
+  can't edit (`auth.User`, a third-party app's), or one whose API config you'd
+  rather keep out of `models.py`. Same config dict, startup checks and
+  scoping. See [configuration.md](docs/configuration.md#registering-a-model-without-the-mixin).
+- `TURBODRF_ROLE_GETTER` names where a user's roles come from (static mode);
+  `'turbodrf.backends.group_names'` reads their Django groups, replacing the
+  `User.add_to_class('roles', ...)` patch the quickstart used.
+- `TURBODRF_PAGINATION_CLASS` swaps in your own pagination class (and so your
+  API's own response envelope).
+- An OpenAPI 3 schema, for typed client generators (openapi-typescript,
+  orval): `pip install "turbodrf[openapi3]"` (drf-spectacular), and
+  `turbodrf.urls` serves it at `openapi/`, JSON or YAML. It is scoped to the
+  caller like the Swagger 2 one. Your own router serves its routes with
+  `router.get_openapi3_view()`, the platform router behind its gate.
+- `manage.py turbodrf_explain --user U --model M [--pk P]` says why a user
+  can or can't read a model, a field or a row: their roles and tenant, each
+  action and the roles granting it, each field's rule, and which layer (the
+  tenant boundary, which predicate) hides the row. `manage.py turbodrf_schema
+  --role R` (or `--anonymous`) prints the schema the docs view serves those
+  roles, with no database user, for CI and client generation. See
+  [Management Commands](docs/commands.md).
+
+### Quality of life
+
+- With `DEBUG = True`, a 403 says why: no roles, or the permission string no
+  role grants. The reason is logged at INFO either way.
+- `manage.py check` warns (`turbodrf.W003`) when static mode has no
+  `TURBODRF_ROLES`, and (`turbodrf.W004`) for each model whose `fields` is
+  `'__all__'`: the default, which a model inheriting the mixin from an
+  abstract base gets without anyone choosing it. It also warns
+  (`turbodrf.W005`) when `TURBODRF_ROLE_GETTER` would override the allauth or
+  Keycloak integration's roles.
+- A `searchable_fields` entry that can't be searched (a typo) raises at
+  startup; it used to be dropped, so a search over it matched every row.
+- A route clash suggests an app-prefixed `endpoint` (`'shop/books'`).
+- Schema definition names are stable (`app_model_list`), without a hash that
+  changed with each role's field set, and the API docs no longer show the
+  view's implementation notes or an MIT license by default. A retrieve
+  response is `app_model_detail`, like the write responses, and a write
+  body `app_model_write`.
+
+### Upgrading
+
+- A disabled model without a tenancy declaration (with
+  `TURBODRF_TENANT_MODEL` set and `TURBODRF_REQUIRE_TENANCY` on) now refuses
+  to boot: add its `tenant_field`, or `'tenancy': 'shared'`.
+- A misspelt `searchable_fields` entry or `TURBODRF_PERMISSION_MODE` now
+  refuses to boot.
+- A role that read a reverse relation without the forward field's grant no
+  longer sees it.
+
 ## 0.8.3 — Warn on disabled permissions
 
 - `manage.py check` warns (`turbodrf.W002`) when `TURBODRF_DISABLE_PERMISSIONS`

@@ -9,12 +9,93 @@ and the management commands).
 
 from .scope import is_platform, platform_config
 
+# Models served without the mixin (``register()``) -> their config: a dict, or
+# a zero-argument callable returning one.
+_registered = {}
+
+
+def register(model, config):
+    """Serve ``model`` without ``TurboDRFMixin``. ``config`` is what its
+    ``turbodrf()`` would return: a dict, or a zero-argument callable returning
+    one. Everything else is the same: the startup checks, the roles' permission
+    strings, ``searchable_fields`` as a config key.
+
+    For a model you can't edit (``auth.User``, a third-party app's), or to keep
+    the API out of ``models.py``. Call it from an ``AppConfig.ready()``: a
+    router built before the call doesn't serve the model.
+    """
+    from django.apps import apps
+    from django.core.exceptions import ImproperlyConfigured
+    from django.db import models
+
+    if not (isinstance(model, type) and issubclass(model, models.Model)):
+        raise TypeError(f"register() takes a model class; got {model!r}.")
+    if model._meta.abstract:
+        raise ImproperlyConfigured(f"register(): {model.__name__} is abstract.")
+    if issubclass(model, TurboDRFMixin):
+        raise ImproperlyConfigured(
+            f"register(): {model.__name__} has TurboDRFMixin; configure it in "
+            f"its turbodrf() instead."
+        )
+    if not (isinstance(config, dict) or callable(config)):
+        raise TypeError(
+            f"register({model.__name__}, ...) takes a config dict or a "
+            f"zero-argument callable returning one."
+        )
+    previous = _registered.get(model)
+    _registered[model] = config
+    if apps.models_ready:
+        # turbodrf's own ready() may have registered tenancy already: redo it,
+        # so FK checks and nested fields that reach this model scope it. A
+        # config error raises here, and leaves the registry as it was.
+        from .tenancy import _register_tenancy
+
+        try:
+            _register_tenancy()
+        except Exception:
+            if previous is None:
+                del _registered[model]
+            else:
+                _registered[model] = previous
+            raise
+
+
+def is_turbodrf_model(model):
+    """True for a model with ``TurboDRFMixin`` or one passed to ``register()``."""
+    return model in _registered or (
+        isinstance(model, type) and issubclass(model, TurboDRFMixin)
+    )
+
+
+def turbodrf_models():
+    """Every installed TurboDRF model, in the app registry's order."""
+    from django.apps import apps
+
+    return [m for m in apps.get_models() if is_turbodrf_model(m)]
+
+
+def turbodrf_config(model):
+    """``model``'s whole config: the one passed to ``register()``, else its
+    ``turbodrf()``. ``None`` for a model that's neither."""
+    if model in _registered:
+        config = _registered[model]
+        return config() if callable(config) else dict(config)
+    method = getattr(model, "turbodrf", None)
+    return method() if callable(method) else None
+
+
+def config_label(model):
+    """Where ``model``'s config is written, for error messages."""
+    if model in _registered:
+        return f"register({model.__name__}, ...)"
+    return f"{model.__name__}.turbodrf()"
+
 
 def _model_config(model):
-    """``model``'s ``turbodrf()`` config as the current scope serves it: the
-    whole dict on the tenant scope, its ``"platform"`` block on the platform
-    scope (see turbodrf.scope)."""
-    config = model.turbodrf() if hasattr(model, "turbodrf") else None
+    """``model``'s config (``turbodrf_config``) as the current scope serves it:
+    the whole dict on the tenant scope, its ``"platform"`` block on the
+    platform scope (see turbodrf.scope)."""
+    config = turbodrf_config(model)
     config = config if isinstance(config, dict) else {}
     if is_platform():
         return platform_config(config)

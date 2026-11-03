@@ -68,6 +68,7 @@ def platform_roles(user):
 
 ```python
 # jobs/models.py
+from django.db import models
 from rest_framework.response import Response
 from turbodrf import TurboDRFMixin, turbodrf_action
 
@@ -111,6 +112,10 @@ class Job(models.Model, TurboDRFMixin):
 
 ```python
 # support/models.py
+from django.db import models
+from turbodrf import TurboDRFMixin
+
+
 class Ticket(models.Model, TurboDRFMixin):
     workspace = models.ForeignKey("accounts.Workspace", on_delete=models.CASCADE)
     contact = models.ForeignKey("crm.Contact", null=True, on_delete=models.SET_NULL)
@@ -138,6 +143,7 @@ it reachable without a route.
 
 ```python
 # console/urls.py
+from django.urls import include, path
 from rest_framework.permissions import BasePermission
 from turbodrf.router import TurboDRFRouter
 
@@ -262,7 +268,7 @@ imports `TURBODRF_PLATFORM_ROLE_GETTER`.
 
 | | Tenant scope | Platform scope |
 |---|---|---|
-| Roles | `user.roles` (static), `UserRole` rows (database mode) | `TURBODRF_PLATFORM_ROLE_GETTER` (default `user.platform_roles`) |
+| Roles | `TURBODRF_ROLE_GETTER` (default `user.roles`) in static mode, `UserRole` rows in database mode | `TURBODRF_PLATFORM_ROLE_GETTER` (default `user.platform_roles`) |
 | Permissions | `TURBODRF_ROLES`, or `TurboDRFRole` rows | `TURBODRF_PLATFORM_ROLES`, always |
 | Anonymous callers | `public_access` + `guest` role | none |
 | `TURBODRF_DISABLE_PERMISSIONS`, `TURBODRF_USE_DEFAULT_PERMISSIONS` | apply | don't apply: every platform request is checked |
@@ -314,7 +320,10 @@ no owner. For a model with a `tenant_field`:
   `TURBODRF_TENANT_USER_FIELD` attribute for a user. A value without one (a
   staff user with no workspace, reference data) is accepted.
 - **Moving a row** (an update that changes its tenant) checks the relations it
-  keeps, not only the ones the request sets.
+  keeps, not only the ones the request sets. A row that other rows of its
+  tenant point at can't be moved (`"Cannot move this row to another tenant
+  while rows of its tenant point at it: move or delete them first."`), unless
+  their own `tenant_field` runs through it.
 
 Writing to the tenant model itself checks its FK and M2M values against the
 row being updated.
@@ -362,16 +371,22 @@ router's routes only, guarded by its gate and generated with the caller's
 platform roles. The tenant schema (`turbodrf.urls`, or
 `get_turbodrf_schema_view()`) never documents platform routes, and mounting a
 platform router doesn't change it. `?role=<name>` narrows the platform schema
-to a platform role the caller holds.
+to a platform role the caller holds. With the `openapi3` extra,
+`router.get_openapi3_view(**kwargs)` serves the same routes as an OpenAPI 3
+schema, the same way: `path("console-api/openapi/", console.get_openapi3_view(title="Console API"))`.
 
 ## Commands
 
 ```bash
 python manage.py turbodrf_check --scope platform
+python manage.py turbodrf_explain --user alice --model Job --scope platform
+python manage.py turbodrf_schema --role support --scope platform
 ```
 
 `turbodrf_check --scope platform` lists the models with an enabled platform
-block, each with its fields and tenant path.
+block, each with its fields and tenant path. `turbodrf_explain` and
+`turbodrf_schema` answer with platform roles there (see
+[Management Commands](commands.md)).
 
 ## Not covered
 

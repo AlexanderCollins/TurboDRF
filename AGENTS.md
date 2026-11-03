@@ -33,14 +33,18 @@ INSTALLED_APPS = [..., 'rest_framework', 'drf_yasg', 'turbodrf']
 
 # urls.py
 urlpatterns = [path('api/', include('turbodrf.urls'))]
+# With `pip install "turbodrf[openapi3]"` it also serves an OpenAPI 3 schema
+# at api/openapi/, scoped to the caller. Don't mount drf-spectacular's own
+# SpectacularAPIView over TurboDRF routes: it isn't scoped.
 ```
 
 Users need roles: see [Roles](#roles) below. Without one, every request is
 a 403.
 
-**Run `python manage.py check` in CI and before every deploy.** Tenancy
-errors raise when Django starts, but the router validates the rest of the
-configuration when Django first imports the URLconf, which `check` does and
+**Run `python manage.py check` in CI and before every deploy.** A broken
+tenancy declaration raises when Django starts, but the router validates the
+rest of the configuration (a model with no tenancy declaration included) when
+Django first imports the URLconf, which `check` does and
 `get_wsgi_application()` doesn't; without it a broken config deploys and
 fails on the first request.
 
@@ -75,11 +79,16 @@ Routes are auto-generated at `/api/projects/` and `/api/projects/{pk}/` (the
 lowercase model name plus `s`; set `'endpoint'` to change it). No URL or view
 file needed.
 
+For a model you can't edit (`auth.User`, a third-party app's), or to keep the
+API config out of `models.py`, skip the mixin and call
+`turbodrf.register(Model, {...same dict...})` from an `AppConfig.ready()`.
+
 ### `fields`
 
 Always set `fields` to an explicit list (or a `{'list': [...], 'detail':
 [...]}` dict). It isn't required, but it defaults to `'__all__'`, which
-exposes every column, including ones added later. The primary key renders
+exposes every column, including ones added later; `manage.py check` warns
+(`turbodrf.W004`) for each model left on it. The primary key renders
 only if listed. A name that doesn't exist on the model, or one ending on a
 reverse one-to-one, raises at startup.
 
@@ -95,6 +104,9 @@ is a class attribute on the model, not a key.
 | `'tenant_field': 'fk__chain__to_tenant'` | Indirect — model reaches tenant via FK chain |
 | `'tenancy': 'shared'` | Reference data: currencies, country codes |
 | `'visibility': [<predicate>, ...]` | Need OR logic / non-tenant scoping (see Predicates below) |
+
+Every TurboDRF model needs one, `'enabled': False` included: a model with no
+route is still an FK, nested-field and filter target.
 
 `tenant_field` must be a chain of forward foreign keys / one-to-ones, named
 by field (`workspace`, not `workspace_id`), that ends at
@@ -183,20 +195,21 @@ it lets anonymous callers create, update and delete.
 
 TurboDRF needs to know each user's roles. Pick one source:
 
-- **Static mode (default):** `user.roles` returns a list of role names. Add a
-  property to a custom user model, or derive it from Django groups:
+- **Static mode (default):** `user.roles` returns a list of role names (a
+  property on a custom user model), or `TURBODRF_ROLE_GETTER` names a
+  function `user -> role names`. For Django groups:
 
   ```python
-  # in an AppConfig.ready()
-  User.add_to_class('roles', property(lambda u: [g.name for g in u.groups.all()]))
+  TURBODRF_ROLE_GETTER = 'turbodrf.backends.group_names'
   ```
 
 - **Database mode** (`TURBODRF_PERMISSION_MODE = 'database'`): roles come from
   `UserRole` rows and `user.roles` is ignored; permissions come from
   `TurboDRFRole` / `RolePermission` rows, validated when saved.
 - **allauth / Keycloak integrations:** TurboDRF installs the `roles` property
-  when the user model doesn't define one. Their middleware classes are
-  deprecated no-ops; don't add them.
+  when the user model doesn't define one (read only while
+  `TURBODRF_ROLE_GETTER` is unset). Their middleware classes are deprecated
+  no-ops; don't add them.
 
 Details: `docs/permissions.md`, "Assigning roles to users".
 
@@ -250,7 +263,11 @@ How `Either` treats writes: every child's write check must pass. `Owner`'s
 check applies to every writer without a bypass role: they can't set an owner
 column to another user, or change one that holds another user. An `Owner`
 over a `__` path (`Owner('project__owner')`) is checked on the saved row
-instead: the writer must still see it. `Custom` adds its `write_validator`; `Members`, `Group` and `Conditional` add none.
+instead: the writer must still see it, and inside an `Either` it must hold
+on its own (on create, and before and after an update that changes the
+path's first hop). A several-column `Owner` is checked on the saved row too:
+a create must name the caller in one of its columns. `Custom` adds its
+`write_validator`; `Members`, `Group` and `Conditional` add none.
 On create, `Either` fills a single-column `Owner` child's column with the
 caller.
 
@@ -337,11 +354,12 @@ Details: `docs/platform.md`.
 
 Permission snapshots are cached for 5 minutes per `(user, model)` pair. The
 cache key covers the user's roles, the role configuration (in database
-mode, every role's version) and the model's `sensitive_fields` and
-`public_access`, so granting or revoking a role, editing `TURBODRF_ROLES`, or
-saving / deleting a `RolePermission` takes effect on the next request. A bulk
-`RolePermission` QuerySet `update()` / `delete()` doesn't bump role versions
-and stays stale until the TTL. After one:
+mode, every role's id, name and version) and the model's `sensitive_fields`
+and `public_access`, so granting or revoking a role, editing
+`TURBODRF_ROLES`, or saving / deleting a `RolePermission` (a QuerySet
+`delete()` included) takes effect on the next request. A bulk
+`RolePermission` QuerySet `update()` / `bulk_create()` doesn't bump role
+versions and stays stale until the TTL. After one:
 
 ```python
 from turbodrf.backends import invalidate_user_permissions
@@ -393,7 +411,9 @@ assert snap.can_perform_action('update')
 - [docs/tenancy.md](docs/tenancy.md) — full predicate vocabulary, sugar vs power form, startup checks
 - [docs/platform.md](docs/platform.md) — the platform scope: a staff API across tenants
 - [docs/permissions.md](docs/permissions.md) — RBAC, roles, sensitive fields, field-perm syntax
+- [docs/principles.md](docs/principles.md) — the rules the security model rests on
 - [docs/security.md](docs/security.md) — threat model + known limitations
+- [docs/commands.md](docs/commands.md) — `turbodrf_check`, `turbodrf_explain`, `turbodrf_schema`
 - [docs/settings_reference.md](docs/settings_reference.md) — every setting
 - [docs/migration_to_predicates.md](docs/migration_to_predicates.md) — upgrading existing TurboDRF apps
 
@@ -407,5 +427,9 @@ assert snap.can_perform_action('update')
 - Run `python manage.py check` before committing: it builds the router and
   runs every startup gate. Then `python manage.py turbodrf_check`, which
   reports each model's list fields and resolved tenancy; it only reports.
+- A 403, 404, empty list or missing field? Run `python manage.py turbodrf_explain
+  --user <u> --model <Model> [--pk <pk>]` to see which layer, before changing config.
+  With `DEBUG = True` a 403's detail also says why: no roles, or the missing
+  permission string.
 - Preserve fail-closed defaults: when in doubt about a permission edge
   case, deny.

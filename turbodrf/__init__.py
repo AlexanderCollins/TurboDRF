@@ -1,5 +1,6 @@
 """
-TurboDRF - Dead simple Django REST API generator with role-based permissions.
+TurboDRF - turn Django models into a secure REST API: CRUD endpoints,
+field-level permissions and multi-tenant row scoping.
 
 TurboDRF automatically generates a complete REST API from your Django models
 with just
@@ -34,7 +35,7 @@ This automatically creates:
 For more information, see: https://github.com/alexandercollins/turbodrf
 """
 
-__version__ = "0.8.3"
+__version__ = "0.8.4"
 __author__ = "Alexander Collins"
 __email__ = ""
 __license__ = "MIT"
@@ -71,6 +72,10 @@ def __getattr__(name):
         from .decorators import turbodrf_action
 
         return turbodrf_action
+    elif name == "register":
+        from .mixins import register
+
+        return register
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
@@ -82,4 +87,5 @@ __all__ = [
     "TurboDRFSerializer",
     "TurboDRFSerializerFactory",
     "turbodrf_action",
+    "register",
 ]
