@@ -53,7 +53,8 @@ It checks every model's `'platform'` block the same way, enabled or not (see
 
 Always set `fields` explicitly. It defaults to `'__all__'`, which exposes
 every concrete and many-to-many field, including ones added to the model
-later. Three formats:
+later; `manage.py check` warns (`turbodrf.W004`) for each model that uses it.
+Three formats:
 
 ```python
 # All concrete and many-to-many fields

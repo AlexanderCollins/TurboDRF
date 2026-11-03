@@ -803,6 +803,18 @@ class TestQualityOfLife(_Base):
                 self.assertEqual(check_roles_configured(), [])
 
 
+class TestExplicitFieldsCheck(SimpleTestCase):
+    def test_all_fields_warns(self):
+        from turbodrf.apps import check_explicit_fields
+
+        self.assertEqual(check_explicit_fields(), [])
+        with mock.patch.object(
+            Deal, "turbodrf", classmethod(lambda cls: {"tenant_field": "brokerage"})
+        ):
+            messages = check_explicit_fields()
+        self.assertEqual([(m.id, m.obj) for m in messages], [("turbodrf.W004", Deal)])
+
+
 @override_settings(**TENANT)
 class TestStartupErrors(SimpleTestCase):
     def test_misspelt_searchable_field_is_refused(self):
