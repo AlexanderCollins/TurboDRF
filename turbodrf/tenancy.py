@@ -17,6 +17,8 @@ import difflib
 from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
 
+from .mixins import config_label
+
 
 class AmbiguousTenantPath(ImproperlyConfigured):
     """Raised when multiple FK paths from a model lead to the tenant model."""
@@ -99,7 +101,7 @@ def find_tenant_path(model, tenant_model, max_depth=4):
         raise AmbiguousTenantPath(
             f"Auto-detection found multiple paths from {model.__name__} "
             f"to {tenant_model.__name__}: {formatted}. "
-            f"Set 'tenant_field' explicitly in {model.__name__}.turbodrf() "
+            f"Set 'tenant_field' explicitly in {config_label(model)} "
             f"to disambiguate."
         )
 
@@ -136,7 +138,7 @@ def validate_field_path(model, path):
                 else ""
             )
             raise ImproperlyConfigured(
-                f"{model.__name__}.turbodrf() declares path "
+                f"{config_label(model)} declares path "
                 f"{path!r}, but field {part!r} does not exist on "
                 f"{current_model.__name__} (after traversing {traversed}){hint}"
             )
@@ -146,7 +148,7 @@ def validate_field_path(model, path):
             related = getattr(field, "related_model", None)
             if related is None:
                 raise ImproperlyConfigured(
-                    f"{model.__name__}.turbodrf() declares path {path!r}, "
+                    f"{config_label(model)} declares path {path!r}, "
                     f"but {current_model.__name__}.{part} is not a relation; "
                     f"cannot traverse into it."
                 )
@@ -172,19 +174,19 @@ def _validate_tenant_path(model, path, tenant_model_setting=None):
         field = current._meta.get_field(part)
         if not _is_forward_relation(field):
             raise ImproperlyConfigured(
-                f"{model.__name__}.turbodrf() declares tenant_field {path!r}, "
+                f"{config_label(model)} declares tenant_field {path!r}, "
                 f"but {current.__name__}.{part} is not a forward ForeignKey or "
                 f"OneToOneField. Every hop of a tenant_field must be one."
             )
         if field.name != part:
             raise ImproperlyConfigured(
-                f"{model.__name__}.turbodrf() declares tenant_field {path!r}: "
+                f"{config_label(model)} declares tenant_field {path!r}: "
                 f"name the relation {field.name!r}, not its column {part!r}."
             )
         current = field.related_model
     if not field.target_field.primary_key:
         raise ImproperlyConfigured(
-            f"{model.__name__}.turbodrf() declares tenant_field {path!r}, but "
+            f"{config_label(model)} declares tenant_field {path!r}, but "
             f"{field.model.__name__}.{field.name} references "
             f"{current.__name__}.{field.target_field.name}. The last hop of a "
             f"tenant_field must reference the tenant's primary key (drop "
@@ -196,7 +198,7 @@ def _validate_tenant_path(model, path, tenant_model_setting=None):
         and current._meta.concrete_model is not tenant_model._meta.concrete_model
     ):
         raise ImproperlyConfigured(
-            f"{model.__name__}.turbodrf() declares tenant_field {path!r}, which "
+            f"{config_label(model)} declares tenant_field {path!r}, which "
             f"ends at {current._meta.label}, not at TURBODRF_TENANT_MODEL "
             f"({tenant_model._meta.label})."
         )
@@ -288,18 +290,18 @@ def _register_tenancy(models=None, configs=None):
     """
     from django.conf import settings
 
-    from .mixins import TurboDRFMixin
+    from .mixins import turbodrf_config, turbodrf_models
     from .predicates import register_predicates, register_tenant_field
 
     if models is None:
-        models = [m for m in apps.get_models() if issubclass(m, TurboDRFMixin)]
+        models = turbodrf_models()
     configs = configs or {}
     tenant_model_setting = getattr(settings, "TURBODRF_TENANT_MODEL", None)
     autodetect = getattr(settings, "TURBODRF_AUTODETECT_TENANT", False)
 
     resolved = {}
     for model in models:
-        config = configs[model] if model in configs else model.turbodrf()
+        config = configs[model] if model in configs else turbodrf_config(model)
         resolved[model] = resolve_tenancy_for_model(
             model, config, tenant_model_setting, autodetect=autodetect
         )
@@ -342,7 +344,7 @@ def _validate_user_relation(model, path, what):
     ):
         target = current._meta.label if current is not None else "a plain column"
         raise ImproperlyConfigured(
-            f"{model.__name__}.turbodrf() declares {what}, but {path!r} leads "
+            f"{config_label(model)} declares {what}, but {path!r} leads "
             f"to {target}, not to the user model ({user_model._meta.label})."
         )
     return field
@@ -368,7 +370,7 @@ def _validate_predicate_paths(model, predicate):
             field = _validate_user_relation(model, f, f"Owner({f!r})")
             if not _is_forward_relation(field):
                 raise ImproperlyConfigured(
-                    f"{model.__name__}.turbodrf() declares Owner({f!r}), but "
+                    f"{config_label(model)} declares Owner({f!r}), but "
                     f"{f!r} is not a ForeignKey or OneToOneField to the user "
                     f"model. Use Members(...) for a many-to-many."
                 )

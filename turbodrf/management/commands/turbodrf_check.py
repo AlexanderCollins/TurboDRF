@@ -11,7 +11,12 @@ from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist
 from django.core.management.base import BaseCommand
 
-from turbodrf.mixins import TurboDRFMixin, _model_config, _resolve_configured_fields
+from turbodrf.mixins import (
+    _model_config,
+    _resolve_configured_fields,
+    is_turbodrf_model,
+    turbodrf_config,
+)
 from turbodrf.scope import (
     PLATFORM,
     SCOPES,
@@ -45,9 +50,9 @@ class Command(BaseCommand):
         models = []
 
         for model in apps.get_models():
-            if not issubclass(model, TurboDRFMixin):
+            if not is_turbodrf_model(model):
                 continue
-            config = model.turbodrf()
+            config = turbodrf_config(model)
             if scope == PLATFORM:
                 block = platform_block(model, config)
                 if block is None or not block.get("enabled", True):

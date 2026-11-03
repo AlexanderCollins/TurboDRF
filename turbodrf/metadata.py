@@ -246,14 +246,14 @@ class TurboDRFMetadata(SimpleMetadata):
 
     def _get_pagination_info(self, view):
         """Pagination knobs the client can use."""
-        pagination_class = getattr(view, "pagination_class", None)
-        if pagination_class is None:
+        paginator = getattr(view, "paginator", None)
+        if paginator is None:
             return None
         return {
-            "default_page_size": getattr(pagination_class, "page_size", None),
+            "default_page_size": getattr(paginator, "page_size", None),
             "page_size_query_param": getattr(
-                pagination_class, "page_size_query_param", "page_size"
+                paginator, "page_size_query_param", "page_size"
             ),
-            "max_page_size": getattr(pagination_class, "max_page_size", None),
-            "page_query_param": getattr(pagination_class, "page_query_param", "page"),
+            "max_page_size": getattr(paginator, "max_page_size", None),
+            "page_query_param": getattr(paginator, "page_query_param", "page"),
         }

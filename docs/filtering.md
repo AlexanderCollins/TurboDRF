@@ -110,3 +110,9 @@ Response format:
 ```
 
 Default page size: 20. Max: 100.
+
+To use your own pagination class, and so your API's own response envelope,
+set `TURBODRF_PAGINATION_CLASS` to it (a dotted path or the class). A
+`pagination_class` set on a `TurboDRFViewSet` subclass or a custom action is
+kept. Give your class a `max_page_size`: without one a client can ask for
+every row in one page.

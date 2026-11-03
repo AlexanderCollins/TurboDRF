@@ -71,6 +71,10 @@ def __getattr__(name):
         from .decorators import turbodrf_action
 
         return turbodrf_action
+    elif name == "register":
+        from .mixins import register
+
+        return register
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
@@ -82,4 +86,5 @@ __all__ = [
     "TurboDRFSerializer",
     "TurboDRFSerializerFactory",
     "turbodrf_action",
+    "register",
 ]

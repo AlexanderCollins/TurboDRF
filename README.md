@@ -72,14 +72,11 @@ class Book(models.Model, TurboDRFMixin):
         }
 ```
 
-**3. Give users roles.** TurboDRF reads `user.roles`, a list of role names.
-For example, use the names of the user's Django groups, in your app's
-`AppConfig.ready()`:
+**3. Give users roles.** TurboDRF needs each user's role names. For example,
+use the names of the user's Django groups:
 
 ```python
-from django.contrib.auth.models import User
-
-User.add_to_class('roles', property(lambda user: [g.name for g in user.groups.all()]))
+TURBODRF_ROLE_GETTER = 'turbodrf.backends.group_names'
 ```
 
 Other options: [Assigning roles to users](https://github.com/AlexanderCollins/TurboDRF/blob/main/docs/permissions.md#assigning-roles-to-users).

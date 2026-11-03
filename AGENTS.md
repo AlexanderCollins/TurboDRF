@@ -75,6 +75,10 @@ Routes are auto-generated at `/api/projects/` and `/api/projects/{pk}/` (the
 lowercase model name plus `s`; set `'endpoint'` to change it). No URL or view
 file needed.
 
+For a model you can't edit (`auth.User`, a third-party app's), or to keep the
+API config out of `models.py`, skip the mixin and call
+`turbodrf.register(Model, {...same dict...})` from an `AppConfig.ready()`.
+
 ### `fields`
 
 Always set `fields` to an explicit list (or a `{'list': [...], 'detail':
@@ -186,12 +190,12 @@ it lets anonymous callers create, update and delete.
 
 TurboDRF needs to know each user's roles. Pick one source:
 
-- **Static mode (default):** `user.roles` returns a list of role names. Add a
-  property to a custom user model, or derive it from Django groups:
+- **Static mode (default):** `user.roles` returns a list of role names (a
+  property on a custom user model), or `TURBODRF_ROLE_GETTER` names a
+  function `user -> role names`. For Django groups:
 
   ```python
-  # in an AppConfig.ready()
-  User.add_to_class('roles', property(lambda u: [g.name for g in u.groups.all()]))
+  TURBODRF_ROLE_GETTER = 'turbodrf.backends.group_names'
   ```
 
 - **Database mode** (`TURBODRF_PERMISSION_MODE = 'database'`): roles come from

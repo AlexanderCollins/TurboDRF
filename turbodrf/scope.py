@@ -71,10 +71,10 @@ def platform_block(model, config=None):
     """The ``"platform"`` block of ``model``'s ``turbodrf()`` config, or
     ``None`` when it has none (or isn't a TurboDRF model)."""
     if config is None:
-        if not callable(getattr(model, "turbodrf", None)):
-            return None
+        from .mixins import turbodrf_config
+
         try:
-            config = model.turbodrf()
+            config = turbodrf_config(model)
         except Exception:
             return None
     block = config.get("platform") if isinstance(config, dict) else None
@@ -104,9 +104,9 @@ def platform_reachable(model):
     scope doesn't lift them: it reads as having no rows."""
     if model is None or not hasattr(model, "_meta"):
         return False
-    from .mixins import TurboDRFMixin
+    from .mixins import is_turbodrf_model
 
-    if not issubclass(model, TurboDRFMixin):
+    if not is_turbodrf_model(model):
         return True
     if platform_block(model) is not None:
         return True
