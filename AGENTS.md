@@ -96,6 +96,9 @@ is a class attribute on the model, not a key.
 | `'tenancy': 'shared'` | Reference data: currencies, country codes |
 | `'visibility': [<predicate>, ...]` | Need OR logic / non-tenant scoping (see Predicates below) |
 
+Every TurboDRF model needs one, `'enabled': False` included: a model with no
+route is still an FK, nested-field and filter target.
+
 `tenant_field` must be a chain of forward foreign keys / one-to-ones, named
 by field (`workspace`, not `workspace_id`), that ends at
 `TURBODRF_TENANT_MODEL`; the last one must reference the tenant's primary key
@@ -250,7 +253,11 @@ How `Either` treats writes: every child's write check must pass. `Owner`'s
 check applies to every writer without a bypass role: they can't set an owner
 column to another user, or change one that holds another user. An `Owner`
 over a `__` path (`Owner('project__owner')`) is checked on the saved row
-instead: the writer must still see it. `Custom` adds its `write_validator`; `Members`, `Group` and `Conditional` add none.
+instead: the writer must still see it, and inside an `Either` it must hold
+on its own (on create, and before and after an update that changes the
+path's first hop). A several-column `Owner` is checked on the saved row too:
+a create must name the caller in one of its columns. `Custom` adds its
+`write_validator`; `Members`, `Group` and `Conditional` add none.
 On create, `Either` fills a single-column `Owner` child's column with the
 caller.
 
@@ -340,8 +347,8 @@ cache key covers the user's roles, the role configuration (in database
 mode, every role's version) and the model's `sensitive_fields` and
 `public_access`, so granting or revoking a role, editing `TURBODRF_ROLES`, or
 saving / deleting a `RolePermission` takes effect on the next request. A bulk
-`RolePermission` QuerySet `update()` / `delete()` doesn't bump role versions
-and stays stale until the TTL. After one:
+`RolePermission` QuerySet `update()` / `bulk_create()` doesn't bump role
+versions and stays stale until the TTL. After one:
 
 ```python
 from turbodrf.backends import invalidate_user_permissions

@@ -9,7 +9,7 @@ Every TurboDRF model needs a `turbodrf()` classmethod that returns a config dict
 def turbodrf(cls):
     return {
         'enabled': True,              # Enable/disable API (default: True)
-        'endpoint': 'books',          # URL segment (default: lowercase model name + 's')
+        'endpoint': 'books',          # URL segment (default: lowercase model name + 's'); may hold '/' ('shop/books')
         'fields': ['title', 'price'], # Fields to expose (default: '__all__'; see below)
         'public_access': False,       # Allow unauthenticated GET (default: False)
         'lookup_field': 'slug',       # URL lookup field (default: pk)
@@ -86,7 +86,7 @@ Access related model fields with `__` notation:
 ]
 ```
 
-FK fields are flattened in responses (`author__name` becomes `author_name`), and the FK itself renders as its raw id. M2M fields are arrays of objects keyed by the path below the M2M (`tags__group__name` gives `{"group__name": ...}`), in the target's `Meta.ordering`:
+FK fields are flattened in responses (`author__name` becomes `author_name`), and the FK itself renders as its raw id. M2M fields are arrays of objects keyed by the path below the M2M (`tags__group__name` gives `{"group__name": ...}`), in the target's `Meta.ordering` where the caller may order by it (else by primary key):
 
 ```json
 {
@@ -202,7 +202,7 @@ class Book(models.Model, TurboDRFMixin):
 GET /api/books/?search=django
 ```
 
-Entries may be plain field names or `__`-paths ending on a column, optionally with a `^`, `=` or `@` prefix. Search is gated by field-level read permissions -- a caller who cannot read a field cannot search by it. See [Filtering & Search](filtering.md#search) for details.
+Entries may be plain field names or `__`-paths ending on a column, optionally with a `^`, `=` or `@` prefix; any other entry (a typo, a path ending on a relation) raises `ImproperlyConfigured` at startup. Search is gated by field-level read permissions -- a caller who cannot read a field cannot search by it. See [Filtering & Search](filtering.md#search) for details.
 
 ## Read-only endpoints
 

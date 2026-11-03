@@ -119,12 +119,12 @@ def get_nested_field_model(model, field_path):
     return current_model, field_chain
 
 
-def build_traversal_scope_q(parent_model, field_path, request):
+def build_traversal_scope_q(parent_model, field_path, request, correlated=False):
     """Build a Q that scopes every JOIN target along ``field_path`` to
     the rows the request's user can see via that target's own endpoint.
 
     For each model in the JOIN chain that has registered predicates or
-    a ``tenant_field``, this AND's ``<prefix>__in=<visible pks>`` onto the
+    a ``tenant_field``, this AND's ``<prefix>__in=<visible rows>`` onto the
     parent queryset, the visible rows being ``scoped_target_queryset`` on the
     target's base manager.
 
@@ -146,10 +146,16 @@ def build_traversal_scope_q(parent_model, field_path, request):
     row with a NULL FK silently disappears from lists, counts and filters.
     Rows whose relation points at an out-of-scope target are still excluded.
 
+    ``correlated=True`` (single-valued paths only) checks each hop's target
+    row with a subquery correlated on the FK column, for a CASE that renders
+    nested values: the uncorrelated ``IN`` form makes the database read every
+    visible target row, even to render one row.
+
     Returns ``Q()`` (no-op) for paths whose chain is fully unscoped, or
     when no ``__`` is present in the path.
     """
-    from django.db.models import Q
+    from django.db.models import OuterRef, Q, Subquery
+    from django.db.models.lookups import IsNull
 
     if not isinstance(field_path, str) or "__" not in field_path:
         return Q()
@@ -172,7 +178,17 @@ def build_traversal_scope_q(parent_model, field_path, request):
         if scoped is None:
             continue
         prefix = "__".join(parts[:step_idx])
-        step_q = Q(**{f"{prefix}__in": scoped.values("pk")})
+        if correlated:
+            # The column the FK stores: its to_field, else the pk (a reverse
+            # one-to-one hop resolves to the related row's pk).
+            hop = chain[step_idx - 1][1]
+            column = "pk" if hop.auto_created else hop.target_field.name
+            match = scoped.filter(**{column: OuterRef(prefix)}).order_by()
+            step_q = Q(IsNull(Subquery(match.values("pk")[:1]), False))
+        else:
+            # The queryset itself, not .values("pk"): Django then compares an
+            # FK with to_field against that column, not the target's pk.
+            step_q = Q(**{f"{prefix}__in": scoped})
         if may_be_empty:
             step_q = Q(**{f"{prefix}__isnull": True}) | step_q
         q_combined &= step_q
@@ -248,6 +264,27 @@ def check_nested_field_permissions(model, field_path, user, use_cache=True):
     )
 
 
+def _field_readable(snapshot, name):
+    """An explicit read rule if the field has one, else model-level read."""
+    if snapshot.has_read_rule(name):
+        return snapshot.can_read_field(name)
+    return snapshot.can_perform_action("read")
+
+
+def _reverse_side_readable(model, name, snapshot_for):
+    """For a reverse relation, may the caller read the forward FK / M2M on the
+    related model? True for any other field."""
+    from django.db.models import ForeignObjectRel
+
+    try:
+        field = model._meta.get_field(name)
+    except FieldDoesNotExist:
+        return True
+    if not isinstance(field, ForeignObjectRel):
+        return True
+    return _field_readable(snapshot_for(field.related_model), field.remote_field.name)
+
+
 def _path_readable(model, field_path, snapshot_for):
     """``check_nested_field_permissions`` with the snapshot of each model on
     the path from ``snapshot_for(model)``, so a caller checking many paths can
@@ -261,20 +298,17 @@ def _path_readable(model, field_path, snapshot_for):
         current_snapshot = snapshot_for(current_model)
 
         # Check permission for this field
-        if current_snapshot.has_read_rule(part):
-            if not current_snapshot.can_read_field(part):
-                logger.debug(
-                    f"Permission denied: {current_model.__name__}.{part} "
-                    f"(explicit read rule failed)"
-                )
-                return False
-        else:
-            if not current_snapshot.can_perform_action("read"):
-                logger.debug(
-                    f"Permission denied: {current_model.__name__}.{part} "
-                    f"(model-level read permission failed)"
-                )
-                return False
+        if not _field_readable(current_snapshot, part):
+            logger.debug(f"Permission denied: {current_model.__name__}.{part}")
+            return False
+        # A reverse relation is the related model's FK / M2M read from the
+        # other side: which rows point at this one is that field's value.
+        if not _reverse_side_readable(current_model, part, snapshot_for):
+            logger.debug(
+                f"Permission denied: {current_model.__name__}.{part} "
+                f"(the related model's field isn't readable)"
+            )
+            return False
 
         # If not the last part, traverse to the related model
         if i < len(parts) - 1:

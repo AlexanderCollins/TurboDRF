@@ -49,6 +49,30 @@ def check_permissions_enabled(app_configs=None, **kwargs):
     ]
 
 
+def check_roles_configured(app_configs=None, **kwargs):
+    """Warn when static mode has no roles: every authenticated request to a
+    TurboDRF endpoint is then a 403, with nothing saying why."""
+    if (
+        getattr(settings, "TURBODRF_PERMISSION_MODE", "static") != "static"
+        or getattr(settings, "TURBODRF_DISABLE_PERMISSIONS", False)
+        or getattr(settings, "TURBODRF_USE_DEFAULT_PERMISSIONS", False)
+        or getattr(settings, "TURBODRF_ROLES", None)
+    ):
+        return []
+    return [
+        checks.Warning(
+            "TURBODRF_ROLES is empty: no role grants anything, so every "
+            "authenticated request to a TurboDRF endpoint is a 403.",
+            hint=(
+                "Define TURBODRF_ROLES (docs/permissions.md), or set "
+                "TURBODRF_PERMISSION_MODE = 'database' to keep roles in the "
+                "database."
+            ),
+            id="turbodrf.W003",
+        )
+    ]
+
+
 class TurboDRFConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "turbodrf"
@@ -60,6 +84,7 @@ class TurboDRFConfig(AppConfig):
         """
         checks.register(check_docs_dependencies)
         checks.register(check_permissions_enabled, checks.Tags.security)
+        checks.register(check_roles_configured)
 
         # Register every TurboDRF model's tenant boundary and predicates now,
         # not when the URLconf first builds a router: FK-injection checks and

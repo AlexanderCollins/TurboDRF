@@ -552,8 +552,10 @@ def _roles_signature():
         # callers too: a field rule added to any role restricts that field for
         # all roles (and for anonymous callers on a public_access model), so it
         # must invalidate every cached snapshot. Role identity is included so
-        # two roles that share a version number don't produce the same key.
-        return tuple(sorted(TurboDRFRole.objects.values_list("name", "version")))
+        # two roles that share a version number don't produce the same key;
+        # the pk too, so a role deleted and recreated under its name (back at
+        # the same version) doesn't bring back the old role's snapshots.
+        return tuple(sorted(TurboDRFRole.objects.values_list("pk", "name", "version")))
     # Static mode: fold in TURBODRF_ROLES so the key changes when the role
     # configuration changes — including override_settings(TURBODRF_ROLES=...)
     # in tests. Without this a snapshot built under restricted roles in one

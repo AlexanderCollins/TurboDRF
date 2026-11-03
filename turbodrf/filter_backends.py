@@ -89,21 +89,27 @@ class TurboDRFFilterBackend(DjangoFilterBackend):
 
     def filter_queryset(self, request, queryset, view):
         """An FK / M2M filter naming a row the caller can't see — or one that
-        doesn't exist — matches nothing (200, empty), the same in both cases."""
+        doesn't exist — matches nothing (200, empty), the same in both cases.
+        A 400 for another filter leaves relation filters' errors out: listing
+        them would say which pks exist (a target with no row rules, like the
+        user model, is checked against its whole table)."""
+        from django.forms.utils import ErrorDict
         from django_filters import utils
 
+        if not set(request.query_params) - _NON_FILTER_PARAMS:
+            return queryset  # no filter: skip building the FilterSet
         filterset = self.get_filterset(request, queryset, view)
         if filterset is None:
             return queryset
         if not filterset.is_valid():
-            relation_filters = {
-                name
-                for name, flt in filterset.filters.items()
-                if getattr(flt, "queryset", None) is not None
-            }
-            if set(filterset.errors) <= relation_filters:
+            errors = ErrorDict(
+                (name, error)
+                for name, error in filterset.errors.items()
+                if getattr(filterset.filters.get(name), "queryset", None) is None
+            )
+            if not errors:
                 return queryset.none()
-            raise utils.translate_validation(filterset.errors)
+            raise utils.translate_validation(errors)
         return filterset.qs
 
 
@@ -188,11 +194,37 @@ class TurboDRFOrderingFilter(OrderingFilter):
         # the TARGET's Meta.ordering through an unscoped JOIN, leaking the
         # order of rows the caller can't see.
         ordering = [_fk_column_term(queryset.model, term) for term in ordering]
-        pk_names = {"pk", "-pk", queryset.model._meta.pk.name}
-        pk_names.add(f"-{queryset.model._meta.pk.name}")
-        if not any(isinstance(o, str) and o in pk_names for o in ordering):
-            ordering = [*ordering, "pk"]
-        return ordering
+        return _with_pk_tiebreak(queryset.model, ordering)
+
+
+def readable_ordering(model, ordering, orderable):
+    """``ordering`` (a model's default order) if each term is the pk or a name
+    in ``orderable``, with FK terms on their stored column and a pk
+    tie-breaker; else the pk alone. A default order on a column the caller
+    can't read — or on an FK, which sorts by the target's own order through
+    an unscoped JOIN — leaks its values through the order of the rows."""
+    pk_names = {"pk", model._meta.pk.name}
+    terms = []
+    for term in ordering:
+        if not isinstance(term, str):
+            return ["pk"]
+        name = term.lstrip("-")
+        if name not in pk_names and name not in orderable:
+            return ["pk"]
+        terms.append(_fk_column_term(model, term))
+    return _with_pk_tiebreak(model, terms)
+
+
+def _with_pk_tiebreak(model, ordering):
+    """``ordering`` ending in the pk, in the last term's direction (so an index
+    on ``(tenant, column, pk)`` serves ``-column`` too). Without it, ties come
+    back in plan-dependent order and a row can repeat or vanish across pages."""
+    pk_names = {"pk", model._meta.pk.name}
+    if any(isinstance(o, str) and o.lstrip("-") in pk_names for o in ordering):
+        return list(ordering)
+    last = ordering[-1] if ordering else None
+    desc = isinstance(last, str) and last.startswith("-")
+    return [*ordering, "-pk" if desc else "pk"]
 
 
 def _fk_column_term(model, term):

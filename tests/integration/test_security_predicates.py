@@ -829,7 +829,10 @@ class TestSelectRelatedAndDetail(SecurityBase):
 
 class TestSignals(SecurityBase):
     def test_no_turbodrf_production_signal_handlers(self):
-        """No signal receiver in turbodrf.* mucks with tenant data."""
+        """No signal receiver in turbodrf.* mucks with tenant data. The one
+        receiver, on RolePermission deletes, bumps its role's version."""
+        import weakref
+
         from django.db.models.signals import (
             post_delete,
             post_save,
@@ -837,14 +840,18 @@ class TestSignals(SecurityBase):
             pre_save,
         )
 
+        allowed = {"turbodrf.models._bump_role_version_on_delete"}
         for sig in (post_save, pre_save, post_delete, pre_delete):
-            for (lookup_key, receiver_id), ref in sig.receivers:
-                receiver = ref() if callable(ref) else ref
+            # (lookup_key, receiver[, is_async]) — the tuple grew in Django 5.0.
+            for entry in sig.receivers:
+                ref = entry[1]
+                receiver = ref() if isinstance(ref, weakref.ReferenceType) else ref
                 if receiver is None:
                     continue
                 module = getattr(receiver, "__module__", "")
+                name = f"{module}.{getattr(receiver, '__name__', '')}"
                 self.assertFalse(
-                    module.startswith("turbodrf."),
+                    module.startswith("turbodrf.") and name not in allowed,
                     f"Production turbodrf signal receiver: "
                     f"{module}.{getattr(receiver, '__name__', '')}",
                 )

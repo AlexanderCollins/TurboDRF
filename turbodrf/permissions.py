@@ -5,10 +5,14 @@ This module provides the permission classes that enforce role-based
 access control for the auto-generated APIs.
 """
 
+import logging
+
 from django.conf import settings
 from rest_framework.permissions import BasePermission, DjangoModelPermissions
 
 from .scope import is_platform
+
+logger = logging.getLogger(__name__)
 
 
 def permissions_bypassed():
@@ -122,7 +126,7 @@ class TurboDRFPermission(BasePermission):
 
         user_roles = get_user_roles(request.user)
         if not user_roles:
-            return False
+            return self._deny(f"user {request.user.pk} has no roles")
 
         # Map HTTP methods to permission types
         permission_map = {
@@ -141,7 +145,20 @@ class TurboDRFPermission(BasePermission):
 
         # Use snapshot for permission checking (supports all modes)
         snapshot = attach_snapshot_to_request(request, model)
-        return snapshot.can_perform_action(permission_type)
+        if snapshot.can_perform_action(permission_type):
+            return True
+        needed = f"{model._meta.app_label}.{model._meta.model_name}.{permission_type}"
+        return self._deny(f"none of the roles {sorted(user_roles)} grants '{needed}'")
+
+    def _deny(self, reason):
+        """Refuse, saying why in the log and, with DEBUG on, in the 403."""
+        logger.info("TurboDRF permission denied: %s", reason)
+        if settings.DEBUG:
+            self.message = (
+                f"You do not have permission to perform this action: {reason}. "
+                f"(This detail is shown because DEBUG is on.)"
+            )
+        return False
 
 
 class DefaultDjangoPermission(DjangoModelPermissions):
