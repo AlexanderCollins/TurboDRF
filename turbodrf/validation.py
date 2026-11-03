@@ -169,31 +169,61 @@ def build_traversal_scope_q(parent_model, field_path, request, correlated=False)
     q_combined = Q()
     # True once any hop up to the current step can be empty for a parent row.
     may_be_empty = False
+    # True while every hop up to the current step is single-valued.
+    single_valued = True
 
     for step_idx, (step_model, _f, _name) in enumerate(chain):
         if step_idx == 0:
             continue
-        may_be_empty = may_be_empty or _relation_may_be_empty(chain[step_idx - 1][1])
+        hop = chain[step_idx - 1][1]
+        may_be_empty = may_be_empty or _relation_may_be_empty(hop)
+        single_valued = single_valued and not (hop.many_to_many or hop.one_to_many)
         scoped = scoped_target_queryset(step_model, request, base_manager=True)
         if scoped is None:
             continue
         prefix = "__".join(parts[:step_idx])
+        step_q = None
         if correlated:
             # The column the FK stores: its to_field, else the pk (a reverse
             # one-to-one hop resolves to the related row's pk).
-            hop = chain[step_idx - 1][1]
             column = "pk" if hop.auto_created else hop.target_field.name
             match = scoped.filter(**{column: OuterRef(prefix)}).order_by()
             step_q = Q(IsNull(Subquery(match.values("pk")[:1]), False))
-        else:
+        elif single_valued:
+            # Through single-valued hops the query already JOINs the target
+            # row: check the target's scope on it rather than against every
+            # visible target row.
+            step_q = _scope_on_joined_row(step_model, request, prefix)
+        if step_q is None:
             # The queryset itself, not .values("pk"): Django then compares an
             # FK with to_field against that column, not the target's pk.
             step_q = Q(**{f"{prefix}__in": scoped})
+        if not step_q:
+            continue  # the target's scope doesn't restrict this caller
         if may_be_empty:
             step_q = Q(**{f"{prefix}__isnull": True}) | step_q
         q_combined &= step_q
 
     return q_combined
+
+
+def _scope_on_joined_row(target, request, prefix):
+    """``target``'s scope (tenant boundary and predicates, as
+    ``scoped_target_queryset`` applies them) as a ``Q`` on the row another
+    model reaches through the single-valued relation ``prefix``; ``None``
+    when it can't be moved there (see ``views.prefixed``)."""
+    from django.db.models import Q
+
+    from .predicates import get_predicates, get_tenant_field, predicates_q, tenant_q
+    from .views import _q_spans_multivalued, prefixed, without_to_many_joins
+
+    predicate_q = predicates_q(get_predicates(target), request)
+    if predicate_q and _q_spans_multivalued(target, predicate_q):
+        predicate_q = without_to_many_joins(target, predicate_q)
+        if predicate_q is None:
+            return None
+    scope = tenant_q(get_tenant_field(target), request) & predicate_q
+    return prefixed(scope, prefix) if scope else Q()
 
 
 def _relation_may_be_empty(field):

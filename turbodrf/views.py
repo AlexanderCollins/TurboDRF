@@ -3,6 +3,7 @@ import copy
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db import models
+from django.db.models import Subquery
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -57,23 +58,28 @@ class Authorization:
         original two-layer code).
 
         A predicate that crosses a multi-valued relation (``Members``, or an
-        ``Either`` ORing one with another column) is applied as a ``pk__in``
-        subquery: a direct JOIN returns a row once per matching related row,
-        duplicating list rows, inflating counts and making ``get_object()``
-        raise MultipleObjectsReturned. The subquery starts from the
-        tenant-filtered queryset, so it reads one tenant's rows, not the
-        table's."""
+        ``Either`` ORing one with another column) can't be a plain filter: a
+        direct JOIN returns a row once per matching related row, duplicating
+        list rows, inflating counts and making ``get_object()`` raise
+        MultipleObjectsReturned. Each such lookup becomes ``pk__in`` the rows
+        it matches (``without_to_many_joins``); when that can't be done
+        without changing the predicate's meaning, the whole predicate is
+        applied as a ``pk__in`` subquery of the tenant-filtered queryset."""
         if self.tenant_q is not None:
             queryset = queryset.filter(self.tenant_q)
         if self.predicate_q is not None:
-            if self.predicate_q and _q_spans_multivalued(
-                queryset.model, self.predicate_q
-            ):
-                queryset = queryset.filter(
-                    pk__in=queryset.filter(self.predicate_q).values("pk")
-                )
+            model = queryset.model
+            predicate_q = self.predicate_q
+            if predicate_q and _q_spans_multivalued(model, predicate_q):
+                flat = without_to_many_joins(model, predicate_q)
+                if flat is None:
+                    queryset = queryset.filter(
+                        pk__in=queryset.filter(predicate_q).values("pk")
+                    )
+                else:
+                    queryset = queryset.filter(flat)
             else:
-                queryset = queryset.filter(self.predicate_q)
+                queryset = queryset.filter(predicate_q)
         return queryset
 
 
@@ -96,14 +102,19 @@ def _select_configured_fields(fields, wanted):
     ]
 
 
+class RowsMatching(Subquery):
+    """An ``__in`` value: the pks of the rows one lookup matches, built from a
+    plain lookup and value, so it refers to nothing outside itself."""
+
+
 def _q_spans_multivalued(model, q):
     """True if any lookup in ``q`` may traverse an M2M or reverse relation.
 
     A child that isn't a ``(lookup, value)`` pair (an ``Exists()`` or other
     expression, say from a ``Custom`` predicate), or whose value is an
     expression other than a plain ``F()`` (whose path is checked like the
-    lookup's), can't be inspected, so it counts as multi-valued: the subquery
-    form is correct either way."""
+    lookup's) or a ``RowsMatching``, can't be inspected, so it counts as
+    multi-valued: the subquery form is correct either way."""
     from django.db.models import F, Q
 
     for child in q.children:
@@ -115,20 +126,24 @@ def _q_spans_multivalued(model, q):
             return True
         value = child[1]
         if type(value) is F:
-            if _path_multivalued(model, value.name):
+            if _to_many_prefix(model, value.name):
                 return True
-        elif hasattr(value, "resolve_expression"):
+        elif hasattr(value, "resolve_expression") and not isinstance(
+            value, RowsMatching
+        ):
             return True
-        if _path_multivalued(model, child[0]):
+        if _to_many_prefix(model, child[0]):
             return True
     return False
 
 
-def _path_multivalued(model, path):
-    """True if the lookup ``path`` crosses an M2M or reverse relation."""
+def _to_many_prefix(model, path):
+    """The part of lookup ``path`` up to and including its first M2M or
+    reverse relation (``team__members`` of ``team__members__name``), or
+    ``None`` when it crosses none."""
     from django.core.exceptions import FieldDoesNotExist
 
-    current = model
+    current, walked = model, []
     for part in path.split("__"):
         if current is None:
             break
@@ -136,10 +151,108 @@ def _path_multivalued(model, path):
             field = current._meta.get_field(part)
         except FieldDoesNotExist:
             break
+        walked.append(part)
         if field.many_to_many or field.one_to_many:
-            return True
+            return "__".join(walked)
         current = field.related_model if field.is_relation else None
-    return False
+    return None
+
+
+def _leaves(q):
+    """The ``(lookup, value)`` children of ``q`` at any depth, or ``None`` if
+    one isn't such a pair (an expression)."""
+    from django.db.models import Q
+
+    leaves = []
+    for child in q.children:
+        if isinstance(child, Q):
+            nested = _leaves(child)
+            if nested is None:
+                return None
+            leaves.extend(nested)
+        elif isinstance(child, tuple) and isinstance(child[0], str):
+            leaves.append(child)
+        else:
+            return None
+    return leaves
+
+
+def _rebuilt(q, rewrite):
+    """A copy of ``q`` with each ``(lookup, value)`` child replaced by
+    ``rewrite(child)``."""
+    from django.db.models import Q
+
+    children = [
+        _rebuilt(child, rewrite) if isinstance(child, Q) else rewrite(child)
+        for child in q.children
+    ]
+    return Q(*children, _connector=q.connector, _negated=q.negated)
+
+
+def without_to_many_joins(model, q):
+    """``q`` with each lookup that crosses an M2M or reverse relation replaced
+    by ``pk__in`` the rows it matches (``RowsMatching``). The rows are the
+    same, but the outer query has no to-many JOIN: nothing repeats, and no
+    ``pk__in`` wrap of the whole predicate (an OR across a JOIN, which
+    defeats indexes) is needed.
+
+    ``None`` when that could change which rows ``q`` matches: two lookups
+    through the same relation share one JOIN in a ``filter()`` (one related
+    row must match both), and an expression can't be inspected. Only a plain
+    ``F()`` on a single-valued path, or a ``RowsMatching``, is kept."""
+    from django.db.models import F
+
+    leaves = _leaves(q)
+    if leaves is None:
+        return None
+    seen = set()
+    for lookup, value in leaves:
+        prefix = _to_many_prefix(model, lookup)
+        if type(value) is F:
+            if prefix or _to_many_prefix(model, value.name):
+                return None
+        elif hasattr(value, "resolve_expression") and not isinstance(
+            value, RowsMatching
+        ):
+            return None
+        if prefix:
+            if prefix in seen:
+                return None
+            seen.add(prefix)
+
+    def rewrite(child):
+        lookup, value = child
+        if not _to_many_prefix(model, lookup):
+            return child
+        rows = model._base_manager.filter(**{lookup: value}).order_by()
+        return ("pk__in", RowsMatching(rows.values("pk")))
+
+    return _rebuilt(q, rewrite)
+
+
+def prefixed(q, prefix):
+    """``q`` (a related model's scope) moved onto relation ``prefix`` of
+    another model: each lookup and plain ``F()`` starts with ``prefix__``.
+    ``None`` if a child can't be moved: an expression, or a value other than a
+    plain ``F()`` or a ``RowsMatching``."""
+    from django.db.models import F
+
+    leaves = _leaves(q)
+    if leaves is None:
+        return None
+    for _lookup, value in leaves:
+        if hasattr(value, "resolve_expression") and not (
+            type(value) is F or isinstance(value, RowsMatching)
+        ):
+            return None
+
+    def move(child):
+        lookup, value = child
+        if type(value) is F:
+            value = F(f"{prefix}__{value.name}")
+        return (f"{prefix}__{lookup}", value)
+
+    return _rebuilt(q, move)
 
 
 def _resolve_row_scoping(model):
