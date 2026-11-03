@@ -73,6 +73,37 @@ def check_roles_configured(app_configs=None, **kwargs):
     ]
 
 
+def check_explicit_fields(app_configs=None, **kwargs):
+    """Warn for each TurboDRF model whose ``fields`` is ``'__all__'`` (the
+    default): every column is exposed, a column added later included. A model
+    that inherits the mixin from an abstract base without its own
+    ``turbodrf()`` gets that default without anyone choosing it."""
+    from .mixins import turbodrf_config, turbodrf_models
+
+    messages = []
+    for model in turbodrf_models():
+        try:
+            config = turbodrf_config(model)
+        except Exception:
+            continue  # the router reports a broken config
+        if not isinstance(config, dict) or not config.get("enabled", True):
+            continue
+        fields = config.get("fields", "__all__")
+        if fields == "__all__" or (
+            isinstance(fields, dict) and "__all__" in fields.values()
+        ):
+            messages.append(
+                checks.Warning(
+                    f"{model._meta.label} exposes every field ('__all__'), "
+                    f"including any column added later.",
+                    hint="List the fields the API should expose in 'fields'.",
+                    obj=model,
+                    id="turbodrf.W004",
+                )
+            )
+    return messages
+
+
 class TurboDRFConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "turbodrf"
@@ -85,6 +116,7 @@ class TurboDRFConfig(AppConfig):
         checks.register(check_docs_dependencies)
         checks.register(check_permissions_enabled, checks.Tags.security)
         checks.register(check_roles_configured)
+        checks.register(check_explicit_fields)
 
         # Register every TurboDRF model's tenant boundary and predicates now,
         # not when the URLconf first builds a router: FK-injection checks and
