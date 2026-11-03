@@ -8,6 +8,7 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, TestCase, override_settings
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.test import APIClient
 
 from tests.fixtures import router_apps
@@ -815,3 +816,63 @@ class TestStartupErrors(SimpleTestCase):
         holding = {"tenant_field": "brokerage", "fields": ["id"], "endpoint": "things"}
         with self.assertRaisesMessage(ImproperlyConfigured, "'endpoint': 'test_app/"):
             _router((Deal, config), (Holding, holding))
+
+
+# ---------------------------------------------------------------------------
+# TURBODRF_ROLE_GETTER and TURBODRF_PAGINATION_CLASS.
+# ---------------------------------------------------------------------------
+
+
+class SmallPages(PageNumberPagination):
+    page_size = 1
+
+
+class TestRoleGetter(_Base):
+    @override_settings(TURBODRF_ROLE_GETTER="turbodrf.backends.group_names")
+    def test_group_names_getter(self):
+        from django.contrib.auth.models import Group
+
+        member = User.objects.create_user("member")
+        member.groups.add(Group.objects.create(name="viewer"))
+        outsider = User.objects.create_user("outsider")
+        self._as(member)
+        self.assertEqual(self.client.get("/api/samplemodels/").status_code, 200)
+        self._as(outsider)
+        self.assertEqual(self.client.get("/api/samplemodels/").status_code, 403)
+
+    @override_settings(TURBODRF_ROLE_GETTER="turbodrf.backends.group_names")
+    def test_role_only_identity_keeps_its_roles(self):
+        from turbodrf.backends import RoleOnlyIdentity, get_user_roles
+
+        self.assertEqual(get_user_roles(RoleOnlyIdentity(["viewer"])), ["viewer"])
+
+    def test_bad_getter_fails_at_startup(self):
+        from tests.test_app.models import SampleModel
+
+        with self.settings(TURBODRF_ROLE_GETTER="nowhere.at_all"):
+            with self.assertRaisesMessage(ImproperlyConfigured, "TURBODRF_ROLE_GETTER"):
+                _router((SampleModel, SampleModel.turbodrf()))
+
+
+class TestPaginationClass(_Base):
+    @override_settings(
+        TURBODRF_PAGINATION_CLASS="tests.integration.test_audit_084.SmallPages"
+    )
+    def test_own_pagination_class(self):
+        from tests.test_app.models import RelatedModel, SampleModel
+
+        related = RelatedModel.objects.create(name="r")
+        for title in ("a", "b"):
+            SampleModel.objects.create(title=title, price=1, related=related)
+        self._as(self._user("viewer", ["viewer"], self.A))
+        body = self.client.get("/api/samplemodels/").json()
+        self.assertEqual(body["count"], 2)
+        self.assertEqual(len(body["results"]), 1)
+        options = self.client.options("/api/samplemodels/").json()
+        self.assertEqual(options["pagination"]["default_page_size"], 1)
+
+    def test_default_envelope(self):
+        self._as(self._user("viewer", ["viewer"], self.A))
+        body = self.client.get("/api/samplemodels/").json()
+        self.assertIn("pagination", body)
+        self.assertIn("data", body)

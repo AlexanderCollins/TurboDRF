@@ -1325,9 +1325,10 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         """
         attrs = super().validate(attrs)
         model = getattr(getattr(self, "Meta", None), "model", None)
-        if model is None or not hasattr(model, "turbodrf"):
+        from .mixins import _model_config, is_turbodrf_model
+
+        if model is None or not is_turbodrf_model(model):
             return attrs
-        from .mixins import _model_config
 
         config = _model_config(model)
         if not (isinstance(config, dict) and config.get("full_clean")):

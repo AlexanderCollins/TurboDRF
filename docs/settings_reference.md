@@ -14,6 +14,7 @@ that's not strictly required is gated and off by default.
 | `TURBODRF_USE_DEFAULT_PERMISSIONS` | **`False`** | Use Django's built-in model permissions instead of TurboDRF roles | [permissions.md](permissions.md) |
 | `TURBODRF_DISABLE_PERMISSIONS` | **`False`** | Disable all permission checks, authentication included: anonymous callers can create, update and delete through the generated endpoints. **Local development only.** With `DEBUG = False`, `manage.py check` warns (`turbodrf.W002`). | [permissions.md](permissions.md#1-no-permissions-local-development-only) |
 | `TURBODRF_PERMISSION_CACHE_TIMEOUT` | **`300`** | Permission snapshot cache TTL in seconds. Role changes already take effect on the next request; the TTL only bounds how long snapshots stay stale after a bulk `RolePermission` QuerySet `update()` or `bulk_create()` (or call `invalidate_user_permissions()`). | [permissions.md](permissions.md#caching) |
+| `TURBODRF_ROLE_GETTER` | **`None`** (`user.roles`) | Where a user's roles come from in static mode: a dotted path or a callable `user -> list of role names`. `'turbodrf.backends.group_names'` reads the user's Django groups. | [permissions.md](permissions.md#assigning-roles-to-users) |
 | `TURBODRF_PERMISSION_CACHE_PREFIX` | **`"turbodrf_perm"`** | Prefix for cache keys | — |
 
 ## Platform scope
@@ -34,6 +35,7 @@ apply to the platform scope: every platform request is checked against
 | `TURBODRF_SENSITIVE_FIELDS` | **`['password', 'password_hash', 'secret_key', 'api_key', 'token', 'access_token', 'refresh_token', 'session_key']`** | Field names never exposed, at every `__` segment of a path: stripped from responses (`"__all__"` included), filters, search, ordering, OPTIONS metadata and the schema, in every permission mode. Your list is added to the defaults; it can't remove them. | [security.md](security.md#sensitive-fields) |
 | `TURBODRF_MAX_NESTING_DEPTH` | **`3`** | Maximum number of `__` in nested fields and filters. Deeper fields are skipped with a warning. Values >3 are unsupported. | [configuration.md](configuration.md#nested-fields) |
 | `TURBODRF_MAX_FILTER_VALUE_LENGTH` | **`1000`** | Maximum length of a filter value or `?search=` term. A request with a longer one returns no rows, which bounds filter and search cost. | [filtering.md](filtering.md) |
+| `TURBODRF_PAGINATION_CLASS` | **`None`** (TurboDRF's `{pagination, data}` envelope, 20 per page, max 100) | Your own DRF pagination class for list responses: a dotted path or the class. Give it a `max_page_size`. | [filtering.md](filtering.md#pagination) |
 
 ## Row-level access control (predicates)
 

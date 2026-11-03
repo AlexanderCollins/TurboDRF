@@ -184,6 +184,42 @@ A path may end on a plain field (`portfolio__name`), and may be as deep as `TURB
 'unscoped_properties': ['exchange_rate'],   # reads shared reference data
 ```
 
+## Registering a model without the mixin
+
+`turbodrf.register(Model, config)` serves a model that doesn't have
+`TurboDRFMixin`: a model you can't edit (`auth.User`, a third-party app's), or
+one whose API config you'd rather keep out of `models.py`. `config` is what
+its `turbodrf()` would return, as a dict or a zero-argument callable returning
+one. Call it from an `AppConfig.ready()`, before the URLconf builds the
+router:
+
+```python
+# shop/apps.py
+from django.apps import AppConfig
+
+
+class ShopConfig(AppConfig):
+    name = 'shop'
+
+    def ready(self):
+        import turbodrf
+
+        from .models import Book
+
+        turbodrf.register(Book, {
+            'fields': ['id', 'title', 'author__name', 'price'],
+            'tenant_field': 'workspace',
+            'searchable_fields': ['title'],
+        })
+```
+
+Everything else is the same as with the mixin: the startup checks, the
+permission strings (`shop.book.read`), row scoping, the docs. A config error
+raises from `register()` itself. A model can't have both the mixin and a
+registration. Per-model `sensitive_fields` stays a class attribute; for a
+model you can't edit, give the field a `.read` rule in a role instead (see
+[permissions.md](permissions.md#how-field-permissions-work)).
+
 ## Searchable fields
 
 List the fields available for `?search=` either in the config dict (preferred) or as a `searchable_fields` class attribute. The config key wins whenever it's present, even as an empty list:

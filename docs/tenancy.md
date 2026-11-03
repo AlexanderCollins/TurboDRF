@@ -567,24 +567,35 @@ With a predicate on the tenant model, a nested field into it
 (`'workspace__name'`) renders `null` where the caller can't see that
 workspace.
 
-**The user model.** The mixin goes on the model class, so this needs a
-custom user model (`AUTH_USER_MODEL`):
+**The user model.** Serve it with `turbodrf.register()`, which takes the
+config from outside the model (see
+[Registering a model without the mixin](configuration.md#registering-a-model-without-the-mixin)),
+from an `AppConfig.ready()`:
 
 ```python
-from django.contrib.auth.models import AbstractUser
+# accounts/apps.py
+from django.apps import AppConfig
 
 
-class User(AbstractUser, TurboDRFMixin):
-    workspace = models.ForeignKey(Workspace, null=True, on_delete=models.PROTECT)
+class AccountsConfig(AppConfig):
+    name = 'accounts'
 
-    @classmethod
-    def turbodrf(cls):
-        return {
+    def ready(self):
+        from django.contrib.auth import get_user_model
+
+        import turbodrf
+
+        turbodrf.register(get_user_model(), {
             'fields': ['id', 'username', 'first_name', 'last_name'],
-            'tenant_field': 'workspace',
+            'tenant_field': 'workspace',   # a FK on your user model
             'read_only': True,
-        }
+        })
 ```
+
+A `tenant_field` needs a foreign key on the user model. Django's own
+`auth.User` has none: scope it with a `Custom` predicate instead, such as
+`Q(profile__workspace=request.user.profile.workspace_id)`. A custom user
+model can also take the mixin and a `turbodrf()` like any other model.
 
 List `fields` explicitly: `'__all__'` would expose `email`, `is_staff`,
 `is_superuser` and more (the sensitive deny-list removes only `password`).

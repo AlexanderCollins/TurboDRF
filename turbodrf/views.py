@@ -1,6 +1,7 @@
 import copy
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.db import models
 from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
@@ -187,6 +188,24 @@ def _filter_lookups(field):
     return ["exact"]
 
 
+def configured_pagination_class():
+    """TURBODRF_PAGINATION_CLASS (a dotted path or a class), else
+    TurboDRFPagination."""
+    from django.utils.module_loading import import_string
+
+    setting = getattr(settings, "TURBODRF_PAGINATION_CLASS", None)
+    if setting is None:
+        return TurboDRFPagination
+    if not isinstance(setting, str):
+        return setting
+    try:
+        return import_string(setting)
+    except ImportError as exc:
+        raise ImproperlyConfigured(
+            f"TURBODRF_PAGINATION_CLASS={setting!r} can't be imported: {exc}"
+        ) from exc
+
+
 class TurboDRFPagination(PageNumberPagination):
     """
     Custom pagination class for TurboDRF API responses.
@@ -370,6 +389,19 @@ class TurboDRFViewSet(*_viewset_bases):
     permission_classes = [TurboDRFPermission]
     metadata_class = TurboDRFMetadata
     pagination_class = TurboDRFPagination
+
+    @property
+    def paginator(self):
+        """DRF's paginator. TURBODRF_PAGINATION_CLASS (read per request, as
+        the permission settings are) replaces the default class; a
+        ``pagination_class`` a subclass or an action sets is kept."""
+        if not hasattr(self, "_paginator"):
+            cls = self.pagination_class
+            if cls is TurboDRFPagination:
+                cls = configured_pagination_class()
+            self._paginator = cls() if cls is not None else None
+        return self._paginator
+
     filter_backends = [
         TurboDRFFilterBackend,
         TurboDRFSearchFilter,

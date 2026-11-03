@@ -127,13 +127,15 @@ can't, and only a role grants that.
 ### Assigning roles to users
 
 In static mode (the default), TurboDRF reads `user.roles` -- an attribute or
-property that returns a list of role names:
+property that returns a list of role names -- or calls the function
+`TURBODRF_ROLE_GETTER` names (a dotted path or a callable, `user -> role
+names`):
 
 ```python
 # From Django groups
-User.add_to_class('roles', property(lambda self: [g.name for g in self.groups.all()]))
+TURBODRF_ROLE_GETTER = 'turbodrf.backends.group_names'
 
-# From a JSONField
+# From a JSONField on a custom user model
 class User(AbstractUser):
     user_roles = models.JSONField(default=list)
 
@@ -141,6 +143,8 @@ class User(AbstractUser):
     def roles(self):
         return self.user_roles
 ```
+
+A getter that can't be imported raises at startup.
 
 Authenticated users with no roles get 403.
 

@@ -157,6 +157,11 @@ def get_user_roles(user) -> list:
     return list(roles)
 
 
+def _default_roles(user):
+    """The default TURBODRF_ROLE_GETTER: ``user.roles``."""
+    return getattr(user, "roles", None)
+
+
 def _default_platform_roles(user):
     """The default TURBODRF_PLATFORM_ROLE_GETTER: ``user.platform_roles``."""
     return getattr(user, "platform_roles", None)
@@ -165,19 +170,30 @@ def _default_platform_roles(user):
 _role_getters = {}
 
 
+def role_getter():
+    """The callable TURBODRF_ROLE_GETTER names (a dotted path or a callable
+    ``user -> role names``); ``user.roles`` by default. Static mode only:
+    database mode reads ``UserRole`` rows."""
+    return _role_getter("TURBODRF_ROLE_GETTER", _default_roles)
+
+
 def platform_role_getter():
     """The callable TURBODRF_PLATFORM_ROLE_GETTER names (a dotted path or a
     callable ``user -> list[str]``); ``user.platform_roles`` by default."""
+    return _role_getter("TURBODRF_PLATFORM_ROLE_GETTER", _default_platform_roles)
+
+
+def _role_getter(setting_name, default):
     from django.utils.module_loading import import_string
 
-    setting = getattr(settings, "TURBODRF_PLATFORM_ROLE_GETTER", None)
+    setting = getattr(settings, setting_name, None)
     if setting is None:
-        return _default_platform_roles
+        return default
     if callable(setting):
         return setting
     if not isinstance(setting, str):
         raise ImproperlyConfigured(
-            f"TURBODRF_PLATFORM_ROLE_GETTER must be a dotted path or a callable "
+            f"{setting_name} must be a dotted path or a callable "
             f"(user -> list of role names); got {type(setting).__name__}."
         )
     getter = _role_getters.get(setting)
@@ -186,14 +202,18 @@ def platform_role_getter():
             getter = import_string(setting)
         except ImportError as exc:
             raise ImproperlyConfigured(
-                f"TURBODRF_PLATFORM_ROLE_GETTER={setting!r} can't be imported: {exc}"
+                f"{setting_name}={setting!r} can't be imported: {exc}"
             ) from exc
         if not callable(getter):
-            raise ImproperlyConfigured(
-                f"TURBODRF_PLATFORM_ROLE_GETTER={setting!r} isn't callable."
-            )
+            raise ImproperlyConfigured(f"{setting_name}={setting!r} isn't callable.")
         _role_getters[setting] = getter
     return getter
+
+
+def group_names(user):
+    """A TURBODRF_ROLE_GETTER: the names of the user's Django groups
+    (``TURBODRF_ROLE_GETTER = "turbodrf.backends.group_names"``)."""
+    return list(user.groups.values_list("name", flat=True))
 
 
 def platform_roles_config():
@@ -241,9 +261,11 @@ def _resolve_user_roles(user) -> list:
             .values_list("role__name", flat=True)
         )
         return role_names
-    elif hasattr(user, "roles"):
-        return _role_names(user.roles)
-    return []
+    if isinstance(user, RoleOnlyIdentity):
+        return list(user.roles)
+    if getattr(settings, "TURBODRF_ROLE_GETTER", None) is None:
+        return _role_names(getattr(user, "roles", None))
+    return _role_names(role_getter()(user), what="TURBODRF_ROLE_GETTER")
 
 
 def _role_names(roles, what="user.roles") -> list:
@@ -289,8 +311,10 @@ def _grants_public_read(user, model) -> bool:
         return False  # the platform scope has no anonymous access
     if user is not None and getattr(user, "is_authenticated", False):
         return False
+    from .mixins import turbodrf_config
+
     try:
-        config = model.turbodrf()
+        config = turbodrf_config(model)
     except Exception:
         return False
     return isinstance(config, dict) and bool(config.get("public_access"))
@@ -576,8 +600,10 @@ def _model_signature(model):
     """The model's own declarations a snapshot depends on, so a deploy that
     changes them (with a cache shared across the rolling deploy) can't serve a
     snapshot built under the old ones."""
+    from .mixins import turbodrf_config
+
     try:
-        config = model.turbodrf()
+        config = turbodrf_config(model)
     except Exception:
         config = None
     public = (

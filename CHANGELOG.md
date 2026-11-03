@@ -52,6 +52,18 @@ attack that worked on 0.8.3 (`tests/integration/test_audit_084.py`).
   index on `(tenant, column, id)` serves descending sorts too.
 - Schema generation doesn't build row scope for each operation.
 
+### Added
+
+- `turbodrf.register(Model, config)` serves a model without the mixin: one you
+  can't edit (`auth.User`, a third-party app's), or one whose API config you'd
+  rather keep out of `models.py`. Same config dict, startup checks and
+  scoping. See [configuration.md](docs/configuration.md#registering-a-model-without-the-mixin).
+- `TURBODRF_ROLE_GETTER` names where a user's roles come from (static mode);
+  `'turbodrf.backends.group_names'` reads their Django groups, replacing the
+  `User.add_to_class('roles', ...)` patch the quickstart used.
+- `TURBODRF_PAGINATION_CLASS` swaps in your own pagination class (and so your
+  API's own response envelope).
+
 ### Quality of life
 
 - With `DEBUG = True`, a 403 says why: no roles, or the permission string no
