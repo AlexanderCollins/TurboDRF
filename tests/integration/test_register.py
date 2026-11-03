@@ -92,6 +92,18 @@ class TestRegisteredModelApi(TestCase):
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertEqual(ScopeLedger.objects.get(name="new").firm_id, self.a.pk)
 
+    def test_schema_documents_it(self):
+        from rest_framework.test import APIRequestFactory, force_authenticate
+
+        from turbodrf.documentation import get_turbodrf_schema_view
+
+        request = APIRequestFactory().get("/swagger/?format=openapi")
+        force_authenticate(request, user=self.user)
+        view = get_turbodrf_schema_view().without_ui(cache_timeout=0)
+        schema = view(request).data
+        self.assertIn("/ledgers/", schema["paths"])
+        self.assertIn("test_app_scopeledger_write", schema["definitions"])
+
     def test_tenancy_is_registered_for_other_models(self):
         from turbodrf.predicates import get_tenant_field
 
