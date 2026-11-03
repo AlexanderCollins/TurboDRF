@@ -75,10 +75,47 @@ class TestWithoutToManyJoins(TestCase):
         q = Q(tags__name="a") & Q(char="r1")
         self.assertEqual(self.assertSameRows(q), ["r1"])
 
+    def test_an_f_inside_a_list_isnt_rewritten(self):
+        # The F reads the tag the first lookup joined: splitting them apart
+        # would read a different row.
+        # (Django 4.2 can't run this filter at all, so only the refusal is
+        # checked here.)
+        q = Q(tags__name="b") & Q(char_null__in=[F("tags__name")])
+        self.assertIsNone(without_to_many_joins(ParityAllTypes, q))
+
+    def test_xor_isnt_rewritten(self):
+        q = Q(tags__name="a") ^ Q(char="r1")
+        self.assertIsNone(without_to_many_joins(ParityAllTypes, q))
+        self.assertSameRows(q)
+
     def test_an_expression_through_the_relation_isnt_rewritten(self):
         q = Q(tags__weight__gte=F("tags__weight"))
         self.assertIsNone(without_to_many_joins(ParityAllTypes, q))
         self.assertSameRows(q)
+
+
+class TestPrefixed(TestCase):
+    def test_moves_lookups_and_f(self):
+        from turbodrf.views import prefixed
+
+        moved = prefixed(Q(name="a") | ~Q(weight__gt=F("weight")), "target")
+        self.assertEqual(
+            str(moved),
+            str(Q(target__name="a") | ~Q(target__weight__gt=F("target__weight"))),
+        )
+
+    def test_refuses_what_it_cant_move(self):
+        from django.db.models import Exists, OuterRef
+
+        from turbodrf.views import prefixed
+
+        for q in (
+            Q(amount__in=[F("amount")]),
+            Q(amount__range=(F("amount"), 5)),
+            Q(name="a") ^ Q(weight=1),
+            Q(Exists(ParityTag.objects.filter(pk=OuterRef("pk")))),
+        ):
+            self.assertIsNone(prefixed(q, "target"), q)
 
 
 class TestScopeOnJoinedRow(TestCase):
@@ -112,7 +149,14 @@ class TestPermissionCostsPerRequest(TestCase):
         second = _static_digest(roles)
         self.assertNotEqual(second, first)
         roles["viewer"] = ["a.b.update"]  # same length, new list
-        self.assertNotEqual(_static_digest(roles), second)
+        third = _static_digest(roles)
+        self.assertNotEqual(third, second)
+        roles["viewer"][0] = "a.b.create"  # same list, same length
+        fourth = _static_digest(roles)
+        self.assertNotEqual(fourth, third)
+        del roles["viewer"]
+        roles["viewer"] = ["a.b.delete"]  # may reuse the old list's id
+        self.assertNotEqual(_static_digest(roles), fourth)
         self.assertEqual(_static_digest(dict(roles)), _static_digest(roles))
 
     def test_database_mode_reads_roles_once_per_request(self):
