@@ -134,6 +134,8 @@ effect; setting it does nothing.
 These are model-level toggles, not project settings. Documented here for
 completeness. The table lists every valid key: any other key raises
 `ImproperlyConfigured` at startup, with the valid keys in the message.
+(`'compiled'` is also accepted so older configs boot; it has done nothing
+since 0.8.2.)
 
 | Key | Default | Purpose | Details |
 |---|---|---|---|
@@ -144,7 +146,7 @@ completeness. The table lists every valid key: any other key raises
 | `'unscoped_properties'` | `[]` | Properties that run outside the sandbox, on the full instance with unrestricted queries. | [configuration.md](configuration.md#the-property-sandbox) |
 | `'endpoint'` | model name + `s` | Custom URL endpoint name. The default is the lowercase model name plus `s`, not a real plural (`categorys`). | [configuration.md](configuration.md) |
 | `'lookup_field'` | `'pk'` | URL lookup field (e.g. `'slug'`). Must be a unique column of the model, or the router raises at startup. | [configuration.md](configuration.md) |
-| `'searchable_fields'` | — | Field names / `__`-paths enabled for `?search=` (gated by field-level read perms). Also settable as a class attribute; the key wins when present, even as an empty list (`[]` turns search off). | [configuration.md](configuration.md#searchable-fields) |
+| `'searchable_fields'` | — | Field names / `__`-paths enabled for `?search=` (gated by field-level read perms). An entry that can't be searched raises at startup. Also settable as a class attribute; the key wins when present, even as an empty list (`[]` turns search off). | [configuration.md](configuration.md#searchable-fields) |
 | `'read_only'` | **`False`** | Serve `list` / `retrieve` only; CRUD writes (POST/PUT/PATCH/DELETE) return `405`. Declared `actions` keep their own methods. | [configuration.md](configuration.md#read-only-endpoints) |
 | `'http_methods'` | all | Explicit HTTP method allow-list (e.g. `['get', 'post']`); disallowed verbs return `405`. `read_only` is the common shorthand. | [configuration.md](configuration.md#restricting-http-methods) |
 | `'full_clean'` | **`False`** | Run Django model validation (`clean()` / constraints) on write, so business-rule violations return `400` instead of `500`. | [configuration.md](configuration.md#model-validation-full_clean) |

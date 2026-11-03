@@ -23,7 +23,8 @@ interfere. Tests run against `tests/settings.py` and the models in
 `tests/test_app/`; keep `tests/test_app/models.py` in step when you add a
 framework-level feature, since it's the reference downstream apps mirror.
 `tests.test_app.apps.set_test_brokerage(user, brokerage)` gives a test user
-a tenant, and `user._test_roles = [...]` its roles.
+a tenant, `user._test_roles = [...]` its roles and
+`user._test_platform_roles = [...]` its platform roles.
 
 ## Lint
 

@@ -41,9 +41,10 @@ urlpatterns = [path('api/', include('turbodrf.urls'))]
 Users need roles: see [Roles](#roles) below. Without one, every request is
 a 403.
 
-**Run `python manage.py check` in CI and before every deploy.** Tenancy
-errors raise when Django starts, but the router validates the rest of the
-configuration when Django first imports the URLconf, which `check` does and
+**Run `python manage.py check` in CI and before every deploy.** A broken
+tenancy declaration raises when Django starts, but the router validates the
+rest of the configuration (a model with no tenancy declaration included) when
+Django first imports the URLconf, which `check` does and
 `get_wsgi_application()` doesn't; without it a broken config deploys and
 fails on the first request.
 
@@ -86,7 +87,8 @@ API config out of `models.py`, skip the mixin and call
 
 Always set `fields` to an explicit list (or a `{'list': [...], 'detail':
 [...]}` dict). It isn't required, but it defaults to `'__all__'`, which
-exposes every column, including ones added later. The primary key renders
+exposes every column, including ones added later; `manage.py check` warns
+(`turbodrf.W004`) for each model left on it. The primary key renders
 only if listed. A name that doesn't exist on the model, or one ending on a
 reverse one-to-one, raises at startup.
 
@@ -205,8 +207,9 @@ TurboDRF needs to know each user's roles. Pick one source:
   `UserRole` rows and `user.roles` is ignored; permissions come from
   `TurboDRFRole` / `RolePermission` rows, validated when saved.
 - **allauth / Keycloak integrations:** TurboDRF installs the `roles` property
-  when the user model doesn't define one. Their middleware classes are
-  deprecated no-ops; don't add them.
+  when the user model doesn't define one (read only while
+  `TURBODRF_ROLE_GETTER` is unset). Their middleware classes are deprecated
+  no-ops; don't add them.
 
 Details: `docs/permissions.md`, "Assigning roles to users".
 
@@ -351,9 +354,10 @@ Details: `docs/platform.md`.
 
 Permission snapshots are cached for 5 minutes per `(user, model)` pair. The
 cache key covers the user's roles, the role configuration (in database
-mode, every role's version) and the model's `sensitive_fields` and
-`public_access`, so granting or revoking a role, editing `TURBODRF_ROLES`, or
-saving / deleting a `RolePermission` takes effect on the next request. A bulk
+mode, every role's id, name and version) and the model's `sensitive_fields`
+and `public_access`, so granting or revoking a role, editing
+`TURBODRF_ROLES`, or saving / deleting a `RolePermission` (a QuerySet
+`delete()` included) takes effect on the next request. A bulk
 `RolePermission` QuerySet `update()` / `bulk_create()` doesn't bump role
 versions and stays stale until the TTL. After one:
 
@@ -407,7 +411,9 @@ assert snap.can_perform_action('update')
 - [docs/tenancy.md](docs/tenancy.md) — full predicate vocabulary, sugar vs power form, startup checks
 - [docs/platform.md](docs/platform.md) — the platform scope: a staff API across tenants
 - [docs/permissions.md](docs/permissions.md) — RBAC, roles, sensitive fields, field-perm syntax
+- [docs/principles.md](docs/principles.md) — the rules the security model rests on
 - [docs/security.md](docs/security.md) — threat model + known limitations
+- [docs/commands.md](docs/commands.md) — `turbodrf_check`, `turbodrf_explain`, `turbodrf_schema`
 - [docs/settings_reference.md](docs/settings_reference.md) — every setting
 - [docs/migration_to_predicates.md](docs/migration_to_predicates.md) — upgrading existing TurboDRF apps
 
@@ -423,5 +429,7 @@ assert snap.can_perform_action('update')
   reports each model's list fields and resolved tenancy; it only reports.
 - A 403, 404, empty list or missing field? Run `python manage.py turbodrf_explain
   --user <u> --model <Model> [--pk <pk>]` to see which layer, before changing config.
+  With `DEBUG = True` a 403's detail also says why: no roles, or the missing
+  permission string.
 - Preserve fail-closed defaults: when in doubt about a permission edge
   case, deny.

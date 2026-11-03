@@ -148,9 +148,10 @@ A getter that can't be imported raises at startup.
 
 Authenticated users with no roles get 403.
 
-In database mode, roles come from the `UserRole` table and `user.roles` is
-ignored. With the allauth or Keycloak integration on, TurboDRF installs a
-`roles` property for you when the user model doesn't define one (see
+In database mode, roles come from the `UserRole` table, and `user.roles` and
+`TURBODRF_ROLE_GETTER` are ignored. With the allauth or Keycloak integration
+on, TurboDRF installs a `roles` property for you when the user model doesn't
+define one; it's read when `TURBODRF_ROLE_GETTER` isn't set (see
 [Integrations](integrations.md#how-the-integrations-resolve-roles)).
 
 ### Static vs database mode
@@ -205,12 +206,13 @@ the key prefix `TURBODRF_PERMISSION_CACHE_PREFIX` (default
 `"turbodrf_perm"`).
 
 The cache key covers the user's current roles, the role configuration
-(`TURBODRF_ROLES` in static mode; every role's name and version in
+(`TURBODRF_ROLES` in static mode; every role's id, name and version in
 database mode, for anonymous callers too), and the model's `sensitive_fields`
 and `public_access`. So these take effect on the next request: assigning or
 removing a user's role, changing `TURBODRF_ROLES`, saving or deleting a
-`RolePermission` (which bumps its role's version), and a deploy that changes
-a model's `sensitive_fields` or `public_access`.
+`RolePermission` (which bumps its role's version), deleting a role and
+creating another under its name, and a deploy that changes a model's
+`sensitive_fields` or `public_access`.
 
 A QuerySet `delete()` of `RolePermission` rows (the admin's "delete
 selected" included) bumps their roles' versions too. A bulk `update()` or
@@ -235,6 +237,12 @@ Permissions are checked at each level of a nested field path. For `author__publi
 3. Can user read `name` on Publisher?
 
 If any level fails, the field is excluded.
+
+A reverse relation is the related model's FK (or M2M) read from the other
+side. A path through `Book.reviews` (a reverse FK from `Review.book`) also
+needs read on `Review.book`: its `.read` grant if the field has a rule, else
+model-level read on `Review`. The same holds for a bare reverse relation in
+`fields`, a filter, a search path and a `property_relations` hop.
 
 ### Filter permissions
 

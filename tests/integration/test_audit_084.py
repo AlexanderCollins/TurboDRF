@@ -803,6 +803,18 @@ class TestQualityOfLife(_Base):
                 self.assertEqual(check_roles_configured(), [])
 
 
+class TestRoleSourceCheck(SimpleTestCase):
+    def test_getter_with_an_integration_warns(self):
+        from turbodrf.apps import check_role_source
+
+        self.assertEqual(check_role_source(), [])
+        with self.settings(
+            TURBODRF_ROLE_GETTER="turbodrf.backends.group_names",
+            TURBODRF_ALLAUTH_INTEGRATION=True,
+        ):
+            self.assertEqual([m.id for m in check_role_source()], ["turbodrf.W005"])
+
+
 class TestExplicitFieldsCheck(SimpleTestCase):
     def test_all_fields_warns(self):
         from turbodrf.apps import check_explicit_fields

@@ -96,7 +96,9 @@ OpenAPI 3 schema and two debugging commands.
 - `manage.py check` warns (`turbodrf.W003`) when static mode has no
   `TURBODRF_ROLES`, and (`turbodrf.W004`) for each model whose `fields` is
   `'__all__'`: the default, which a model inheriting the mixin from an
-  abstract base gets without anyone choosing it.
+  abstract base gets without anyone choosing it. It also warns
+  (`turbodrf.W005`) when `TURBODRF_ROLE_GETTER` would override the allauth or
+  Keycloak integration's roles.
 - A `searchable_fields` entry that can't be searched (a typo) raises at
   startup; it used to be dropped, so a search over it matched every row.
 - A route clash suggests an app-prefixed `endpoint` (`'shop/books'`).

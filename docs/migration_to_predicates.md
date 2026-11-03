@@ -20,8 +20,9 @@ key on the user model is the usual choice.
 
 ## 2. Declare tenancy on every model
 
-When `TURBODRF_TENANT_MODEL` is set, the router refuses to register any
-TurboDRF model without a tenancy decision. For each model, do **one** of:
+When `TURBODRF_TENANT_MODEL` is set, the router raises
+`ImproperlyConfigured` while any TurboDRF model, a disabled one included, has
+no tenancy decision. For each model, do **one** of:
 
 ```python
 # Tenant-scoped (sugar form)
@@ -59,7 +60,9 @@ pytest                                    # run your tests
 - POSTs with cross-tenant FK or M2M values now return **400** (FK injection
   rejected).
 - A model with only `owner_field` fails the startup check: add a
-  `tenant_field` (or `'tenancy': 'shared'`).
+  `tenant_field` (or `'tenancy': 'shared'`). So does a model with
+  `'enabled': False` and no declaration: it has no route, but other models'
+  FK checks, nested fields and filters still reach it.
 - A `tenant_field` must be a path of forward foreign keys ending at the
   tenant model, and `TURBODRF_TENANT_USER_FIELD` must be set; otherwise the
   router refuses to start. So does an unknown `turbodrf()` key.

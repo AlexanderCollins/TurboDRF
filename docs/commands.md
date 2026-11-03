@@ -2,9 +2,10 @@
 
 Run Django's `python manage.py check` in CI and before each deploy. It
 imports your URLconf, which creates `TurboDRFRouter()` and runs all of
-TurboDRF's startup checks. Tenancy errors raise on any `manage.py` command,
-but `get_wsgi_application()` doesn't run the router's other checks, so a
-broken config would otherwise deploy and fail on the first request.
+TurboDRF's startup checks. A broken tenancy declaration raises on any
+`manage.py` command, but `get_wsgi_application()` doesn't run the router's
+checks (a model with no tenancy declaration included), so a broken config
+would otherwise deploy and fail on the first request.
 
 ## turbodrf_check
 
@@ -18,8 +19,8 @@ python manage.py turbodrf_check --scope platform
 
 For each enabled model it prints:
 
-- A breakdown of the list fields (DB, FK, M2M, property) and any that don't resolve.
-- `public_access`.
+- A breakdown of the list fields (DB, FK, M2M, reverse, property) and any that don't resolve.
+- `public_access`, and any `unscoped_properties`.
 - Tenancy, when `TURBODRF_TENANT_MODEL` is set: the resolved `tenant_field` (marked when auto-detected; the command uses the router's `TURBODRF_AUTODETECT_TENANT` default, `False`), the within-tenant predicates, `shared`, or `NOT DECLARED` for a model the router will refuse to register.
 
 With `--scope platform` it reports the models with an enabled `'platform'` block instead, as a platform router serves them: the fields from the block, and the tenant path platform writes keep consistent (see [Platform scope](platform.md)).

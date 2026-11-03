@@ -1,5 +1,6 @@
 """
-TurboDRF - Dead simple Django REST API generator with role-based permissions.
+TurboDRF - turn Django models into a secure REST API: CRUD endpoints,
+field-level permissions and multi-tenant row scoping.
 
 TurboDRF automatically generates a complete REST API from your Django models
 with just

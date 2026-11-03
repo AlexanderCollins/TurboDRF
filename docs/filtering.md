@@ -30,7 +30,7 @@ The config key wins whenever it's present: `'searchable_fields': []` turns searc
 GET /api/books/?search=django
 ```
 
-Each entry is a column or a `__`-path that ends on one (`author__name`). It may start with one of DRF's prefixes: `^` (starts with), `=` (exact match) or `@` (full-text search, Postgres). `$` (regex) isn't accepted. An entry that doesn't resolve, ends on a relation or starts with `$` is dropped.
+Each entry is a column or a `__`-path that ends on one (`author__name`). It may start with one of DRF's prefixes: `^` (starts with), `=` (exact match) or `@` (full-text search, Postgres). `$` (regex) isn't accepted. An entry that doesn't resolve, ends on a relation or starts with `$` raises `ImproperlyConfigured` at startup.
 
 - A caller who can't read a field can't search by it, and sensitive fields are never searched.
 - A `__`-path term only matches related rows the caller can see through that model's own endpoint (its tenant and predicates).
@@ -54,8 +54,8 @@ GET /api/books/?author__name__istartswith=smith    # Related field: 'author__nam
 - `__in` takes comma-separated values, `__range` exactly two (`?price__range=10,50`), `__isnull` true or false.
 - `__regex` / `__iregex` lookups aren't accepted.
 - An M2M filters by one target pk (`?tags=3`); `exact` is its only lookup. `?tags__in=`, `?tags__isnull=` and `?tags_or=` are ignored. A filter across an M2M or reverse relation (`?tags__name=`) matches each row once.
-- A related-field filter is permission-checked at every hop and only matches related rows the caller can see through that model's own endpoint. A related field named like a lookup (`folder__date`, where `date` is a field of the folder) is treated as that field.
-- An FK or M2M filter naming a row the caller can't see returns an empty `200`, exactly as a pk that doesn't exist does.
+- A related-field filter is permission-checked at every hop (a reverse relation by the related model's FK, see [Security](security.md#reverse-relations)) and only matches related rows the caller can see through that model's own endpoint. A related field named like a lookup (`folder__date`, where `date` is a field of the folder) is treated as that field.
+- An FK or M2M filter naming a row the caller can't see returns an empty `200`, exactly as a pk that doesn't exist does. When another filter in the request is invalid, the 400 lists only that filter's error.
 - A filter value longer than `TURBODRF_MAX_FILTER_VALUE_LENGTH` (default 1000) returns nothing.
 
 ### OR filtering
@@ -84,7 +84,9 @@ GET /api/books/?ordering=-price        # Descending
 GET /api/books/?ordering=author        # By the stored author id
 ```
 
-`?ordering=` takes the filterable fields that are concrete, single-valued columns. An M2M, a reverse relation, a `@property`, a nested path (`author__name`) or a sensitive field is ignored. An FK orders by its stored column, not by the related model's `Meta.ordering`. The primary key is appended as a tie-breaker, so rows don't repeat or go missing across pages.
+`?ordering=` takes the filterable fields that are concrete, single-valued columns. An M2M, a reverse relation, a `@property`, a nested path (`author__name`) or a sensitive field is ignored. An FK orders by its stored column, not by the related model's `Meta.ordering`. The primary key is appended as a tie-breaker, in the direction of the last term, so rows don't repeat or go missing across pages.
+
+Without `?ordering=`, a list follows the model's `Meta.ordering` only if the caller could pass each of its terms as `?ordering=`; otherwise it comes in primary-key order. An M2M or reverse array follows its target's `Meta.ordering` only when the array shows those columns and the caller can read them.
 
 ## Pagination
 

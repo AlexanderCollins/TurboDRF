@@ -73,6 +73,27 @@ def check_roles_configured(app_configs=None, **kwargs):
     ]
 
 
+def check_role_source(app_configs=None, **kwargs):
+    """Warn when TURBODRF_ROLE_GETTER is set alongside the allauth or Keycloak
+    integration: the getter decides the roles, so the integration's ``roles``
+    are never read."""
+    integration = [
+        name
+        for name in ("TURBODRF_ALLAUTH_INTEGRATION", "TURBODRF_KEYCLOAK_INTEGRATION")
+        if getattr(settings, name, False)
+    ]
+    if not integration or getattr(settings, "TURBODRF_ROLE_GETTER", None) is None:
+        return []
+    return [
+        checks.Warning(
+            f"TURBODRF_ROLE_GETTER is set, so {', '.join(integration)} has no "
+            f"effect on roles: the getter decides them.",
+            hint="Remove one of them, or have the getter read the integration's roles.",
+            id="turbodrf.W005",
+        )
+    ]
+
+
 def check_explicit_fields(app_configs=None, **kwargs):
     """Warn for each TurboDRF model whose ``fields`` is ``'__all__'`` (the
     default): every column is exposed, a column added later included. A model
@@ -117,6 +138,7 @@ class TurboDRFConfig(AppConfig):
         checks.register(check_permissions_enabled, checks.Tags.security)
         checks.register(check_roles_configured)
         checks.register(check_explicit_fields)
+        checks.register(check_role_source)
 
         # Register every TurboDRF model's tenant boundary and predicates now,
         # not when the URLconf first builds a router: FK-injection checks and
