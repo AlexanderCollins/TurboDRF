@@ -96,8 +96,10 @@ class TurboDRFFilterBackend(DjangoFilterBackend):
         from django.forms.utils import ErrorDict
         from django_filters import utils
 
-        if not set(request.query_params) - _NON_FILTER_PARAMS:
-            return queryset  # no filter: skip building the FilterSet
+        if getattr(view, "filterset_class", None) is None and not (
+            set(request.query_params) - _NON_FILTER_PARAMS
+        ):
+            return queryset  # no filter: skip building the generated FilterSet
         filterset = self.get_filterset(request, queryset, view)
         if filterset is None:
             return queryset
