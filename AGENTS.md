@@ -418,5 +418,7 @@ assert snap.can_perform_action('update')
 - Run `python manage.py check` before committing: it builds the router and
   runs every startup gate. Then `python manage.py turbodrf_check`, which
   reports each model's list fields and resolved tenancy; it only reports.
+- A 403, 404, empty list or missing field? Run `python manage.py turbodrf_explain
+  --user <u> --model <Model> [--pk <pk>]` to see which layer, before changing config.
 - Preserve fail-closed defaults: when in doubt about a permission edge
   case, deny.
