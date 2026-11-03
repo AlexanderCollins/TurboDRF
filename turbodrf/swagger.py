@@ -38,7 +38,6 @@ Scopes:
     own scope, so roles, snapshots and fields are that scope's.
 """
 
-import hashlib
 import logging
 from collections import OrderedDict
 
@@ -80,12 +79,13 @@ _UNSET = object()
 
 def _turbodrf_model(view):
     """Return the model behind a TurboDRF viewset instance, else None."""
+    from .mixins import is_turbodrf_model
     from .views import TurboDRFViewSet
 
     if not isinstance(view, TurboDRFViewSet):
         return None
     model = getattr(view, "model", None)
-    if model is None or not callable(getattr(model, "turbodrf", None)):
+    if model is None or not is_turbodrf_model(model):
         return None
     return model
 
@@ -620,13 +620,9 @@ class TurboDRFSwaggerAutoSchema(SwaggerAutoSchema):
             )
 
         base_meta = base_class.Meta
-        writable = sorted(
-            set(base_meta.fields) - set(getattr(base_meta, "read_only_fields", ()))
-        )
-        digest = hashlib.sha256(",".join(writable).encode()).hexdigest()[:8]
-        ref_name_value = (
-            f"{model._meta.app_label}_{model._meta.model_name}_{digest}_write"
-        )
+        # Stable, as the read serializers' names: one schema is one caller's,
+        # with one writable field set per model (create and update alike).
+        ref_name_value = f"{model._meta.app_label}_{model._meta.model_name}_write"
         if current_scope() != TENANT:
             ref_name_value = f"{current_scope()}_{ref_name_value}"
 

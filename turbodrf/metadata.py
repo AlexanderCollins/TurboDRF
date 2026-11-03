@@ -58,7 +58,9 @@ class TurboDRFMetadata(SimpleMetadata):
         if callable(configured):
             fields = configured(view_type)
         else:
-            fields = model.get_api_fields(view_type)
+            from .mixins import _resolve_configured_fields
+
+            fields = _resolve_configured_fields(model, view_type)
         if not isinstance(fields, list):
             fields = []
 
