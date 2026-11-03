@@ -831,14 +831,18 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         host, in the caller's tenant. Without a request (programmatic use)
         there is no caller to scope to. A dropdown option is labelled with the
         value the field renders, not ``str(row)``, which can show columns of
-        the target the caller can't read."""
+        the target the caller can't read. A schema generator's view (its
+        ``swagger_fake_view``) reads the fields' types only: no rows to
+        scope, and its caller may be a list of roles with no rows of its own
+        (``RoleOnlyIdentity``)."""
         fields = super().get_fields()
         if self.instance is not None:
             pk_name = self.Meta.model._meta.pk.name
             if pk_name in fields:
                 fields[pk_name].read_only = True
         request = self.context.get("request")
-        if request is not None:
+        view = self.context.get("view")
+        if request is not None and not getattr(view, "swagger_fake_view", False):
             for field in fields.values():
                 relation = getattr(field, "child_relation", field)
                 if isinstance(relation, RelatedField) and relation.queryset is not None:

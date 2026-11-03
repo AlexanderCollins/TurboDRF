@@ -147,7 +147,7 @@ class TurboDRFCheckCommandTest(TestCase):
         get one-line descriptions."""
         from django.db.models import Q
 
-        from turbodrf.management.commands.turbodrf_check import Command
+        from turbodrf.management.commands.turbodrf_check import describe_predicate
         from turbodrf.predicates import (
             Conditional,
             Custom,
@@ -157,20 +157,19 @@ class TurboDRFCheckCommandTest(TestCase):
             Owner,
         )
 
-        cmd = Command()
         # Each kind of predicate gets a description
-        self.assertIn("Owner", cmd._describe_predicate(Owner("x")))
-        self.assertIn("bypass=", cmd._describe_predicate(Owner("x", bypass=["a"])))
-        self.assertIn("Members", cmd._describe_predicate(Members("m2m")))
-        self.assertIn("Group", cmd._describe_predicate(Group("team")))
+        self.assertIn("Owner", describe_predicate(Owner("x")))
+        self.assertIn("bypass=", describe_predicate(Owner("x", bypass=["a"])))
+        self.assertIn("Members", describe_predicate(Members("m2m")))
+        self.assertIn("Group", describe_predicate(Group("team")))
         self.assertIn(
             "Conditional",
-            cmd._describe_predicate(Conditional(when=Q(x=1), require_roles=["admin"])),
+            describe_predicate(Conditional(when=Q(x=1), require_roles=["admin"])),
         )
-        self.assertIn("Either", cmd._describe_predicate(Either(Owner("a"), Owner("b"))))
+        self.assertIn("Either", describe_predicate(Either(Owner("a"), Owner("b"))))
         self.assertIn(
             "Custom",
-            cmd._describe_predicate(
+            describe_predicate(
                 Custom(q_func=lambda r, u: Q(), write_validator=lambda d, i, r: [])
             ),
         )
