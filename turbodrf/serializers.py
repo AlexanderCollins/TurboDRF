@@ -1178,10 +1178,12 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         scoped = scoped_target_queryset(target, request)
         queryset = target._default_manager.all() if scoped is None else scoped
         if target._meta.ordering:
-            # The target's order, if the caller may order by it (as a list
-            # of that model would be).
+            # The target's order, if it's on columns this array shows and the
+            # caller can read; else the pk. A column the array doesn't show
+            # (left out of a config, say) would leak through the order.
             user = getattr(request, "user", None) if request else None
-            orderable = _readable_columns(
+            shown = {sub_path for sub_path in sub_paths if "__" not in sub_path}
+            orderable = shown & _readable_columns(
                 target,
                 lambda m: build_permission_snapshot(user, m),
                 permissions_bypassed(),

@@ -47,7 +47,8 @@ OpenAPI 3 schema and two debugging commands.
   the FK column, not a subquery over every visible target row: on a large
   tenant (Postgres, 1M rows) a detail request went from 28 ms to 2.5 ms and a
   list page from 41 ms to 14 ms.
-- A request without filters doesn't build a django-filter FilterSet.
+- A request without filters doesn't build the generated django-filter
+  FilterSet (a view's own `filterset_class` still runs).
 - A `Custom` predicate comparing columns of the same row (`F('limit')`) no
   longer takes the subquery form.
 - The primary-key tie-breaker follows the last sort term's direction, so an

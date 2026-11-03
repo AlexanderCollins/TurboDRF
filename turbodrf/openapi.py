@@ -159,12 +159,14 @@ class _Generator(_CallerScope):
 
     auto_schema_class = None
     info = None
+    _caller_request = None
 
     def get_schema(self, request=None, public=False):
         # ``public`` is ignored (drf-spectacular's SERVE_PUBLIC would skip the
         # permission check): the caller's permissions always decide.
         with use_scope(self.scope):
             self._start(request)
+            self._caller_request = request
             self._auto_schemas = []
             schema = super().get_schema(request=request, public=False)
             components = schema.get("components") or {}
@@ -198,7 +200,13 @@ class _Generator(_CallerScope):
         return super().coerce_path(path, method, view)
 
     def has_view_permissions(self, path, method, view):
-        # drf-spectacular gives the view the caller's request just before.
+        # drf-spectacular gives the view a mock request (no session, client
+        # address or auth headers): gates and permissions see the caller's
+        # own, as in DRF's and drf-yasg's generators.
+        from rest_framework.request import clone_request
+
+        if self._caller_request is not None:
+            view.request = clone_request(self._caller_request, method)
         self._scope_view(view)
         return super().has_view_permissions(path, method, view) and self._may_perform(
             view, method
@@ -237,6 +245,11 @@ class _AutoSchema:
 
     def get_paginated_name(self, serializer_name):
         return f"{serializer_name}_page"
+
+    def _get_paginator(self):
+        # The view's paginator (TURBODRF_PAGINATION_CLASS), not its
+        # pagination_class attribute.
+        return getattr(self.view, "paginator", None)
 
 
 def _is_turbodrf_serializer(serializer):

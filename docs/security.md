@@ -90,8 +90,9 @@ fields are ignored and logged.
   by the stored FK column, not by the target's `Meta.ordering`.
 - The default order follows the same rule. A model's `Meta.ordering` applies
   when the caller could pass it as `?ordering=`; otherwise the list is in
-  primary-key order. So does an M2M or reverse array, by its target's
-  `Meta.ordering`.
+  primary-key order. An M2M or reverse array follows its target's
+  `Meta.ordering` only when the array shows those columns and the caller can
+  read them.
 
 ## OPTIONS metadata
 

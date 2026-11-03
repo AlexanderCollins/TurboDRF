@@ -2,7 +2,7 @@
 0.8.3 and asserts it no longer does."""
 
 from contextlib import contextmanager
-from unittest import mock
+from unittest import mock, skipUnless
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -888,3 +888,178 @@ class TestPaginationClass(_Base):
         body = self.client.get("/api/samplemodels/").json()
         self.assertIn("pagination", body)
         self.assertIn("data", body)
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: a to-many array's order, a custom FilterSet's defaults,
+# and the OpenAPI 3 view's gate check and paginator.
+# ---------------------------------------------------------------------------
+
+urlpatterns = []  # set by tests that mount their own routers
+
+
+def _patch_config(test, model, **changes):
+    config = dict(model.turbodrf())
+    config.update(changes)
+    patcher = mock.patch.object(
+        model, "turbodrf", classmethod(lambda cls: dict(config))
+    )
+    patcher.start()
+    test.addCleanup(patcher.stop)
+
+
+class TestToManyOrderUsesShownColumns(_Base):
+    def setUp(self):
+        from tests.test_app.models import Portfolio
+
+        super().setUp()
+        self.auditor = self._user("aud", ["auditor"], self.A)
+        portfolio = Portfolio.objects.create(name="P", brokerage=self.A)
+        self.h1 = Holding.objects.create(
+            name="zzz", brokerage=self.A, portfolio=portfolio
+        )
+        self.h2 = Holding.objects.create(
+            name="aaa", brokerage=self.A, portfolio=portfolio
+        )
+        self.h3 = Holding.objects.create(
+            name="mmm", brokerage=self.A, portfolio=portfolio
+        )
+        patcher = mock.patch.object(Holding._meta, "ordering", ["name"])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _array(self, *fields):
+        from tests.test_app.models import Portfolio
+
+        _patch_config(self, Portfolio, fields=["id", "name", *fields])
+        self._as(self.auditor)
+        rows = self._rows(self.client.get("/api/portfolios/"))
+        return rows[0]["holdings"]
+
+    def test_unshown_column_doesnt_order_the_array(self):
+        holdings = self._array("holdings__id")
+        self.assertEqual(
+            [h["id"] for h in holdings], [self.h1.pk, self.h2.pk, self.h3.pk]
+        )
+
+    def test_shown_column_orders_the_array(self):
+        holdings = self._array("holdings__id", "holdings__name")
+        self.assertEqual([h["name"] for h in holdings], ["aaa", "mmm", "zzz"])
+
+
+class TestCustomFilterSetDefaults(_Base):
+    def test_a_filterset_class_runs_without_filter_params(self):
+        import django_filters
+        from django.http import QueryDict
+        from django.urls import include, path
+        from rest_framework.routers import DefaultRouter
+
+        from tests.test_app.models import RelatedModel, SampleModel
+        from turbodrf.views import TurboDRFViewSet
+
+        class ActiveByDefault(django_filters.FilterSet):
+            class Meta:
+                model = SampleModel
+                fields = ["is_active"]
+
+            def __init__(self, data=None, *args, **kwargs):
+                data = data.copy() if data is not None else QueryDict(mutable=True)
+                if not data.get("is_active"):
+                    data["is_active"] = "true"
+                super().__init__(data, *args, **kwargs)
+
+        class SampleView(TurboDRFViewSet):
+            model = SampleModel
+            filterset_class = ActiveByDefault
+
+        related = RelatedModel.objects.create(name="r")
+        SampleModel.objects.create(
+            title="live", price=1, related=related, is_active=True
+        )
+        SampleModel.objects.create(
+            title="old", price=1, related=related, is_active=False
+        )
+        router = DefaultRouter()
+        router.register("rv", SampleView, basename="rv")
+        urlpatterns[:] = [path("", include(router.urls))]
+        self.addCleanup(urlpatterns.clear)
+        self._as(self._user("admin", ["admin"], self.A))
+        with self.settings(ROOT_URLCONF=__name__):
+            for url in ("/rv/", "/rv/?page=1"):
+                rows = self._rows(self.client.get(url))
+                self.assertEqual([r["title"] for r in rows], ["live"], url)
+
+
+def _spectacular():
+    import importlib.util
+
+    return importlib.util.find_spec("drf_spectacular") is not None
+
+
+class _InternalIPOnly:
+    def has_permission(self, request, view):
+        return request.META.get("REMOTE_ADDR") == "127.0.0.1"
+
+    def has_object_permission(self, request, view, obj):
+        return True
+
+
+class _MfaSession:
+    def has_permission(self, request, view):
+        return bool(request.session.get("mfa_ok"))
+
+    def has_object_permission(self, request, view, obj):
+        return True
+
+
+@skipUnless(_spectacular(), "drf-spectacular not installed")
+class TestOpenAPI3UsesTheCallersRequest(_Base):
+    def _mount(self, gate):
+        from django.urls import include, path
+        from rest_framework.permissions import BasePermission
+
+        import tests.urls as tenant_urls
+        from turbodrf.router import TurboDRFRouter
+
+        gate = type(gate.__name__, (gate, BasePermission), {})
+        with _preserve_registries():
+            internal = TurboDRFRouter(gate=[gate], include_root_view=False)
+        urlpatterns[:] = [
+            *tenant_urls.urlpatterns,
+            path("internal/", include(internal.urls)),
+        ]
+        self.addCleanup(urlpatterns.clear)
+
+    def test_a_gate_sees_the_callers_address(self):
+        import json
+
+        self._as(self._user("v", ["viewer"], self.A))
+        outside = {"REMOTE_ADDR": "203.0.113.9"}
+        with self.settings(ROOT_URLCONF=__name__):
+            self._mount(_InternalIPOnly)
+            self.assertEqual(
+                self.client.get("/internal/samplemodels/", **outside).status_code, 403
+            )
+            schema = json.loads(self.client.get("/openapi/", **outside).content)
+        self.assertFalse([p for p in schema["paths"] if p.startswith("/internal/")])
+
+    def test_a_session_gate_doesnt_break_the_schema(self):
+        self._as(self._user("v", ["viewer"], self.A))
+        with self.settings(ROOT_URLCONF=__name__):
+            self._mount(_MfaSession)
+            self.assertEqual(self.client.get("/openapi/").status_code, 200)
+
+    @override_settings(
+        TURBODRF_PAGINATION_CLASS="rest_framework.pagination.LimitOffsetPagination"
+    )
+    def test_the_pagination_class_setting(self):
+        import json
+
+        self._as(self._user("v", ["viewer"], self.A))
+        schema = json.loads(self.client.get("/openapi/").content)
+        params = {
+            p["name"]
+            for p in schema["paths"]["/api/samplemodels/"]["get"]["parameters"]
+        }
+        self.assertIn("limit", params)
+        self.assertNotIn("page_size", params)
