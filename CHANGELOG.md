@@ -47,6 +47,15 @@ OpenAPI 3 schema and two debugging commands.
   the FK column, not a subquery over every visible target row: on a large
   tenant (Postgres, 1M rows) a detail request went from 28 ms to 2.5 ms and a
   list page from 41 ms to 14 ms.
+- A predicate lookup through a to-many relation (`Members`, `Group`) is
+  checked as `pk IN (the rows it matches)`, not by wrapping the whole
+  predicate: an `Either(Owner, Members)` list went from 43 ms to 12 ms
+  (Postgres, 200k rows per tenant).
+- A filter or search through a foreign key checks the target's rules on the
+  row it already joins, not against every visible target row: a nested
+  filter went from 47 ms to 33 ms and a search from 152 ms to 101 ms.
+- Static mode hashes `TURBODRF_ROLES` once per process, not per request; in
+  database mode a request reads the roles in one query, not two.
 - A request without filters doesn't build the generated django-filter
   FilterSet (a view's own `filterset_class` still runs).
 - A `Custom` predicate comparing columns of the same row (`F('limit')`) no

@@ -77,9 +77,33 @@ class BuildTraversalScopeQTests(TestCase):
             q = build_traversal_scope_q(
                 CompiledArticle, "author__name", request=request
             )
-            # Should be a non-empty Q.
+            # Should be a non-empty Q: the target's rule on the joined row.
             self.assertNotEqual(q, Q())
-            # Stringified Q should mention the prefix.
+            self.assertIn("author__pk", str(q))
+
+    def test_an_expression_rule_keeps_the_subquery(self):
+        """A rule that can't be moved onto the joined row (an Exists) is
+        checked against the visible target rows instead."""
+        from django.contrib.auth import get_user_model
+        from django.db.models import Exists, OuterRef
+
+        with _RegistrySnapshot():
+            register_predicates(
+                RelatedModel,
+                [
+                    Custom(
+                        q_func=lambda r, ur: Q(
+                            Exists(RelatedModel.objects.filter(pk=OuterRef("pk")))
+                        ),
+                        write_validator=lambda d, i, r: [],
+                    )
+                ],
+            )
+            request = Mock()
+            request.user = get_user_model()(username="probe")
+            q = build_traversal_scope_q(
+                CompiledArticle, "author__name", request=request
+            )
             self.assertIn("author__in", str(q))
 
     def test_no_request_with_tenant_field_fails_closed(self):

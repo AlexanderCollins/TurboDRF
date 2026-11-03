@@ -244,9 +244,7 @@ def _resolve_user_roles(user) -> list:
             if "guest" in getattr(settings, "TURBODRF_ROLES", {}):
                 return ["guest"]
         elif mode == "database":
-            from .models import TurboDRFRole
-
-            if TurboDRFRole.objects.filter(name="guest").exists():
+            if any(name == "guest" for _pk, name, _v, _h in _database_roles(user)):
                 return ["guest"]
         return []
     if isinstance(user, RoleOnlyIdentity):
@@ -255,15 +253,7 @@ def _resolve_user_roles(user) -> list:
     mode = get_permission_mode()
 
     if mode == "database":
-        # Get roles from UserRole table
-        from .models import UserRole
-
-        role_names = list(
-            UserRole.objects.filter(user=user)
-            .select_related("role")
-            .values_list("role__name", flat=True)
-        )
-        return role_names
+        return [name for _pk, name, _version, held in _database_roles(user) if held]
     if getattr(settings, "TURBODRF_ROLE_GETTER", None) is None:
         return _role_names(getattr(user, "roles", None))
     return _role_names(role_getter()(user), what="TURBODRF_ROLE_GETTER")
@@ -534,11 +524,7 @@ def get_cache_key(user, model) -> Optional[str]:
     # role map is slow to repr, and every key folds it in); bumped by
     # invalidate_user_permissions(): a new generation is a new key.
     sig = (
-        _memoised(
-            ("roles_signature", scope),
-            None,
-            lambda: hashlib.sha256(repr(_roles_signature()).encode()).hexdigest(),
-        ),
+        _memoised(("roles_signature", scope), None, lambda: _roles_digest(user)),
         _memoised(
             ("generations", user_id),
             None,
@@ -566,35 +552,77 @@ def get_cache_key(user, model) -> Optional[str]:
     )
 
 
-def _roles_signature():
-    """The role configuration every snapshot depends on."""
+def _roles_digest(user):
+    """A digest of the role configuration every snapshot depends on."""
     if is_platform():
-        return _static_signature(platform_roles_config())
+        return _static_digest(platform_roles_config())
     if get_permission_mode() == "database":
-        from .models import TurboDRFRole
-
-        # (name, version) of EVERY role, not only the user's, and for anonymous
-        # callers too: a field rule added to any role restricts that field for
-        # all roles (and for anonymous callers on a public_access model), so it
-        # must invalidate every cached snapshot. Role identity is included so
-        # two roles that share a version number don't produce the same key;
-        # the pk too, so a role deleted and recreated under its name (back at
-        # the same version) doesn't bring back the old role's snapshots.
-        return tuple(sorted(TurboDRFRole.objects.values_list("pk", "name", "version")))
+        # (pk, name, version) of EVERY role, not only the user's, and for
+        # anonymous callers too: a field rule added to any role restricts that
+        # field for all roles (and for anonymous callers on a public_access
+        # model), so it must invalidate every cached snapshot. The name and pk
+        # tell roles apart: two roles can share a version number, and a role
+        # deleted and recreated under its name starts at the same version.
+        rows = sorted(row[:3] for row in _database_roles(user))
+        return hashlib.sha256(repr(rows).encode()).hexdigest()
     # Static mode: fold in TURBODRF_ROLES so the key changes when the role
     # configuration changes — including override_settings(TURBODRF_ROLES=...)
     # in tests. Without this a snapshot built under restricted roles in one
     # test pollutes the cache for later tests reusing the same user.pk.
-    return _static_signature(getattr(settings, "TURBODRF_ROLES", {}))
+    return _static_digest(getattr(settings, "TURBODRF_ROLES", {}))
 
 
-def _static_signature(roles):
+# A static role map -> (the map, its fingerprint, its digest). Hashing a large
+# map costs more than the snapshot it keys, so it's done once per map: settings
+# don't change at runtime, and override_settings replaces the whole object. The
+# fingerprint (each role's list and its length) still catches a test editing
+# the map in place.
+_static_digests = {}
+
+
+def _static_digest(roles):
     try:
-        return tuple(
-            sorted((role, tuple(sorted(perms))) for role, perms in roles.items())
+        fingerprint = tuple(
+            (role, id(perms), len(perms)) for role, perms in roles.items()
         )
     except (TypeError, AttributeError):
-        return ("__unhashable__",)
+        return "__unhashable__"
+    entry = _static_digests.get(id(roles))
+    if entry is not None and entry[0] is roles and entry[1] == fingerprint:
+        return entry[2]
+    try:
+        signature = sorted(
+            (role, tuple(sorted(perms))) for role, perms in roles.items()
+        )
+    except TypeError:
+        return "__unhashable__"
+    digest = hashlib.sha256(repr(signature).encode()).hexdigest()
+    if len(_static_digests) >= 32:
+        _static_digests.clear()  # many override_settings maps in a test run
+    _static_digests[id(roles)] = (roles, fingerprint, digest)
+    return digest
+
+
+def _database_roles(user):
+    """Database mode: ``(pk, name, version, held)`` of every role, ``held``
+    when ``user`` has it. One query per request serves both the user's roles
+    and the snapshot key's role versions."""
+    from django.db.models import Exists, OuterRef, Value
+
+    from .models import TurboDRFRole, UserRole
+
+    def load():
+        if getattr(user, "is_authenticated", False) and user.pk is not None:
+            held = Exists(UserRole.objects.filter(role=OuterRef("pk"), user=user))
+        else:
+            held = Value(False)
+        return list(
+            TurboDRFRole.objects.annotate(held=held).values_list(
+                "pk", "name", "version", "held"
+            )
+        )
+
+    return _memoised(("database_roles", id(user)), user, load)
 
 
 def _model_signature(model):
