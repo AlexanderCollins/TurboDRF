@@ -41,7 +41,8 @@ export async function docNav() {
         return { slug, title: (SHORT_TITLES as Record<string, string>)[slug] ?? docTitle(e), summary: docSummary(e) };
       }),
   }));
-  // A new file in docs/ shows up even before it's given a place in DOC_GROUPS.
+  // Only DOC_GROUPS' pages are loaded (content.config.ts); this keeps any other
+  // entry (none today) visible rather than dropped.
   const rest = [...entries.keys()].filter((slug) => !placed.has(slug));
   if (rest.length) {
     groups.push({

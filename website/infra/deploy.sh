@@ -13,6 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PROJECT=turbodrf
+ACCOUNT=297574765157  # the AWS account that owns turbodrf.com
 REGION=ap-southeast-2
 DOMAINS=(
   ProjectName=$PROJECT
@@ -47,6 +48,16 @@ output() {
   aws cloudformation describe-stacks --region "$1" --stack-name "$2" \
     --query "Stacks[0].Outputs[?OutputKey=='$3'].OutputValue" --output text
 }
+
+# The right account, and (when publishing) a site built only from committed
+# files: dist/ is built from this working tree, and docs/ pages are published
+# as they are on disk.
+[[ $(aws sts get-caller-identity --query Account --output text) == "$ACCOUNT" ]] ||
+  { echo "These AWS credentials aren't for account $ACCOUNT." >&2; exit 1; }
+if [[ $MODE != plan ]]; then
+  dirty=$(git status --porcelain --untracked-files=all -- ../docs ../AGENTS.md ../CHANGELOG.md src)
+  [[ -z $dirty ]] || { printf 'Uncommitted site sources, commit them first:\n%s\n' "$dirty" >&2; exit 1; }
+fi
 
 apply us-east-1 "$CERTS_STACK" infra/website-certs.yml "${DOMAINS[@]}"
 CERT=$(output us-east-1 "$CERTS_STACK" CertificateArn)

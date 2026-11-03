@@ -78,3 +78,7 @@ Thumbs.db
 # Claude Code
 .claude/
 video_education/
+
+# Private notes: never committed or published (the site loads only the docs
+# pages website/src/lib/docs-meta.mjs lists).
+docs/security_audit.md
