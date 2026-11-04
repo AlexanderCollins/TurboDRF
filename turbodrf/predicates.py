@@ -67,6 +67,15 @@ def _authed_user(request):
     return user
 
 
+def _has_condition(q):
+    """True if ``q`` holds a condition. ``Q()`` and ``Q(Q())`` hold none:
+    Django drops an empty child from an OR, so an unrestricted ``Either``
+    branch would silently become the other branches."""
+    return any(
+        not isinstance(child, Q) or _has_condition(child) for child in q.children
+    )
+
+
 def _no_match_q():
     """Q that matches zero rows. Used for fail-closed."""
     return Q(pk__in=[])
@@ -85,9 +94,16 @@ def tenant_q(tenant_field, request):
     return Q(**{tenant_field: tenant})
 
 
-def predicates_q(predicates, request):
+def predicates_q(predicates, request, model=None):
     """The AND of ``predicates``' read rules for the caller. ``Q()`` without
-    predicates; no rows without a request (fail closed)."""
+    predicates; no rows without a request (fail closed).
+
+    Each predicate is a condition of its own. ANDed into one ``Q``, two
+    predicates' lookups through the same M2M or reverse relation would share
+    its JOIN (``Members('members')`` and ``~Q(members__username='x')`` would
+    mean "the member who is me isn't x"). With ``model``, when more than one
+    predicate crosses such a relation, each of those is made into a condition
+    that joins nothing (``views.independent_q``) before they're ANDed."""
     if not predicates:
         return Q()
     if request is None:
@@ -95,9 +111,15 @@ def predicates_q(predicates, request):
     from .backends import get_user_roles
 
     roles = set(get_user_roles(getattr(request, "user", None)))
+    parts = [pred.q(request, roles) for pred in predicates]
+    if model is not None:
+        from .views import _q_spans_multivalued, independent_q
+
+        if sum(1 for part in parts if _q_spans_multivalued(model, part)) > 1:
+            parts = [independent_q(model, part) for part in parts]
     q = Q()
-    for pred in predicates:
-        q &= pred.q(request, roles)
+    for part in parts:
+        q &= part
     return q
 
 
@@ -250,7 +272,7 @@ class Either(Predicate):
         combined = None
         for pred in self.predicates:
             child_q = pred.q(request, user_roles)
-            if not child_q:
+            if not _has_condition(child_q):
                 return Q()
             combined = child_q if combined is None else combined | child_q
         return combined if combined is not None else Q()
@@ -566,13 +588,22 @@ def register_predicates(model, predicates):
     _model_predicates[model] = list(predicates)
 
 
+def _registered_as(model, registry):
+    """The key ``model``'s rules are registered under: itself, or for a proxy
+    with no entry of its own, its concrete model (a proxy of a model passed
+    to ``register()`` isn't registered itself, but holds the same rows)."""
+    if model in registry or not getattr(getattr(model, "_meta", None), "proxy", False):
+        return model
+    return model._meta.concrete_model
+
+
 def get_predicates(model):
     """The within-tenant predicates of ``model`` on the current scope. On the
     platform scope a reachable model has none, and any other model a rule
     that matches no row."""
     if is_platform():
         return [] if platform_reachable(model) else [_PlatformUnreachable()]
-    return _model_predicates.get(model, [])
+    return _model_predicates.get(_registered_as(model, _model_predicates), [])
 
 
 def register_tenant_field(model, tenant_field):
@@ -589,14 +620,14 @@ def get_tenant_field(model):
     ``registered_tenant_field``)."""
     if is_platform():
         return None
-    return _model_tenant_fields.get(model)
+    return _model_tenant_fields.get(_registered_as(model, _model_tenant_fields))
 
 
 def registered_tenant_field(model):
     """The model's registered tenant_field, whatever the scope: the platform
     scope's write checks use it to keep a row and the rows it points at in
     one tenant."""
-    return _model_tenant_fields.get(model)
+    return _model_tenant_fields.get(_registered_as(model, _model_tenant_fields))
 
 
 def clear_predicates():

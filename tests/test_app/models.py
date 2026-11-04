@@ -1543,3 +1543,74 @@ class PlatformTicket(TurboDRFMixin, models.Model):
                 ],
             },
         }
+
+
+class LedgerInvoice(models.Model):
+    """Plain; served by ``turbodrf.register()`` in
+    tests/integration/test_audit_third.py. Tenant-scoped by ``brokerage``,
+    with an FK to ScopeLedger, the plain hop of ScopeEntry's tenant path."""
+
+    memo = models.CharField(max_length=100)
+    brokerage = models.ForeignKey(Brokerage, on_delete=models.CASCADE, related_name="+")
+    ledger = models.ForeignKey(
+        ScopeLedger, on_delete=models.CASCADE, null=True, blank=True, related_name="+"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Write-rule fuzz models, used by tests/conformance/test_write_rule_equivalence.py.
+# Plain: the fuzzer serves WriteRuleRow through turbodrf.register() with a
+# fresh predicate config per example. Every relation is one-way
+# (related_name="+"), so nothing is added to User's reverse relations.
+# ---------------------------------------------------------------------------
+
+
+class WriteRuleTeam(models.Model):
+    """Target of Group('team'): users in ``members`` belong to the team."""
+
+    name = models.CharField(max_length=100)
+    brokerage = models.ForeignKey(Brokerage, on_delete=models.CASCADE, related_name="+")
+    members = models.ManyToManyField("auth.User", related_name="+", blank=True)
+
+
+class WriteRuleParent(models.Model):
+    """Target of Owner('parent__owner')."""
+
+    name = models.CharField(max_length=100)
+    brokerage = models.ForeignKey(Brokerage, on_delete=models.CASCADE, related_name="+")
+    owner = models.ForeignKey(
+        "auth.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+
+
+class WriteRuleRow(models.Model):
+    """Every column a predicate can name: two owner columns, a path owner
+    (parent__owner), M2M members, a team FK and a status for Conditional."""
+
+    title = models.CharField(max_length=100)
+    status = models.CharField(max_length=20, default="open")
+    brokerage = models.ForeignKey(Brokerage, on_delete=models.CASCADE, related_name="+")
+    owner = models.ForeignKey(
+        "auth.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    editor = models.ForeignKey(
+        "auth.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    parent = models.ForeignKey(
+        WriteRuleParent,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    team = models.ForeignKey(
+        WriteRuleTeam,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    members = models.ManyToManyField("auth.User", related_name="+", blank=True)
+
+    class Meta:
+        ordering = ["id"]

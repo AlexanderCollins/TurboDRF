@@ -15,6 +15,7 @@ from rest_framework.permissions import BasePermission, OperationHolderMixin
 from rest_framework.routers import DefaultRouter
 
 from .mixins import (
+    _registered,
     _resolve_configured_fields,
     config_label,
     is_turbodrf_model,
@@ -51,8 +52,8 @@ _bypass_roles_validated = False
 
 def _field_path_resolves(model, path):
     """True if ``path`` names something the serializer can render: a model
-    field or attribute (``@property``), or a ``__`` path whose hops before the
-    last are relations."""
+    field or attribute (``@property``), or a ``__`` path of relations ending
+    on a field."""
     parts = path.split("__")
     current = model
     for i, part in enumerate(parts):
@@ -60,11 +61,19 @@ def _field_path_resolves(model, path):
         try:
             field = current._meta.get_field(part)
         except FieldDoesNotExist:
-            return last and bool(part) and hasattr(current, part)
+            # A @property only at the top level, where it runs in the
+            # property sandbox: through a '__' path it would run on the full
+            # related row, outside every field rule.
+            return last and i == 0 and bool(part) and hasattr(current, part)
         if not last:
             current = getattr(field, "related_model", None)
             if current is None:
                 return False
+        elif field.is_relation and (
+            field.related_model is None  # a generic FK: no model to scope
+            or (i > 0 and (field.many_to_many or field.one_to_many))
+        ):
+            return False  # rendered, a related manager or row: a 500
     return True
 
 
@@ -91,6 +100,27 @@ def _configured_field_names(model, config, where=None):
             f"{fields!r}."
         )
     return list(fields)
+
+
+def _sensitive_fields(model):
+    return list(getattr(model, "sensitive_fields", None) or ())
+
+
+def _validate_sensitive_fields(model):
+    """Every ``sensitive_fields`` entry must name a field of the model, by its
+    name: a typo, or an FK's column name (``owner_id``), would protect
+    nothing."""
+    for name in _sensitive_fields(model):
+        try:
+            field = model._meta.get_field(name) if isinstance(name, str) else None
+        except FieldDoesNotExist:
+            field = None
+        if field is None or field.name != name or field.auto_created:
+            raise ImproperlyConfigured(
+                f"{model.__name__}.sensitive_fields lists {name!r}, which isn't "
+                f"a field of {model.__name__}: it would protect nothing. Use the "
+                f"field's name ('owner', not 'owner_id')."
+            )
 
 
 def _is_unique_alone(model, field):
@@ -135,7 +165,39 @@ _CONFIG_KEYS = frozenset(
 _PLATFORM_KEYS = _CONFIG_KEYS - TENANCY_KEYS - {"platform"}
 
 
+# Keys whose value is a switch. A string ('false') would read as true.
+_BOOLEAN_KEYS = ("enabled", "public_access", "read_only", "full_clean")
+
+
+def _validate_booleans(config, where):
+    for key in _BOOLEAN_KEYS:
+        if key in config and not isinstance(config[key], bool):
+            raise ImproperlyConfigured(
+                f"{where} '{key}' must be True or False; got {config[key]!r}, "
+                f"which Python would read as {bool(config[key])}."
+            )
+
+
+def _validate_own_config(model):
+    """A proxy or multi-table child of a TurboDRF model has its own config:
+    an inherited ``turbodrf()`` would serve it at its own endpoint, with the
+    parent's ``public_access``, without anyone choosing to."""
+    if model in _registered:
+        return
+    owner = next((c for c in model.__mro__ if "turbodrf" in vars(c)), None)
+    meta = getattr(owner, "_meta", None)
+    if owner is model or meta is None or meta.abstract:
+        return
+    raise ImproperlyConfigured(
+        f"{model.__name__} inherits turbodrf() from {owner.__name__}. Give it "
+        f"its own ('enabled': False for no route), and its own model-level "
+        f"grants in TURBODRF_ROLES (field rules carry over from "
+        f"{owner.__name__})."
+    )
+
+
 def _validate_config_keys(model, config):
+    _validate_booleans(config, config_label(model))
     unknown = sorted(set(config) - _CONFIG_KEYS)
     if not unknown:
         return
@@ -179,7 +241,10 @@ def _validate_fields_and_lookup(model, config, where=None):
         raise ImproperlyConfigured(
             f"{where} 'fields' lists {bad}, which "
             f"{model.__name__} doesn't have. Each entry must be a model field, "
-            f"a @property, or a '__' path through relations."
+            f"a @property, or a '__' path through relations ending on a field "
+            f"(a property of a related model runs outside the property "
+            f"sandbox: list it in that model's own 'fields', or list the "
+            f"column it reads)."
         )
     reverse = [name for name in names if _ends_on_reverse_one_to_one(model, name)]
     if reverse:
@@ -200,6 +265,13 @@ def _validate_fields_and_lookup(model, config, where=None):
         raise ImproperlyConfigured(
             f"{where} 'lookup_field' {lookup!r} is not a "
             f"column of {model.__name__}."
+        )
+    from .validation import is_field_path_sensitive
+
+    if is_field_path_sensitive(lookup) or lookup in _sensitive_fields(model):
+        raise ImproperlyConfigured(
+            f"{where} 'lookup_field' {lookup!r} is a sensitive field: a detail "
+            f"URL would confirm guesses of its value."
         )
     if not _is_unique_alone(model, field):
         raise ImproperlyConfigured(
@@ -282,6 +354,7 @@ def _validate_platform_block(model, config, tenant_field):
             f"boundary and no predicates, so tenancy keys belong at the top "
             f"level of turbodrf() only."
         )
+    _validate_booleans(block, where)
     unknown = sorted(set(block) - _PLATFORM_KEYS)
     if unknown:
         hint = ""
@@ -416,6 +489,45 @@ def _platform_roles_setting():
             f"shape as TURBODRF_ROLES.{note}"
         )
     return roles
+
+
+def _validate_through_rules(model, config):
+    """No path crosses an M2M whose ``through`` model has row rules: the link
+    would be rendered, filtered and searched without them. A path through the
+    through model's own rows (``memberships__user``) keeps them."""
+    from .mixins import get_searchable_fields
+    from .predicates import get_predicates
+
+    fields = config.get("fields", "__all__")
+    every = fields == "__all__" or (
+        isinstance(fields, dict) and "__all__" in fields.values()
+    )
+    paths = list(_configured_field_names(model, config))
+    if every:
+        paths += [f.name for f in model._meta.many_to_many]
+    paths += [str(entry).lstrip("^=@$") for entry in get_searchable_fields(model)]
+    for relations in (config.get("property_relations") or {}).values():
+        paths += list(relations)
+    for path in paths:
+        current = model
+        for part in str(path).split("__"):
+            try:
+                field = current._meta.get_field(part)
+            except FieldDoesNotExist:
+                break
+            if field.many_to_many:
+                # A reverse M2M has the through model; a forward one's rel.
+                through = getattr(field, "through", None) or field.remote_field.through
+                if get_predicates(through):
+                    raise ImproperlyConfigured(
+                        f"{config_label(model)} reaches {through.__name__}'s "
+                        f"links through the M2M in {path!r}, without "
+                        f"{through.__name__}'s row rules. Go through "
+                        f"{through.__name__}'s rows instead (its reverse FK)."
+                    )
+            current = field.related_model
+            if current is None:
+                break
 
 
 def _validate_searchable_fields(model):
@@ -631,7 +743,9 @@ class TurboDRFRouter(DefaultRouter):
         # A misspelt key drops what it meant to configure, on a disabled model
         # (still a scoped FK / filter target) as much as an enabled one.
         for model in models:
+            _validate_own_config(model)
             _validate_config_keys(model, configs[model])
+            _validate_sensitive_fields(model)
 
         # ---------------------------------------------------------------
         # Resolve and register tenancy for EVERY model, enabled or not: a
@@ -697,6 +811,7 @@ class TurboDRFRouter(DefaultRouter):
             # Every configured field and the lookup_field must exist.
             _validate_fields_and_lookup(model, config)
             _validate_searchable_fields(model)
+            _validate_through_rules(model, config)
 
             # property_relations / unscoped_properties must name
             # real properties and loadable relation paths.
@@ -851,6 +966,7 @@ class TurboDRFRouter(DefaultRouter):
         models = [m for m in apps.get_models() if is_turbodrf_model(m)]
         configs = {model: turbodrf_config(model) for model in models}
         for model in models:
+            _validate_own_config(model)
             _validate_config_keys(model, configs[model])
         resolved = _register_tenancy(models, configs)
         blocks = _validate_platform_blocks(models, configs, resolved)

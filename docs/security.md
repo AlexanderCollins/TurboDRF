@@ -135,6 +135,19 @@ A 404 never names the model:
 
 If a permission check fails due to an error (database issue, malformed data), access is denied. TurboDRF never grants access on exception.
 
+Some rules are held by two checks, so a bug in one isn't enough:
+
+- **Writes across tenants.** Before a write commits, every row it names
+  through an FK or M2M is checked against the caller's tenant from that row's
+  own tenant column, apart from the checks before the write. A refusal there
+  is logged at ERROR (`turbodrf.serializers`): it means a first check missed.
+- **Properties.** A property runs on a row holding only the columns the
+  caller may read, with every query blocked; anything the row's construction
+  stored (a `post_init` handler's copy of a column, a change tracker's
+  values) is dropped first.
+- **The browsable API** renders the raw-data (JSON) form only, never a form
+  listing a related field's rows.
+
 ## Row-level access control (predicates)
 
 TurboDRF enforces row-level access through *predicates* declared per model.
@@ -185,6 +198,10 @@ and configuration reference.
   is rejected with a 400. With a chained `tenant_field` (`ledger__firm`),
   a create, or an update that changes the first hop (`ledger`), must point
   it at a row in the caller's tenant.
+- **Delete** — a delete passes the write checks a write would: each
+  `Custom`'s `write_validator` runs, and an `Owner` inside an `Either` must
+  hold for the row. Seeing a row through `Members` doesn't let a caller delete
+  a row that `Owner` gives to someone else.
 - **FK injection defense** — every FK and M2M value in the request body must
   resolve to a row visible under the related model's tenant boundary and
   predicates. This runs on every model, shared ones included, and an
@@ -195,7 +212,8 @@ and configuration reference.
   (typically a user) must be in the caller's tenant. A generic FK
   (`content_type` + `object_id`) is checked like an FK to the content type's
   model. Rejected targets return 400 with the same message whether they're
-  hidden or don't exist.
+  hidden or don't exist, and this check runs before the predicates' own
+  write checks, so their messages can't tell the two apart either.
 - **M2M writes** — a write replaces only the links the caller can see; links
   to rows they can't reference are kept.
 - **Tenant reassignment rejection** — PATCH cannot change a row's tenant FK to
@@ -380,7 +398,9 @@ no rows across a reverse / M2M relation, at that hop or an earlier one)
 is kept: each step is `<prefix>__isnull=True OR <the step's scope>`
 when the relation can be empty. An empty relation joins nothing, so it
 can't reveal a target row; a relation pointing at an out-of-scope
-target is still excluded. The same scope decides whether a nested FK
+target is still excluded. That difference is why `__isnull` filters the
+model's own fields only: through a relation, `isnull=true` would match the
+empty relation and not the out-of-scope one. The same scope decides whether a nested FK
 value renders (the value is `null` where the scope fails; the row stays),
 and is applied inside search over `__`-path `searchable_fields`.
 
@@ -454,6 +474,23 @@ an operator's staff. What keeps it contained (details in
 - **The API root lists every route.** `GET /api/` names each endpoint,
   whatever the caller may use. Pass `include_root_view=False` to the router
   to drop it.
+- **Uniqueness is checked before the row rules.** A `UniqueConstraint` that
+  includes an owner column can answer "already exists" about a row the caller
+  can't see, within their tenant.
+- **Model-level permissions are per model.** A multi-table child or a proxy
+  declares its own `turbodrf()` (the router refuses one that inherits it) and
+  needs its own `.read` / `.create` / ... grants. Its parent's field rules
+  hold on it too: the columns are the parent's. A row's rules are checked
+  when it's written, not when a row its `Owner` path or `Conditional` runs
+  through is edited.
+- **Database cascades** (`on_delete=CASCADE`, `SET_NULL`) change rows the
+  deleter can't see, as Django does them.
+- **Request size** is your web server's to limit: DRF doesn't apply
+  `DATA_UPLOAD_MAX_MEMORY_SIZE` to JSON bodies.
+- **`TURBODRF_TENANT_USER_FIELD` should be a column** (a foreign key). A
+  property can't narrow user choices to the caller's tenant in SQL: an error
+  can differ between "another tenant's user" and "no such user", and a filter
+  naming another tenant's user costs one query more than one naming nobody.
 - **Bypassed permission modes** (`TURBODRF_DISABLE_PERMISSIONS`,
   `TURBODRF_USE_DEFAULT_PERMISSIONS`) have no field rules, so per-model
   `sensitive_fields` don't apply.

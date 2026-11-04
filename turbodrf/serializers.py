@@ -2,7 +2,7 @@ import base64
 import logging
 
 from django.core.exceptions import FieldDoesNotExist, ValidationError
-from django.db import IntegrityError, models, transaction
+from django.db import IntegrityError, models, router, transaction
 from rest_framework import serializers
 from rest_framework.relations import ManyRelatedField, RelatedField
 
@@ -169,9 +169,12 @@ def _caller_tenant_pk(request):
 
 def _tenant_model(model, tenant_field):
     """The model ``tenant_field`` (``brokerage``, ``deal__brokerage``) ends
-    on, else ``TURBODRF_TENANT_MODEL``."""
+    on, else ``TURBODRF_TENANT_MODEL``, else the model every registered
+    ``tenant_field`` ends on."""
     from django.apps import apps
     from django.conf import settings as django_settings
+
+    from .predicates import _model_tenant_fields
 
     current = model
     for part in tenant_field.split("__"):
@@ -184,8 +187,15 @@ def _tenant_model(model, tenant_field):
     if current is not None:
         return current
     setting = getattr(django_settings, "TURBODRF_TENANT_MODEL", None)
+    if not setting:
+        ends = {
+            _tenant_model(other, path)
+            for other, path in list(_model_tenant_fields.items())
+            if path
+        }
+        return ends.pop() if len(ends) == 1 else None
     try:
-        return apps.get_model(setting) if setting else None
+        return apps.get_model(setting)
     except (LookupError, ValueError):
         return None
 
@@ -219,13 +229,14 @@ def _co_tenant_binds(host, tenant_pk):
     return tenant_pk is not None and not is_platform()
 
 
-def _co_tenant_queryset(host, queryset, request):
+def _co_tenant_queryset(host, queryset, request, row_by_row=False):
     """``queryset`` (a related field's choices) narrowed by the co-tenant rule
     ``_in_caller_tenant`` applies to written values, where it binds ``host``
     (``_co_tenant_binds``) and the target has no ``tenant_field`` of its own. A tenant
-    attribute that isn't a column (a property) can only be checked row by row,
-    so it narrows only the choices an HTML page renders; a write is checked
-    value by value in ``_check_fk_injection_writes``."""
+    attribute that isn't a column (a property) can only be checked row by row:
+    ``queryset`` is then narrowed only with ``row_by_row`` (a row's current
+    links), and an HTML page's form offers no choices; a write is checked value
+    by value in ``_check_fk_injection_writes``."""
     from django.conf import settings as django_settings
 
     from .predicates import get_tenant_field
@@ -248,15 +259,18 @@ def _co_tenant_queryset(host, queryset, request):
     try:
         target._meta.get_field(tenant_user_field)
     except FieldDoesNotExist:
+        if row_by_row:
+            visible = [
+                row.pk
+                for row in queryset
+                if _in_caller_tenant(row, target, None, tenant_user_field, tenant_pk)
+            ]
+            return queryset.filter(pk__in=visible)
         renderer = getattr(request, "accepted_renderer", None)
-        if getattr(renderer, "media_type", None) != "text/html":
-            return queryset
-        visible = [
-            row.pk
-            for row in queryset
-            if _in_caller_tenant(row, target, None, tenant_user_field, tenant_pk)
-        ]
-        return queryset.filter(pk__in=visible)
+        if getattr(renderer, "media_type", None) == "text/html":
+            # Narrowing it would read every tenant's rows: the form offers none.
+            return queryset.none()
+        return queryset
     return queryset.filter(**{tenant_user_field: tenant_pk})
 
 
@@ -460,6 +474,10 @@ def _check_fk_injection_writes(
             continue
         content_type = validated_data.get(ct_name, getattr(instance, ct_name, None))
         object_id = validated_data.get(id_name, getattr(instance, id_name, None))
+        if instance is None:
+            # A create that leaves one out gets the field's default.
+            content_type = _field_default(model, ct_name, content_type)
+            object_id = _field_default(model, id_name, object_id)
         if content_type is None or object_id is None:
             continue
         target = content_type.model_class()
@@ -470,6 +488,18 @@ def _check_fk_injection_writes(
         if row is None or not allowed(target, [row]):
             fk_errors[id_name] = [f"Invalid {id_name}: not found or not accessible."]
     return fk_errors
+
+
+def _field_default(model, name, value):
+    """``value``, else ``name``'s default (an FK's default resolved to its
+    row)."""
+    if value is not None:
+        return value
+    field = model._meta.get_field(name)
+    default = field.get_default()
+    if default is None or not field.is_relation or isinstance(default, models.Model):
+        return default
+    return field.related_model._base_manager.filter(pk=default).first()
 
 
 def _apply_predicate_writes(model, validated_data, instance, request):
@@ -503,6 +533,22 @@ def _apply_predicate_writes(model, validated_data, instance, request):
 
     tenant_field = get_tenant_field(model)
     predicates = get_predicates(model)
+
+    # Layer 3 first: a value outside the caller's reach gets the same answer
+    # as one that doesn't exist, before a predicate's own message (Owner's
+    # "a different user") could tell the two apart.
+    fk_errors = _check_fk_injection_writes(
+        model, validated_data, request, tenant_field, instance
+    )
+    if fk_errors:
+        _report_write_security_event(
+            "fk_injection_rejected",
+            f"FK injection blocked on {model.__name__}",
+            model=model.__name__,
+            fields=list(fk_errors.keys()),
+        )
+        raise serializers.ValidationError(fk_errors)
+
     if tenant_field or predicates:
         # Layers 1 + 2: validate the write.
         errors = _validate_predicate_writes(
@@ -521,19 +567,6 @@ def _apply_predicate_writes(model, validated_data, instance, request):
         validated_data = _autofill_predicate_writes(
             model, validated_data, request, tenant_field, predicates, instance
         )
-
-    # Layer 3: FK-injection + co-tenant checks.
-    fk_errors = _check_fk_injection_writes(
-        model, validated_data, request, tenant_field, instance
-    )
-    if fk_errors:
-        _report_write_security_event(
-            "fk_injection_rejected",
-            f"FK injection blocked on {model.__name__}",
-            model=model.__name__,
-            fields=list(fk_errors.keys()),
-        )
-        raise serializers.ValidationError(fk_errors)
 
     return validated_data
 
@@ -648,7 +681,9 @@ def _platform_tenant_errors(model, validated_data, instance):
                     f"this row."
                 ]
                 break
-    if moved and _platform_referenced(model, instance):
+    if moved and _platform_referenced(
+        model, model._base_manager.filter(pk=instance.pk)
+    ):
         errors[hop] = [
             "Cannot move this row to another tenant while other rows point at "
             "it: move or delete them first."
@@ -656,21 +691,29 @@ def _platform_tenant_errors(model, validated_data, instance):
     return errors
 
 
-def _platform_referenced(model, instance):
-    """Do rows of a tenant-scoped model point at ``instance`` and keep their
-    own tenant when it moves (their ``tenant_field`` doesn't run through the
-    relation)? A move would leave them pointing at another tenant's row."""
+def _platform_referenced(model, rows, depth=0):
+    """Do rows of a tenant-scoped model point at any of ``rows`` and keep
+    their own tenant when those move (their ``tenant_field`` doesn't run
+    through the relation)? A move would leave them pointing at another
+    tenant's rows. Rows whose tenant does follow move too, so what points at
+    them is checked in turn (a few levels deep)."""
     from .predicates import registered_tenant_field
 
     for rel in model._meta.related_objects:
         their_tenant = registered_tenant_field(rel.related_model)
         if not their_tenant:
             continue
+        referrers = rel.related_model._base_manager.filter(
+            **{f"{rel.field.name}__in": rows.values("pk")}
+        )
         if not rel.many_to_many and their_tenant.split("__")[0] == rel.field.name:
-            continue  # their tenant follows this row
-        if rel.related_model._base_manager.filter(
-            **{rel.field.name: instance}
-        ).exists():
+            # Their tenant follows these rows: they move with them.
+            if depth < 4 and _platform_referenced(
+                rel.related_model, referrers, depth + 1
+            ):
+                return True
+            continue
+        if referrers.exists():
             return True
     return False
 
@@ -730,6 +773,75 @@ def _platform_value_tenant(target, value, tenant_model, tenant_user_field):
     return None
 
 
+def _verify_references_in_tenant(model, written, request):
+    """After a write on the tenant scope, inside its transaction: every row
+    the write names through an FK or M2M (``written``: field name -> value,
+    or values) is in the caller's tenant, or in none. A backstop for the
+    checks before the write (``_check_fk_injection_writes``, on scoped
+    querysets): judged from the rows' tenant columns, as the platform scope
+    judges them, so a gap in those checks can't alone commit a reference to
+    another tenant's row."""
+    from django.conf import settings as django_settings
+
+    from .predicates import get_tenant_field
+    from .scope import is_platform
+
+    tenant_pk = _caller_tenant_pk(request)
+    if is_platform() or tenant_pk is None:
+        return
+    tenant_model = _tenant_model(model, get_tenant_field(model) or "")
+    tenant_user_field = getattr(django_settings, "TURBODRF_TENANT_USER_FIELD", None)
+    for name, value in written.items():
+        field = model._meta.get_field(name)
+        pks = {_related_pk(v) for v in (value if field.many_to_many else [value])}
+        pks.discard(None)
+        if pks and _outside_tenant(
+            field.related_model, pks, tenant_pk, tenant_model, tenant_user_field
+        ):
+            logger.error(
+                "turbodrf: a write to %s.%s named another tenant's row, past the "
+                "checks before the write; refused.",
+                model.__name__,
+                name,
+            )
+            raise serializers.ValidationError(
+                {name: [f"Invalid {name}: not found or not accessible."]}
+            )
+
+
+def _relation_values(model, validated_data):
+    """``validated_data``'s FK and M2M values, by field name."""
+    relations = {f.name for f in model._meta.fields if f.many_to_one or f.one_to_one}
+    relations.update(f.name for f in model._meta.many_to_many)
+    return {name: value for name, value in validated_data.items() if name in relations}
+
+
+def _outside_tenant(target, pks, tenant_pk, tenant_model, tenant_user_field):
+    """Is any of ``pks`` (rows of ``target``) in a tenant other than
+    ``tenant_pk``? A row's tenant as ``_platform_value_tenant`` reads it; one
+    in no tenant isn't."""
+    from .predicates import registered_tenant_field, user_tenant_value
+
+    if _same_model(target, tenant_model):
+        return any(str(pk) != str(tenant_pk) for pk in pks)
+    path = registered_tenant_field(target)
+    if not path and tenant_user_field and hasattr(target, tenant_user_field):
+        try:
+            target._meta.get_field(tenant_user_field)
+            path = tenant_user_field
+        except FieldDoesNotExist:  # a property: row by row
+            return any(
+                _related_pk(user_tenant_value(row)) not in (None, tenant_pk)
+                for row in target._base_manager.filter(pk__in=pks)
+            )
+    if not path:
+        return False
+    rows = target._base_manager.filter(pk__in=pks)
+    return (
+        rows.exclude(**{f"{path}__isnull": True}).exclude(**{path: tenant_pk}).exists()
+    )
+
+
 def _role_filters_writes(request):
     """True when the caller's role snapshot decides which provided fields are
     written — not when permissions are bypassed (disabled / Django default
@@ -740,43 +852,61 @@ def _role_filters_writes(request):
     return bool(user and user.is_authenticated and not permissions_bypassed())
 
 
-def _verify_written_row(model, instance, request, owners=()):
+def _row_matches(row, predicates, request):
+    """Does ``row`` (a one-row queryset) satisfy ``predicates``? Judged
+    through ``Authorization.scope``, as a read is: a plain filter would take
+    Django's path for a negated to-many lookup (see
+    ``views.without_to_many_joins``)."""
+    from .predicates import predicates_q
+    from .views import Authorization
+
+    return (
+        Authorization(None, predicates_q(predicates, request, row.model))
+        .scope(row)
+        .exists()
+    )
+
+
+def _verify_written_row(model, instance, request, owners=(), using=None):
     """After a write, re-check predicates that can only be judged on the saved
     row (``Conditional``, ``Owner`` over a ``__`` path): the row must still be
     visible to the caller, and satisfy each of ``owners`` (from
     ``_owner_paths_written``), or the write is rolled back. Called inside the
     write's transaction."""
-    from .predicates import get_predicates, predicates_q
+    from .predicates import get_predicates
 
     predicates = get_predicates(model)
     if not request or not any(_needs_post_write_check(p) for p in predicates):
         return
-    row = model._base_manager.filter(pk=instance.pk)
-    if not row.filter(predicates_q(predicates, request)).exists():
+    # The database the write went to, not a router's read replica: it must
+    # see the row as just written, inside the write's transaction.
+    row = model._base_manager.using(using).filter(pk=instance.pk)
+    if not _row_matches(row, predicates, request):
         raise serializers.ValidationError(
             {"detail": ["This write would create a row you are not allowed to see."]}
         )
     for owner in owners:
-        if not row.filter(predicates_q([owner], request)).exists():
+        if not _row_matches(row, [owner], request):
             raise serializers.ValidationError(
                 {"detail": [f"{' or '.join(owner.fields)} must be you."]}
             )
 
 
-def _owner_paths_written(model, validated_data, instance, request):
-    """The ``Owner``-over-a-``__``-path children of an ``Either`` this write
-    must satisfy on their own: every one on create, and on update those whose
-    path starts at a relation the write changes. Another branch's visibility
+def _owner_paths_written(model, validated_data, instance, request, using=None):
+    """The ``Owner`` children of an ``Either`` judged on the saved row (over a
+    ``__`` path, or of several columns) this write must satisfy on their own:
+    every one on create, and on update those whose path starts at a relation
+    the write changes. Another branch's visibility
     mustn't let a writer put a row on someone else's parent, or move one off
     it: on update the row must satisfy the Owner before the write too."""
-    from .predicates import Either, Owner, _current_pk, get_predicates, predicates_q
+    from .predicates import Either, Owner, _current_pk, get_predicates
 
     def nested(predicates, inside_either=False):
         for p in predicates:
             if isinstance(p, Either):
                 yield from nested(p.predicates, True)
             elif inside_either and isinstance(p, Owner):
-                if any("__" in f for f in p.fields):
+                if p.verify_after_write:  # a '__' path, or several columns
                     yield p
 
     def changed(hop):
@@ -794,13 +924,44 @@ def _owner_paths_written(model, validated_data, instance, request):
         or any(changed(f.split("__")[0]) for f in owner.fields if "__" in f)
     ]
     if instance is not None:
-        row = model._base_manager.filter(pk=instance.pk)
+        row = model._base_manager.using(using).filter(pk=instance.pk)
         for owner in owners:
-            if not row.filter(predicates_q([owner], request)).exists():
+            if not _row_matches(row, [owner], request):
                 raise serializers.ValidationError(
                     {"detail": ["Cannot move this row: it belongs to another user."]}
                 )
     return owners
+
+
+def _delete_errors(model, instance, request):
+    """Why ``instance`` can't be deleted by the caller, or []. A delete is a
+    write: reads OR, writes AND, so seeing the row through one rule doesn't
+    let the caller delete what another rule keeps from them. Each ``Custom``'s
+    ``write_validator`` runs (with no data), and an ``Owner`` inside an
+    ``Either`` must hold for the row (a top-level one already does, or the
+    row wouldn't be visible). ``Members``, ``Group`` and ``Conditional`` add
+    none."""
+    from .predicates import Custom, Either, Owner, get_predicates
+
+    if request is None:
+        return []
+    errors = []
+    # The database the delete goes to, not a router's read replica.
+    using = router.db_for_write(model, instance=instance)
+    row = model._base_manager.using(using).filter(pk=instance.pk)
+
+    def walk(predicates, inside_either):
+        for p in predicates:
+            if isinstance(p, Either):
+                walk(p.predicates, True)
+            elif isinstance(p, Owner) and inside_either:
+                if not _row_matches(row, [p], request):
+                    errors.append("Cannot delete this row: it belongs to another user.")
+            elif isinstance(p, Custom):
+                errors.extend(p.validate_write({}, instance, request))
+
+    walk(get_predicates(model), False)
+    return errors
 
 
 def _needs_post_write_check(predicate):
@@ -813,6 +974,62 @@ def _needs_post_write_check(predicate):
     return False
 
 
+class _ManyPrimaryKeys(ManyRelatedField):
+    """A many-to-many's ids, looked up in one query per 500, not one query per
+    id (a long list was as many queries), and at most 10,000 of them."""
+
+    max_ids = 10_000
+
+    def to_internal_value(self, data):
+        child = self.child_relation
+        if (
+            isinstance(data, (str, dict))
+            or not hasattr(data, "__iter__")
+            or child.pk_field is not None
+        ):
+            return super().to_internal_value(data)
+        data = list(data)
+        if not self.allow_empty and not data:
+            self.fail("empty")
+        if len(data) > self.max_ids:
+            raise serializers.ValidationError(
+                f"Ensure this field has no more than {self.max_ids} elements."
+            )
+        queryset = child.get_queryset()
+        pk_field = queryset.model._meta.pk
+        keys = []
+        for item in data:
+            try:
+                if isinstance(item, (bool, dict, list)):
+                    raise TypeError
+                keys.append(pk_field.to_python(item))
+            except (ValidationError, TypeError, ValueError):
+                child.fail("incorrect_type", data_type=type(item).__name__)
+        unique = list(dict.fromkeys(keys))
+        found = {}
+        for start in range(0, len(unique), 500):
+            for row in queryset.filter(pk__in=unique[start : start + 500]):
+                found[row.pk] = row
+        for item, key in zip(data, keys):
+            if key not in found:
+                child.fail("does_not_exist", pk_value=item)
+        return [found[key] for key in unique]
+
+
+class _PrimaryKeyField(serializers.PrimaryKeyRelatedField):
+    """DRF's related field, whose ``many=True`` form is ``_ManyPrimaryKeys``."""
+
+    @classmethod
+    def many_init(cls, *args, **kwargs):
+        from rest_framework.relations import MANY_RELATION_KWARGS
+
+        list_kwargs = {"child_relation": cls(*args, **kwargs)}
+        for key in kwargs:
+            if key in MANY_RELATION_KWARGS:
+                list_kwargs[key] = kwargs[key]
+        return _ManyPrimaryKeys(**list_kwargs)
+
+
 class TurboDRFSerializer(serializers.ModelSerializer):
     """
     Base serializer for TurboDRF models with support for nested field notation.
@@ -820,6 +1037,8 @@ class TurboDRFSerializer(serializers.ModelSerializer):
     This serializer extends Django REST Framework's ModelSerializer to provide
     automatic handling of nested field relationships using double-underscore notation.
     """
+
+    serializer_related_field = _PrimaryKeyField
 
     def get_fields(self):
         """The primary key is read-only on update: writing it saved a copy of
@@ -831,10 +1050,11 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         host, in the caller's tenant. Without a request (programmatic use)
         there is no caller to scope to. A dropdown option is labelled with the
         value the field renders, not ``str(row)``, which can show columns of
-        the target the caller can't read. A schema generator's view (its
-        ``swagger_fake_view``) reads the fields' types only: no rows to
-        scope, and its caller may be a list of roles with no rows of its own
-        (``RoleOnlyIdentity``)."""
+        the target the caller can't read, and the options come in pk order
+        (the target's own order can be on such a column). A schema
+        generator's view (its ``swagger_fake_view``) reads the fields' types
+        only: no rows to scope, and its caller may be a list of roles with no
+        rows of its own (``RoleOnlyIdentity``)."""
         fields = super().get_fields()
         if self.instance is not None:
             pk_name = self.Meta.model._meta.pk.name
@@ -843,23 +1063,36 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         view = self.context.get("view")
         if request is not None and not getattr(view, "swagger_fake_view", False):
-            for field in fields.values():
+            for name, field in fields.items():
                 relation = getattr(field, "child_relation", field)
                 if isinstance(relation, RelatedField) and relation.queryset is not None:
-                    relation.queryset = self._referenceable(relation.queryset, request)
+                    relation.queryset = self._referenceable(
+                        relation.queryset, request, name
+                    ).order_by("pk")
                     relation.display_value = relation.to_representation
         return fields
 
-    def _referenceable(self, queryset, request):
+    def _referenceable(self, queryset, request, name=None, row_by_row=False):
         """``queryset`` narrowed to the rows the caller may reference: the
-        same rows the write check (_check_fk_injection_writes) accepts."""
+        same rows the write check (_check_fk_injection_writes) accepts. For
+        ``name``, the first hop of a chained ``tenant_field``
+        (``ledger__firm``), only rows in the caller's tenant: a row in
+        another tenant then fails like one that doesn't exist."""
+        from .predicates import get_tenant_field
         from .validation import scoped_target_queryset
 
         queryset = queryset.all()
         scoped = scoped_target_queryset(queryset.model, request)
         if scoped is not None:
             queryset = queryset.filter(pk__in=scoped.values("pk"))
-        return _co_tenant_queryset(self.Meta.model, queryset, request)
+        tenant_field = get_tenant_field(self.Meta.model)
+        if name and tenant_field and tenant_field.startswith(f"{name}__"):
+            tenant_pk = _caller_tenant_pk(request)
+            if tenant_pk is None:
+                return queryset.none()
+            rest = tenant_field.split("__", 1)[1]
+            queryset = queryset.filter(**{rest: tenant_pk})
+        return _co_tenant_queryset(self.Meta.model, queryset, request, row_by_row)
 
     def build_relational_field(self, field_name, relation_info):
         """A reverse relation is read-only: it renders from the scoped query
@@ -1177,10 +1410,14 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         scoped = scoped_target_queryset(target, request)
         queryset = target._default_manager.all() if scoped is None else scoped
-        if target._meta.ordering:
-            # The target's order, if it's on columns this array shows and the
-            # caller can read; else the pk. A column the array doesn't show
-            # (left out of a config, say) would leak through the order.
+        ordering = queryset.query.order_by or (
+            target._meta.ordering if queryset.query.default_ordering else ()
+        )
+        if ordering:
+            # The target's order (its manager's, else Meta.ordering), if it's
+            # on columns this array shows and the caller can read; else the
+            # pk. A column the array doesn't show (left out of a config, say)
+            # would leak through the order.
             user = getattr(request, "user", None) if request else None
             shown = {sub_path for sub_path in sub_paths if "__" not in sub_path}
             orderable = shown & _readable_columns(
@@ -1189,7 +1426,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                 permissions_bypassed(),
             )
             queryset = queryset.order_by(
-                *readable_ordering(target, target._meta.ordering, orderable)
+                *readable_ordering(target, ordering, orderable)
             )
 
         hops = {}  # a sub-path's relation prefix -> its visibility alias, or None
@@ -1352,8 +1589,11 @@ class TurboDRFSerializer(serializers.ModelSerializer):
             if key not in m2m_names:
                 setattr(instance, key, value)
 
+        # Only the fields the request sent: validating a column the caller
+        # didn't send (PUT included) would echo its stored value in an error,
+        # a hidden column's included.
         exclude = set(m2m_names)
-        if self.instance is not None and getattr(self, "partial", False):
+        if self.instance is not None:
             provided = set(attrs.keys())
             for f in model._meta.get_fields():
                 fname = getattr(f, "name", None)
@@ -1379,8 +1619,8 @@ class TurboDRFSerializer(serializers.ModelSerializer):
 
     def _writable(self, validated_data, model, action):
         """``validated_data`` without the fields the caller's role may not
-        write: an explicit write rule if the field has one, else model-level
-        ``action`` permission. Uses permission snapshots for O(1) checks."""
+        write: nothing without the model-level ``action`` permission, and a
+        field with a write rule only with its grant."""
         request = self.context.get("request")
         if not _role_filters_writes(request):
             return validated_data
@@ -1391,14 +1631,12 @@ class TurboDRFSerializer(serializers.ModelSerializer):
             snapshot = get_snapshot_from_request(request, model)
             if snapshot is None:
                 snapshot = build_permission_snapshot(request.user, model)
+        if not snapshot.can_perform_action(action):
+            return {}  # a field's write rule never stands in for the action
         return {
             name: value
             for name, value in validated_data.items()
-            if (
-                snapshot.can_write_field(name)
-                if snapshot.has_write_rule(name)
-                else snapshot.can_perform_action(action)
-            )
+            if not snapshot.has_write_rule(name) or snapshot.can_write_field(name)
         }
 
     def _keep_hidden_links(self, instance, validated_data, request):
@@ -1410,10 +1648,9 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         for field in instance._meta.many_to_many:
             if field.name not in validated_data:
                 continue
-            visible = self._referenceable(field.related_model._default_manager, request)
-            hidden = list(
-                getattr(instance, field.name).exclude(pk__in=visible.values("pk"))
-            )
+            links = getattr(instance, field.name).all()
+            visible = self._referenceable(links, request, row_by_row=True)
+            hidden = list(links.exclude(pk__in=visible.values("pk")))
             if hidden:
                 provided = list(validated_data[field.name])
                 validated_data = {**validated_data, field.name: provided + hidden}
@@ -1444,12 +1681,15 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         validated_data = _apply_predicate_writes(
             model, validated_data, instance, request
         )
+        written = _relation_values(model, validated_data)  # not the kept links
         validated_data = self._keep_hidden_links(instance, validated_data, request)
-        owners = _owner_paths_written(model, validated_data, instance, request)
+        db = router.db_for_write(model, instance=instance)
+        owners = _owner_paths_written(model, validated_data, instance, request, db)
 
-        with transaction.atomic():
+        with transaction.atomic(using=db):
             instance = super().update(instance, validated_data)
-            _verify_written_row(model, instance, request, owners)
+            _verify_written_row(model, instance, request, owners, db)
+            _verify_references_in_tenant(model, written, request)
         self._forget_read_state(instance)
         return instance
 
@@ -1467,14 +1707,26 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         validated_data = self._writable(validated_data, model, "create")
         validated_data = _apply_predicate_writes(model, validated_data, None, request)
         owners = _owner_paths_written(model, validated_data, None, request)
+        db = router.db_for_write(model)
 
-        with transaction.atomic():
+        with transaction.atomic(using=db):
             try:
                 instance = super().create(validated_data)
             except IntegrityError:
                 _require_unwritable_columns(model, validated_data)
                 raise
-            _verify_written_row(model, instance, request, owners)
+            _verify_written_row(model, instance, request, owners, db)
+            # Every FK the row holds, defaults included (a to_field FK's
+            # column holds the target's value, not its pk: its row).
+            written = {
+                f.name: getattr(
+                    instance, f.attname if f.target_field.primary_key else f.name
+                )
+                for f in model._meta.fields
+                if f.many_to_one or f.one_to_one
+            }
+            written.update(_relation_values(model, validated_data))
+            _verify_references_in_tenant(model, written, request)
         return instance
 
 

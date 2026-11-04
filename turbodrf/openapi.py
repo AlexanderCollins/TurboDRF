@@ -76,6 +76,7 @@ def get_openapi3_view(
 
     from .documentation import _platform_schema_view, _schema_gate
 
+    _register_filter_extension()
     gate = _schema_gate("get_openapi3_view", scope, gate)
     enumerator = type(
         "TurboDRFEndpointEnumerator",
@@ -102,7 +103,7 @@ def get_openapi3_view(
     )
     view = type(
         "TurboDRFOpenAPIView",
-        (SpectacularAPIView,),
+        (_SchemaView, SpectacularAPIView),
         {
             "generator_class": generator,
             "permission_classes": gate or [permissions.AllowAny],
@@ -122,6 +123,61 @@ def get_openapi3_view(
     if scope == PLATFORM:
         view = _platform_schema_view(view)
     return view.as_view()
+
+
+class _SchemaView:
+    """drf-spectacular's schema view, without two of its query parameters:
+    ``?lang=`` unless it names one of ``settings.LANGUAGES`` (Django caches
+    a translation for each distinct value, for good: memory any caller could
+    grow), and ``?version=`` (written into a response header)."""
+
+    def get(self, request, *args, **kwargs):
+        from django.utils import translation
+
+        lang = request.GET.get("lang")
+        if settings.USE_I18N and lang in dict(settings.LANGUAGES):
+            with translation.override(lang):
+                return self._get_schema_response(request)
+        return self._get_schema_response(request)
+
+    def _get_version_parameter(self, request):
+        return None
+
+
+def _register_filter_extension():
+    """Teach drf-spectacular TurboDRF's filter backend: its django-filter
+    extension builds the FilterSet from ``Model.objects``, a 500 for a model
+    whose manager has another name. Registered once, on first use."""
+    global _filter_extension_registered
+    if _filter_extension_registered:
+        return
+    from drf_spectacular.contrib.django_filters import DjangoFilterExtension
+    from drf_spectacular.plumbing import get_view_model
+
+    class TurboDRFFilterExtension(DjangoFilterExtension):
+        target_class = "turbodrf.filter_backends.TurboDRFFilterBackend"
+        priority = 1  # over drf-spectacular's own for DjangoFilterBackend
+
+        def get_schema_operation_parameters(self, auto_schema, *args, **kwargs):
+            model = get_view_model(auto_schema.view)
+            if not model:
+                return []
+            filterset_class = self.target.get_filterset_class(
+                auto_schema.view, model._default_manager.none()
+            )
+            if not filterset_class:
+                return []
+            parameters = []
+            for name, filter_field in filterset_class.base_filters.items():
+                parameters += self.resolve_filter_field(
+                    auto_schema, model, filterset_class, name, filter_field
+                )
+            return parameters
+
+    _filter_extension_registered = True
+
+
+_filter_extension_registered = False
 
 
 class _Endpoints:

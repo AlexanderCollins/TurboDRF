@@ -1,11 +1,16 @@
 import { defineCollection } from 'astro:content';
 import { glob } from 'astro/loaders';
-import { docSlug } from './lib/docs-meta.mjs';
+import { DOC_GROUPS, docSlug } from './lib/docs-meta.mjs';
 
-// The repo's own docs: every Markdown page in ../docs except build notes.
+// The repo's own docs: only the pages DOC_GROUPS lists, so a stray Markdown
+// file in ../docs (notes, drafts) is never published.
+const PAGES = DOC_GROUPS.flatMap((g) => g.pages)
+  .filter((slug) => slug !== 'agents')
+  .map((slug) => `${slug.replace(/-/g, '_')}.md`);
+
 const docs = defineCollection({
   loader: glob({
-    pattern: ['*.md', '!security_audit.md'],
+    pattern: PAGES,
     base: '../docs',
     generateId: ({ entry }) => docSlug(entry),
   }),

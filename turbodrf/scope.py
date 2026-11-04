@@ -106,6 +106,8 @@ def platform_reachable(model):
         return False
     from .mixins import is_turbodrf_model
 
+    if model._meta.proxy and not is_turbodrf_model(model):
+        model = model._meta.concrete_model  # a proxy of a registered model
     if not is_turbodrf_model(model):
         return True
     if platform_block(model) is not None:

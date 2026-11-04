@@ -83,14 +83,21 @@ For a model you can't edit (`auth.User`, a third-party app's), or to keep the
 API config out of `models.py`, skip the mixin and call
 `turbodrf.register(Model, {...same dict...})` from an `AppConfig.ready()`.
 
+A proxy or multi-table child of a TurboDRF model declares its own
+`turbodrf()` (`{'enabled': False, ...}` for no route) and gets its own
+model-level grants in `TURBODRF_ROLES`; its parent's field rules apply to it
+as well. The router refuses one that inherits its parent's `turbodrf()`.
+
 ### `fields`
 
 Always set `fields` to an explicit list (or a `{'list': [...], 'detail':
 [...]}` dict). It isn't required, but it defaults to `'__all__'`, which
 exposes every column, including ones added later; `manage.py check` warns
 (`turbodrf.W004`) for each model left on it. The primary key renders
-only if listed. A name that doesn't exist on the model, or one ending on a
-reverse one-to-one, raises at startup.
+only if listed. A name that doesn't exist on the model, a generic FK, a
+nested path ending on an M2M or reverse relation, a path across an M2M whose
+`through` model has row rules (use the through model's reverse FK), or one
+ending on a reverse one-to-one, raises at startup.
 
 An unknown `turbodrf()` key (a typo like `'owner_feild'`) raises
 `ImproperlyConfigured` at startup, listing the valid keys. `sensitive_fields`
@@ -111,7 +118,8 @@ route is still an FK, nested-field and filter target.
 `tenant_field` must be a chain of forward foreign keys / one-to-ones, named
 by field (`workspace`, not `workspace_id`), that ends at
 `TURBODRF_TENANT_MODEL`; the last one must reference the tenant's primary key
-(no `to_field`). `owner_field` alone doesn't count as a tenancy
+(no `to_field`), and a TurboDRF model it runs through needs a `tenant_field`
+of its own (not `'tenancy': 'shared'`). `owner_field` alone doesn't count as a tenancy
 decision. Nor does a `visibility` list without a `tenant_field`, unless one
 of its predicates restricts every caller: an `Owner` without bypass roles,
 `Members`, `Group` or `Custom` (an `Either` only if all its children do).
@@ -267,7 +275,9 @@ instead: the writer must still see it, and inside an `Either` it must hold
 on its own (on create, and before and after an update that changes the
 path's first hop). A several-column `Owner` is checked on the saved row too:
 a create must name the caller in one of its columns. `Custom` adds its
-`write_validator`; `Members`, `Group` and `Conditional` add none.
+`write_validator`; `Members`, `Group` and `Conditional` add none. A DELETE
+gets the same checks: a `Members` viewer can't delete a row `Owner` gives to
+someone else.
 On create, `Either` fills a single-column `Owner` child's column with the
 caller.
 

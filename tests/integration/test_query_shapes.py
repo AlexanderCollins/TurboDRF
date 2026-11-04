@@ -10,7 +10,12 @@ from django.db.models import F, Q
 from django.test import TestCase
 
 from tests.test_app.models import ParityAllTypes, ParityTag
-from turbodrf.views import Authorization, RowsMatching, without_to_many_joins
+from turbodrf.views import (
+    Authorization,
+    RowsMatching,
+    _q_spans_multivalued,
+    without_to_many_joins,
+)
 
 
 class TestWithoutToManyJoins(TestCase):
@@ -63,8 +68,16 @@ class TestWithoutToManyJoins(TestCase):
         # One tag must be both "a" and weight 1: only r2. Rewriting each
         # lookup on its own would also match r1 (a tag "a", another weight 1).
         q = Q(tags__name="a", tags__weight=1)
-        self.assertIsNone(without_to_many_joins(ParityAllTypes, q))
+        self.assertEqual(without_to_many_joins(ParityAllTypes, q), q)  # left as is
         self.assertEqual(self.assertSameRows(q), ["r2"])
+
+    def test_negated_lookups_sharing_a_relation_are_each_their_own(self):
+        # Under a NOT, Django matches each lookup on its own: r1 has a tag "a"
+        # and a tag of weight 1 (different tags), so it's excluded too.
+        q = ~Q(tags__name="a", tags__weight=1)
+        flat = without_to_many_joins(ParityAllTypes, q)
+        self.assertFalse(_q_spans_multivalued(ParityAllTypes, flat))
+        self.assertEqual(self.assertSameRows(q), ["r3"])
 
     def test_negated(self):
         q = ~Q(tags__name="a")
@@ -183,3 +196,21 @@ class TestPermissionCostsPerRequest(TestCase):
                 self.assertEqual(client.get("/api/samplemodels/").status_code, 200)
         role_queries = [q for q in ctx.captured_queries if "turbodrf_" in q["sql"]]
         self.assertEqual(len(role_queries), 1, [q["sql"] for q in role_queries])
+
+
+class TestEitherWithAnUnrestrictedBranch(TestCase):
+    def test_a_branch_with_no_condition_lifts_the_either(self):
+        # Q(Q()) holds no condition; OR'ed with another branch, Django drops
+        # it and the Either became the other branch alone.
+        from unittest.mock import Mock
+
+        from django.contrib.auth.models import User
+
+        from turbodrf.predicates import Custom, Either, Owner
+
+        either = Either(
+            Custom(lambda r, roles: Q(Q()), write_validator=lambda d, i, r: []),
+            Owner("assigned_broker"),
+        )
+        request = Mock(user=User(pk=1, username="u"))
+        self.assertEqual(either.q(request, set()), Q())

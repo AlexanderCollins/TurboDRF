@@ -29,3 +29,19 @@ updates:
     commit-message:
       prefix: "ci"
       include: "scope"
+
+  # The website (turbodrf.com): its lockfile holds the whole npm tree, which
+  # GitHub's dependency graph doesn't list on its own.
+  - package-ecosystem: "bun"
+    directory: "/website"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "website"
+    commit-message:
+      prefix: "website"
+      include: "scope"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Applies the website's AWS configuration, then publishes the built site (dist/).
-# Run with credentials for the AWS account that owns turbodrf.com, after `bun run build`.
+# Run from main with credentials for the AWS account that owns turbodrf.com; it builds the site.
 #
 #   infra/deploy.sh          apply both stacks, upload dist/, invalidate CloudFront
 #   infra/deploy.sh plan     show what applying the stacks would change, change nothing
@@ -13,6 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PROJECT=turbodrf
+ACCOUNT=297574765157  # the AWS account that owns turbodrf.com
 REGION=ap-southeast-2
 DOMAINS=(
   ProjectName=$PROJECT
@@ -48,6 +49,19 @@ output() {
     --query "Stacks[0].Outputs[?OutputKey=='$3'].OutputValue" --output text
 }
 
+# The right account, and (when publishing) a site built only from committed
+# files: dist/ is built here from this working tree, and docs/ pages are
+# published as they are on disk.
+[[ $(aws sts get-caller-identity --query Account --output text) == "$ACCOUNT" ]] ||
+  { echo "These AWS credentials aren't for account $ACCOUNT." >&2; exit 1; }
+if [[ $MODE != plan ]]; then
+  # main only: the changelog and docs pages describe fixes, published once released.
+  [[ $(git rev-parse --abbrev-ref HEAD) == main ]] || { echo "Deploy from main." >&2; exit 1; }
+  dirty=$(git status --porcelain --untracked-files=all -- ../docs ../AGENTS.md ../CHANGELOG.md .)
+  [[ -z $dirty ]] || { printf 'Uncommitted site sources, commit them first:\n%s\n' "$dirty" >&2; exit 1; }
+  bun run build
+fi
+
 apply us-east-1 "$CERTS_STACK" infra/website-certs.yml "${DOMAINS[@]}"
 CERT=$(output us-east-1 "$CERTS_STACK" CertificateArn)
 apply "$REGION" "$SITE_STACK" infra/website.yml "${DOMAINS[@]}" CertificateArn="$CERT"
@@ -55,7 +69,6 @@ apply "$REGION" "$SITE_STACK" infra/website.yml "${DOMAINS[@]}" CertificateArn="
 
 BUCKET=$(output "$REGION" "$SITE_STACK" WebsiteBucketName)
 DIST=$(output "$REGION" "$SITE_STACK" WebsiteDistributionId)
-[[ -d dist ]] || { echo "dist/ missing: run bun run build first" >&2; exit 1; }
 
 # Hashed bundles, fonts and the search index's fragments never change under a name: cached for good.
 aws s3 sync ./dist/ "s3://$BUCKET/" --exclude "*" --include "_astro/*" --include "fonts/*" \

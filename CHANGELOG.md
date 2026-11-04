@@ -1,5 +1,203 @@
 # Changelog
 
+## 0.8.5 — Second audit
+
+Six auditors attacked 0.8.4 as a hostile tenant, a field-secrecy attacker, a
+write-path attacker, a fuzzer of the query rewrites, a reviewer of the auth
+plumbing and of the supply chain. Seven more then attacked the result: the
+read path, filters, writes, roles, the HTTP surface, a black-box pentest and
+the supply chain again. Each fix has a test that sends the attack that worked
+(`tests/integration/test_audit_085.py`, `test_audit_third.py`,
+`test_audit_third_blackbox.py`), and four fuzzers stay in the suite
+(`tests/conformance/`): the query-rewrite fuzzer, a write-rule fuzzer that
+checks every write decision against a spec written from the docs, and
+read and write noninterference fuzzers (a response mustn't change when only
+data the caller can't see does).
+
+### Security: reads
+
+- The browsable API's filter form listed every row of an FK filter's target,
+  the tenant model's and the user model's included (every tenant's name,
+  every username). It's gone: filters work from the URL as before.
+- A `@property` of a related model in `fields` (`'author__display_name'`)
+  ran on the whole related row, outside the property sandbox. It's refused at
+  startup.
+- An FK with `to_field` rendered, filtered and ordered by the target's
+  column, which the caller might not be allowed to read. It now needs that
+  column's read grant.
+- A `lookup_field` the caller can't read is a 404 (a detail URL would confirm
+  guesses of its value), and a sensitive one is refused at startup.
+- A to-many array no longer follows its target manager's own order, nor a
+  property's relation hop its target's order, on a column the caller can't
+  read.
+- With `full_clean`, a PUT no longer validates (and echoes in an error) the
+  columns it didn't send.
+
+- A rule with a negated lookup through a to-many relation, next to another
+  JOIN of the same table (`Q(partner__name='a') & ~Q(targets__name='x',
+  targets__amount=5)`), could return a row it hides: Django's `split_exclude`
+  correlated the negated subquery to the wrong JOIN. Each negated lookup is
+  now its own subquery, which is what Django means by it, so the rule never
+  reaches that code. Found by the new differential fuzzer.
+- Two predicates over the same M2M or reverse relation shared its JOIN:
+  `[Members('members'), Custom(~Q(members__username='x'))]` read as "the
+  member who is me isn't x" and showed members the rows the `Custom` hides
+  (and the post-write check passed a write into them). Each predicate is
+  now a condition of its own. Found by the write-rule fuzzer.
+- A rule with no condition in it (`Q(Q())`) no longer narrows a filter
+  through its model to rows with no related row, and as an `Either` branch it
+  lifts the `Either` (Django dropped it from the OR).
+- An M2M whose `through` model has row rules of its own rendered, filtered
+  and searched the links without them. A path across one is refused at
+  startup: go through the through model's rows (its reverse FK).
+- A plain model that a chained `tenant_field` runs through (`ledger__firm`)
+  is scoped by the rest of that path wherever the API reaches it. Another
+  model's FK could name another tenant's row, and render its columns.
+- `?x__isnull=true` through a relation told a related row the caller can't
+  see from no row: `isnull` filters the model's own fields only (an FK
+  included). A configured `twin_row__name` no longer makes the reverse
+  one-to-one `twin_row` a filter of its own.
+- The property sandbox loads a to-many hop's rows without the target
+  manager's `select_related`, `prefetch_related` and annotations, which
+  brought in rows and values it doesn't scope, and applies the `to_field`
+  rule to the columns it loads.
+- A filter naming another tenant's row of the tenant model (or of the user
+  model, where `TURBODRF_TENANT_USER_FIELD` is a column) fails like one naming
+  nothing, in the work it does too: it ran one query more, a timing oracle.
+- A cursor pagination class orders only by a column the caller may order by:
+  its links carry that column's values.
+- The browsable API's write-form dropdowns list rows in pk order, not the
+  target's own order, which can be on a column the caller can't read.
+
+### Security: writes
+
+- A DELETE runs the write checks a PATCH would: a `Custom`'s
+  `write_validator`, and an `Owner` inside an `Either`.
+- The post-write checks (`Conditional`, `Owner` over a path) read the row
+  from the database it was written to, not a router's read replica.
+- A `tenant_field` running through a shared TurboDRF model is refused at
+  startup: any tenant could move that model's rows, and these with them.
+- A write naming a row in another tenant gets the same error as one naming
+  nothing, through a chained `tenant_field`'s first hop and through an owner
+  column too.
+- A generic FK whose `content_type` the create left to its default is
+  checked.
+- A proxy of a `register()`-ed model takes the model's rules.
+- `owner_field: 'owner_id'` (a column name) is refused at startup: the write
+  check never saw the value.
+- A field's write grant no longer stands in for the model-level action.
+- A platform move checks references to the rows that move with the row too.
+- The post-write and delete checks judge the row through the read path's
+  rewrite: a `Conditional`'s check passed a write that hid the row from its
+  writer (the `split_exclude` bug above). A delete's checks read the database
+  it deletes from.
+- Without `TURBODRF_TENANT_MODEL`, the tenant model is the one every
+  `tenant_field` ends on: a model with no `tenant_field` took any tenant in
+  its FK to the tenant model.
+- Inside an `Either`, a several-column `Owner` makes a create name the caller
+  in one of its columns, as it does on its own.
+- An M2M write keeps another tenant's users linked where
+  `TURBODRF_TENANT_USER_FIELD` is a property: the write couldn't name them,
+  and dropped them.
+
+### Denial of service
+
+- An `_or` filter takes at most 20 values, and a search's terms together at
+  most `TURBODRF_MAX_FILTER_VALUE_LENGTH` characters, now 200 by default
+  (was 1000 per term): a `LIKE` costs the pattern's length times the stored
+  text's.
+- A write's M2M ids are looked up in one query per 500, not one per id, and
+  at most 10,000 at once.
+- `/openapi/` no longer takes `?lang=` values outside `settings.LANGUAGES`
+  (each was cached for good) or puts `?version=` in a header, and works for
+  a model without a manager named `objects`.
+- A JSON body nested thousands deep is a 400, not a 500, and a custom
+  action's format-suffix URL (`/ping.json`) no longer 500s.
+- A request's text filters (`__contains`, `__icontains`, ...) take at most
+  `TURBODRF_MAX_FILTER_VALUE_LENGTH` characters together, as search's terms
+  do, and a parameter repeated more than 20 times matches nothing.
+- A `__year` outside 1–9999 and a NUL in a filter value are a 400, and a NUL
+  in a detail URL a 404 (each was a 500; a NUL on PostgreSQL). JSON
+  containment (`?data__contains=`) is ignored on a database without it
+  (SQLite).
+- With `TURBODRF_TENANT_USER_FIELD` a property, an HTML page no longer reads
+  every tenant's users to narrow a form's user choices: the form offers none.
+
+### Backstops
+
+Rules that now hold through two independent checks, so one bug isn't enough
+to break them (`tests/integration/test_backstops.py` switches the first off):
+
+- Before a write commits, every row it names through an FK or M2M is checked
+  against the caller's tenant from that row's own tenant column, apart from
+  the checks before the write; a refusal is logged at ERROR.
+- A property's row keeps only its readable columns and scoped relations:
+  anything its construction stored (a `post_init` handler's copy of a hidden
+  column, which a property could return) is dropped first.
+- The browsable API renders the raw-data form only, never a form listing a
+  related field's rows.
+
+### Startup checks
+
+- `sensitive_fields` entries must be the model's field names.
+- `enabled`, `public_access`, `read_only` and `full_clean` must be booleans
+  (`'false'` read as true).
+- `register()` refuses a model registered twice.
+- A cached permission snapshot's key names users as `user:<pk>`, so a string
+  pk can't share the anonymous key.
+- A proxy or multi-table child of a TurboDRF model needs its own
+  `turbodrf()`. Inherited, it was served at its own endpoint with the
+  parent's `public_access` and none of the parent's field rules.
+- A proxy or multi-table child takes its parent's field rules: they're the
+  parent's columns. A proxy with its own config (`super().turbodrf()` plus
+  `public_access`) served the parent's restricted columns, to anonymous
+  callers too. Found by the read noninterference fuzzer in CI.
+- A role source returning a mapping (`{'admin': False}`) is refused: every
+  key was held.
+- A generic FK, or a nested path ending on an M2M or reverse relation
+  (`author__books`), in `fields` is refused: either was a 500 on every
+  request.
+
+### Supply chain
+
+- The publish workflow builds without permission to upload, refuses a
+  release that isn't on `main`, and uploads from a separate job. The coverage
+  badge's token is out of the test job.
+- Dependabot watches the website's npm packages. The lowest supported
+  versions are now `Django>=4.2.30,!=5.0.*,!=5.1.*` and
+  `djangorestframework>=3.17.2`. They're minimums, not security pins: 4.2 gets
+  no security fixes after April 2026, and DRF 3.18.2 fixes advisories older
+  versions have, so pin the latest patches in your project.
+- The `allauth` extra needs django-allauth 65.14.1 or later (three
+  advisories).
+- Tested on Django 6.1 too.
+- turbodrf.com: HSTS for subdomains, a Content-Security-Policy that loads
+  nothing from another origin, null MX, SPF, DMARC and CAA records, docs
+  pages from an allow-list, redirects that are always absolute (`//host`
+  paths were an open redirect), and a deploy that checks its AWS account,
+  runs from `main` only, refuses uncommitted site sources and builds the site
+  itself.
+
+### Upgrading
+
+- These now refuse to start, and the errors say what to change:
+  - a `fields` entry naming a related model's property, a generic FK, or a
+    nested path ending on an M2M or reverse relation;
+  - a path across an M2M whose `through` model has row rules;
+  - a misspelt `sensitive_fields` entry, or a string where a boolean key
+    goes;
+  - an `owner_field` naming a column;
+  - a `tenant_field` through a shared TurboDRF model;
+  - a proxy or multi-table child that inherits its parent's `turbodrf()`;
+  - a role source returning a mapping.
+- `TURBODRF_MAX_FILTER_VALUE_LENGTH` defaults to 200, and bounds a search's
+  terms together and a request's text filters together.
+- `?x__isnull=` through a relation is ignored.
+- A plain model on a chained `tenant_field` path is scoped where the API
+  reaches it (FK choices and values, nested fields).
+- Cached permission snapshots are rebuilt once after the upgrade (their keys
+  changed).
+
 ## 0.8.4 — Audit fixes, register(), OpenAPI 3
 
 A full audit (reads, writes, auth plumbing, performance, adoption) found

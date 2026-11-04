@@ -28,8 +28,14 @@ tests/
 │                            # (test_security_*.py, test_audit_084.py),
 │                            # platform scope, swagger and OpenAPI 3 scoping
 │
-└── conformance/             # An independent policy monitor run against the
-                             # real API (deterministic + Hypothesis)
+└── conformance/             # Checks against an independent oracle:
+                             # the policy monitor (monitor.py), the rewrite
+                             # fuzzer, the write-rule fuzzer against a spec
+                             # written from the docs (write_spec.py), and the
+                             # read / write noninterference fuzzers. Longer
+                             # campaigns: TURBODRF_REWRITE_EXAMPLES,
+                             # TURBODRF_WRITE_RULE_EXAMPLES,
+                             # TURBODRF_NONINTERFERENCE_EXAMPLES
 ```
 
 ## Running Tests

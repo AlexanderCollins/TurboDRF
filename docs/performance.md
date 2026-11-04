@@ -10,6 +10,8 @@ A list request makes the same number of queries whatever the page size:
 
 A predicate that reaches through a to-many relation (`Members('participants')`, `Group('team')`) checks it with a subquery of the rows it matches (`id IN (SELECT ...)`), so the list query has no to-many JOIN and nothing repeats. A filter or search through a foreign key (`?author__name=...`) checks the related model's own rules on the row the query already joins.
 
+A write's M2M ids are looked up together, one query per 500, not one per id (at most 10,000 in one list).
+
 Permission snapshots come from Django's cache: one `get_many` for the request plus one read per model it touches. In database permission mode the request also makes one query, for every role's version and which of them the caller holds, and two more per model whose snapshot isn't cached.
 
 Size the cache for your users × models. Django's default `LocMemCache` holds 300 entries per process: with more active users than that, snapshots are rebuilt on most requests. Use a shared cache (Redis, Memcached) in production.

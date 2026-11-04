@@ -20,18 +20,22 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-        django-version: ["4.2", "5.2", "6.0"]
+        django-version: ["4.2", "5.2", "6.0", "6.1"]
         exclude:
           # Django 4.2 officially supports Python 3.8-3.12 only.
           - python-version: "3.13"
             django-version: "4.2"
           - python-version: "3.14"
             django-version: "4.2"
-          # Django 6.0 requires Python 3.12+.
+          # Django 6.0 and 6.1 require Python 3.12+.
           - python-version: "3.10"
             django-version: "6.0"
           - python-version: "3.11"
             django-version: "6.0"
+          - python-version: "3.10"
+            django-version: "6.1"
+          - python-version: "3.11"
+            django-version: "6.1"
 
     steps:
     - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
@@ -53,16 +57,30 @@ jobs:
       run: |
         pytest -v --cov=turbodrf --cov-report=term --cov-report=json
 
-    # The README's coverage badge reads this gist (no commits to main).
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+      if: matrix.python-version == '3.13' && matrix.django-version == '5.2' && github.ref == 'refs/heads/main'
+      with:
+        name: coverage
+        path: coverage.json
+
+  # The README's coverage badge reads this gist (no commits to main). Its own
+  # job: the gist token never shares a job with the test dependencies.
+  coverage-badge:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+      with:
+        name: coverage
+
     - name: Extract coverage percentage
-      if: matrix.python-version == '3.13' && matrix.django-version == '5.2'
       run: |
-        COVERAGE=$(python -c "import json; print(json.load(open('coverage.json'))['totals']['percent_covered_display'])")
+        COVERAGE=$(python3 -c "import json; print(json.load(open('coverage.json'))['totals']['percent_covered_display'])")
         echo "COVERAGE=$COVERAGE" >> $GITHUB_ENV
         echo "Coverage: $COVERAGE%"
 
     - name: Update coverage badge
-      if: matrix.python-version == '3.13' && matrix.django-version == '5.2' && github.ref == 'refs/heads/main'
       uses: schneegans/dynamic-badges-action@28b0fa8bdeb46170ac397105ece0c1fe58f68910  # v1.9.0
       with:
         auth: ${{ secrets.GIST_SECRET }}

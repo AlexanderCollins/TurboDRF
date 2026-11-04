@@ -44,6 +44,12 @@ what a caller sees inside their tenant. Every model must make this decision
 (`tenant_field`, a restricting `visibility`, or `'tenancy': 'shared'`), or
 the app doesn't start.
 
+Writes hold it twice. Before a write, its FK and M2M values are checked
+against the rows the caller may reference, through the scoped querysets.
+Then, before the write commits, every row it named is checked again from the
+rows' own tenant columns, by separate code: a gap in the first check can't
+alone put a reference to another tenant's row in the database.
+
 ### 4. The predicate algebra: reads are OR, writes are AND
 
 Row rules are a small logic:
@@ -151,8 +157,32 @@ generated endpoint:
   doesn't call TurboDRF's own scoping code. It then checks real API responses
   against that across callers, roles, models and access paths, including
   property-based (Hypothesis) runs.
+- **A differential fuzzer** (`tests/conformance/test_rewrite_equivalence.py`)
+  generates random rules and data and checks that the faster query shapes
+  TurboDRF builds match the rows Django's own reading of each rule does.
+- **A write-rule fuzzer** (`tests/conformance/test_write_rule_equivalence.py`)
+  checks TurboDRF against an executable copy of these docs
+  (`tests/conformance/write_spec.py`, written from them, not from the code):
+  random predicate combinations (up to four, `Either` nested twice), callers,
+  rows and creates, updates, takeovers and deletes. Each must be allowed or
+  refused, and stored, as the docs say.
+- **Noninterference fuzzers** (`tests/conformance/test_noninterference_reads.py`,
+  `test_noninterference_writes.py`) send random requests to every endpoint
+  twice: once on a database, once with hidden data added (other tenants' rows,
+  rows a rule hides, values in columns the caller can't read). A read's
+  response must not change. A write must leave the hidden data as it was,
+  reference only rows the caller may reference, and answer a hidden row as
+  it answers a missing one.
+- Each fuzzer runs a small number of examples in CI. Set
+  `TURBODRF_REWRITE_EXAMPLES`, `TURBODRF_WRITE_RULE_EXAMPLES` or
+  `TURBODRF_NONINTERFERENCE_EXAMPLES` for a longer campaign: 0.8.5 was
+  checked with about 330,000, 64,000 and 75,000 examples respectively.
 - **Attack tests** (`tests/integration/test_security_*.py`,
-  `test_audit_084.py` and others) each send a request that broke an
-  invariant in an earlier release, and assert that it no longer does.
+  `test_audit_084.py`, `test_audit_085.py`, `test_audit_third*.py` and
+  others) each send a request that broke an invariant in an earlier release,
+  and assert that it no longer does.
+- **Backstop tests** (`tests/integration/test_backstops.py`) switch off a
+  first check, as a bug in it would, and assert that the backstop behind it
+  still refuses the request.
 - **`manage.py turbodrf_explain`** shows how the rules apply to one user, row
   and field, using the same code paths as a request.
