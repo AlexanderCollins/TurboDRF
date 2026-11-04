@@ -115,6 +115,20 @@ the supply chain again. Each fix has a test that sends the attack that worked
 - With `TURBODRF_TENANT_USER_FIELD` a property, an HTML page no longer reads
   every tenant's users to narrow a form's user choices: the form offers none.
 
+### Backstops
+
+Rules that now hold through two independent checks, so one bug isn't enough
+to break them (`tests/integration/test_backstops.py` switches the first off):
+
+- Before a write commits, every row it names through an FK or M2M is checked
+  against the caller's tenant from that row's own tenant column, apart from
+  the checks before the write; a refusal is logged at ERROR.
+- A property's row keeps only its readable columns and scoped relations:
+  anything its construction stored (a `post_init` handler's copy of a hidden
+  column, which a property could return) is dropped first.
+- The browsable API renders the raw-data form only, never a form listing a
+  related field's rows.
+
 ### Startup checks
 
 - `sensitive_fields` entries must be the model's field names.

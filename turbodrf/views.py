@@ -586,7 +586,9 @@ class TurboDRFViewSet(*_viewset_bases):
 
     def get_renderers(self):
         """Resolve renderers per request, upgrading stock JSONRenderer to the
-        fast msgspec/orjson-backed TurboDRFRenderer when available.
+        fast msgspec/orjson-backed TurboDRFRenderer when available, and the
+        stock BrowsableAPIRenderer to one with the raw-data form only
+        (``TurboDRFBrowsableAPIRenderer``).
 
         Unlike a class-level ``renderer_classes`` override, this respects the
         project's ``DEFAULT_RENDERER_CLASSES`` — e.g. a production config that
@@ -594,14 +596,20 @@ class TurboDRFViewSet(*_viewset_bases):
         JSONRenderer subclass is left untouched (only the exact stock class
         is swapped).
         """
-        from .renderers import FAST_JSON_AVAILABLE, TurboDRFRenderer
+        from rest_framework.renderers import BrowsableAPIRenderer, JSONRenderer
 
-        renderers = super().get_renderers()
-        if not FAST_JSON_AVAILABLE:
-            return renderers
-        from rest_framework.renderers import JSONRenderer
+        from .renderers import (
+            FAST_JSON_AVAILABLE,
+            TurboDRFBrowsableAPIRenderer,
+            TurboDRFRenderer,
+        )
 
-        return [TurboDRFRenderer() if type(r) is JSONRenderer else r for r in renderers]
+        swaps = {BrowsableAPIRenderer: TurboDRFBrowsableAPIRenderer}
+        if FAST_JSON_AVAILABLE:
+            swaps[JSONRenderer] = TurboDRFRenderer
+        return [
+            swaps[type(r)]() if type(r) in swaps else r for r in super().get_renderers()
+        ]
 
     # Set custom swagger schema class for better OpenAPI documentation
     # This prevents custom actions from incorrectly showing all model fields
