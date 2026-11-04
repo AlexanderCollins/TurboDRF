@@ -102,11 +102,10 @@ Resources:
           } else if (!uri.endsWith('/') && !uri.split('/').pop().includes('.')) {
             page = uri + '/';
           }
-          if (host !== HOST) {
+          // Always an absolute URL: a path starting // (//evil.com/x) is
+          // another host to a browser.
+          if (host !== HOST || page !== uri) {
             return moved('https://' + HOST + page + query(request.querystring));
-          }
-          if (page !== uri) {
-            return moved(page + query(request.querystring));
           }
           if (uri.endsWith('/')) {
             request.uri = uri + 'index.html';
@@ -116,8 +115,8 @@ Resources:
 
   # AWS's managed SecurityHeadersPolicy, plus HSTS for subdomains and a
   # Content-Security-Policy. The CSP doesn't hash the site's inline scripts
-  # (they change per build): it stops outside script sources, plugins, a
-  # <base> hijack, framing and form posts elsewhere.
+  # (they change per build): it stops loading anything from another origin,
+  # plugins, a <base> hijack, framing and form posts elsewhere.
   SecurityHeaders:
     Type: AWS::CloudFront::ResponseHeadersPolicy
     Properties:
@@ -142,7 +141,7 @@ Resources:
             ModeBlock: true
             Override: true
           ContentSecurityPolicy:
-            ContentSecurityPolicy: "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
+            ContentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests"
             Override: true
 
   WebsiteDistribution:
