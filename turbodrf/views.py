@@ -117,6 +117,20 @@ class RowsMatching(Subquery):
     plain lookup and value, so it refers to nothing outside itself."""
 
 
+def independent_q(model, q):
+    """``q`` as a condition that joins no M2M or reverse relation, so ANDed
+    with another it shares no JOIN: its to-many lookups made subqueries
+    (``without_to_many_joins``), else ``pk__in`` the rows it matches."""
+    from django.db.models import Q
+
+    if not _q_spans_multivalued(model, q):
+        return q
+    flat = without_to_many_joins(model, q)
+    if flat is not None and not _q_spans_multivalued(model, flat):
+        return flat
+    return Q(pk__in=RowsMatching(model._base_manager.filter(q).order_by().values("pk")))
+
+
 def _q_spans_multivalued(model, q):
     """True if any lookup in ``q`` may traverse an M2M or reverse relation.
 
@@ -806,7 +820,7 @@ class TurboDRFViewSet(*_viewset_bases):
         can't escape it."""
         from .predicates import predicates_q
 
-        return predicates_q(self._predicates, request)
+        return predicates_q(self._predicates, request, self.model)
 
     def _get_tenant_q(self, request):
         """The mandatory tenant boundary: applied to every queryset, not

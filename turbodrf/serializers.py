@@ -860,7 +860,11 @@ def _row_matches(row, predicates, request):
     from .predicates import predicates_q
     from .views import Authorization
 
-    return Authorization(None, predicates_q(predicates, request)).scope(row).exists()
+    return (
+        Authorization(None, predicates_q(predicates, request, row.model))
+        .scope(row)
+        .exists()
+    )
 
 
 def _verify_written_row(model, instance, request, owners=(), using=None):

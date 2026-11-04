@@ -160,6 +160,23 @@ generated endpoint:
 - **A differential fuzzer** (`tests/conformance/test_rewrite_equivalence.py`)
   generates random rules and data and checks that the faster query shapes
   TurboDRF builds match the rows Django's own reading of each rule does.
+- **A write-rule fuzzer** (`tests/conformance/test_write_rule_equivalence.py`)
+  checks TurboDRF against an executable copy of these docs
+  (`tests/conformance/write_spec.py`, written from them, not from the code):
+  random predicate combinations (up to four, `Either` nested twice), callers,
+  rows and creates, updates, takeovers and deletes. Each must be allowed or
+  refused, and stored, as the docs say.
+- **Noninterference fuzzers** (`tests/conformance/test_noninterference_reads.py`,
+  `test_noninterference_writes.py`) send random requests to every endpoint
+  twice: once on a database, once with hidden data added (other tenants' rows,
+  rows a rule hides, values in columns the caller can't read). A read's
+  response must not change. A write must leave the hidden data as it was,
+  reference only rows the caller may reference, and answer a hidden row as
+  it answers a missing one.
+- Each fuzzer runs a small number of examples in CI. Set
+  `TURBODRF_REWRITE_EXAMPLES`, `TURBODRF_WRITE_RULE_EXAMPLES` or
+  `TURBODRF_NONINTERFERENCE_EXAMPLES` for a longer campaign: 0.8.5 was
+  checked with about 330,000, 64,000 and 75,000 examples respectively.
 - **Attack tests** (`tests/integration/test_security_*.py`,
   `test_audit_084.py`, `test_audit_085.py`, `test_audit_third*.py` and
   others) each send a request that broke an invariant in an earlier release,
