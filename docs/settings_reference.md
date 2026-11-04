@@ -34,15 +34,17 @@ apply to the platform scope: every platform request is checked against
 |---|---|---|---|
 | `TURBODRF_SENSITIVE_FIELDS` | **`['password', 'password_hash', 'secret_key', 'api_key', 'token', 'access_token', 'refresh_token', 'session_key']`** | Field names never exposed, at every `__` segment of a path: stripped from responses (`"__all__"` included), filters, search, ordering, OPTIONS metadata and the schema, in every permission mode. Your list is added to the defaults; it can't remove them. | [security.md](security.md#sensitive-fields) |
 | `TURBODRF_MAX_NESTING_DEPTH` | **`3`** | Maximum number of `__` in nested fields and filters. Deeper fields are skipped with a warning. Values >3 are unsupported. | [configuration.md](configuration.md#nested-fields) |
-| `TURBODRF_MAX_FILTER_VALUE_LENGTH` | **`200`** | Maximum length of a filter value, and of a `?search=`'s terms together. A request with a longer one returns no rows, which bounds filter and search cost (a `LIKE` costs the pattern's length times the stored text's). | [filtering.md](filtering.md) |
-| `TURBODRF_PAGINATION_CLASS` | **`None`** (TurboDRF's `{pagination, data}` envelope, 20 per page, max 100) | Your own DRF pagination class for list responses: a dotted path or the class. Give it a `max_page_size`. | [filtering.md](filtering.md#pagination) |
+| `TURBODRF_MAX_FILTER_VALUE_LENGTH` | **`200`** | Maximum length of a filter value, of a request's text filters (`__contains`, `__icontains`, ...) together, and of a `?search=`'s terms together. A request with a longer one returns no rows, which bounds filter and search cost (a `LIKE` costs the pattern's length times the stored text's). | [filtering.md](filtering.md) |
+| `TURBODRF_PAGINATION_CLASS` | **`None`** (TurboDRF's `{pagination, data}` envelope, 20 per page, max 100) | Your own DRF pagination class for list responses: a dotted path or the class. Give it a `max_page_size`. A cursor class's `ordering` applies only where the caller may order by it (its links carry the column's values); otherwise the pk. | [filtering.md](filtering.md#pagination) |
 
 ## Row-level access control (predicates)
 
 A model's `tenant_field`, `owner_field` and `visibility` are enforced whether
-or not `TURBODRF_TENANT_MODEL` is set. Setting it turns on the startup checks
-that every model declares its tenancy and that each `tenant_field` ends at the
-tenant model, plus (opt-in) auto-detection.
+or not `TURBODRF_TENANT_MODEL` is set; unset, the tenant model is the one every
+`tenant_field` ends on (an FK to it from a model with no `tenant_field` must
+name the caller's tenant). Setting it turns on the startup checks that every
+model declares its tenancy and that each `tenant_field` ends at the tenant
+model, plus (opt-in) auto-detection.
 
 | Setting | Default | Purpose | Details |
 |---|---|---|---|

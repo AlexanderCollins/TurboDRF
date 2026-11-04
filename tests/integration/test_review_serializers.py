@@ -367,13 +367,15 @@ class TestTenantModelCoTenantRule(_Base):
             {},
         )
 
-    def test_shared_host_is_not_co_tenant_checked(self):
+    def test_without_a_tenant_field_too(self):
+        """With no tenant_field to follow, the tenant model is the one every
+        tenant_field ends on (TURBODRF_TENANT_MODEL unset, as here)."""
         request = SimpleNamespace(user=self.under_a)
         self.assertEqual(
             _check_fk_injection_writes(
                 RbacNote, {"brokerage": self.brokerage_b}, request, None
             ),
-            {},
+            {"brokerage": ["Invalid brokerage: not found or not accessible."]},
         )
 
 

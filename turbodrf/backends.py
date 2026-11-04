@@ -9,6 +9,7 @@ import contextvars
 import copy
 import hashlib
 import secrets
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Optional, Set
@@ -280,6 +281,11 @@ def _role_names(roles, what="user.roles") -> list:
                 f"property returning list(...values_list('<field>', flat=True))."
             ) from None
         return list(roles.values_list("name", flat=True))
+    if isinstance(roles, Mapping):
+        # list() would hold every key, whatever its value.
+        raise ImproperlyConfigured(
+            f"{what} must be a list of role names, not a mapping."
+        )
     if not roles:
         return []
     if isinstance(roles, str):

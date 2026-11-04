@@ -28,6 +28,7 @@ classifiers = [
     "Framework :: Django :: 4.2",
     "Framework :: Django :: 5.2",
     "Framework :: Django :: 6.0",
+    "Framework :: Django :: 6.1",
 ]
 requires-python = ">=3.10"
 dependencies = [
@@ -66,7 +67,7 @@ docs = [
     "sphinx-rtd-theme>=1.0",
 ]
 allauth = [
-    "django-allauth>=0.57.0",
+    "django-allauth>=65.14.1",
 ]
 
 [project.urls]

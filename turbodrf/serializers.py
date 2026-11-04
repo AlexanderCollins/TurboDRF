@@ -169,9 +169,12 @@ def _caller_tenant_pk(request):
 
 def _tenant_model(model, tenant_field):
     """The model ``tenant_field`` (``brokerage``, ``deal__brokerage``) ends
-    on, else ``TURBODRF_TENANT_MODEL``."""
+    on, else ``TURBODRF_TENANT_MODEL``, else the model every registered
+    ``tenant_field`` ends on."""
     from django.apps import apps
     from django.conf import settings as django_settings
+
+    from .predicates import _model_tenant_fields
 
     current = model
     for part in tenant_field.split("__"):
@@ -184,8 +187,15 @@ def _tenant_model(model, tenant_field):
     if current is not None:
         return current
     setting = getattr(django_settings, "TURBODRF_TENANT_MODEL", None)
+    if not setting:
+        ends = {
+            _tenant_model(other, path)
+            for other, path in list(_model_tenant_fields.items())
+            if path
+        }
+        return ends.pop() if len(ends) == 1 else None
     try:
-        return apps.get_model(setting) if setting else None
+        return apps.get_model(setting)
     except (LookupError, ValueError):
         return None
 
@@ -219,13 +229,14 @@ def _co_tenant_binds(host, tenant_pk):
     return tenant_pk is not None and not is_platform()
 
 
-def _co_tenant_queryset(host, queryset, request):
+def _co_tenant_queryset(host, queryset, request, row_by_row=False):
     """``queryset`` (a related field's choices) narrowed by the co-tenant rule
     ``_in_caller_tenant`` applies to written values, where it binds ``host``
     (``_co_tenant_binds``) and the target has no ``tenant_field`` of its own. A tenant
-    attribute that isn't a column (a property) can only be checked row by row,
-    so it narrows only the choices an HTML page renders; a write is checked
-    value by value in ``_check_fk_injection_writes``."""
+    attribute that isn't a column (a property) can only be checked row by row:
+    ``queryset`` is then narrowed only with ``row_by_row`` (a row's current
+    links), and an HTML page's form offers no choices; a write is checked value
+    by value in ``_check_fk_injection_writes``."""
     from django.conf import settings as django_settings
 
     from .predicates import get_tenant_field
@@ -248,15 +259,18 @@ def _co_tenant_queryset(host, queryset, request):
     try:
         target._meta.get_field(tenant_user_field)
     except FieldDoesNotExist:
+        if row_by_row:
+            visible = [
+                row.pk
+                for row in queryset
+                if _in_caller_tenant(row, target, None, tenant_user_field, tenant_pk)
+            ]
+            return queryset.filter(pk__in=visible)
         renderer = getattr(request, "accepted_renderer", None)
-        if getattr(renderer, "media_type", None) != "text/html":
-            return queryset
-        visible = [
-            row.pk
-            for row in queryset
-            if _in_caller_tenant(row, target, None, tenant_user_field, tenant_pk)
-        ]
-        return queryset.filter(pk__in=visible)
+        if getattr(renderer, "media_type", None) == "text/html":
+            # Narrowing it would read every tenant's rows: the form offers none.
+            return queryset.none()
+        return queryset
     return queryset.filter(**{tenant_user_field: tenant_pk})
 
 
@@ -769,13 +783,24 @@ def _role_filters_writes(request):
     return bool(user and user.is_authenticated and not permissions_bypassed())
 
 
+def _row_matches(row, predicates, request):
+    """Does ``row`` (a one-row queryset) satisfy ``predicates``? Judged
+    through ``Authorization.scope``, as a read is: a plain filter would take
+    Django's path for a negated to-many lookup (see
+    ``views.without_to_many_joins``)."""
+    from .predicates import predicates_q
+    from .views import Authorization
+
+    return Authorization(None, predicates_q(predicates, request)).scope(row).exists()
+
+
 def _verify_written_row(model, instance, request, owners=(), using=None):
     """After a write, re-check predicates that can only be judged on the saved
     row (``Conditional``, ``Owner`` over a ``__`` path): the row must still be
     visible to the caller, and satisfy each of ``owners`` (from
     ``_owner_paths_written``), or the write is rolled back. Called inside the
     write's transaction."""
-    from .predicates import get_predicates, predicates_q
+    from .predicates import get_predicates
 
     predicates = get_predicates(model)
     if not request or not any(_needs_post_write_check(p) for p in predicates):
@@ -783,31 +808,32 @@ def _verify_written_row(model, instance, request, owners=(), using=None):
     # The database the write went to, not a router's read replica: it must
     # see the row as just written, inside the write's transaction.
     row = model._base_manager.using(using).filter(pk=instance.pk)
-    if not row.filter(predicates_q(predicates, request)).exists():
+    if not _row_matches(row, predicates, request):
         raise serializers.ValidationError(
             {"detail": ["This write would create a row you are not allowed to see."]}
         )
     for owner in owners:
-        if not row.filter(predicates_q([owner], request)).exists():
+        if not _row_matches(row, [owner], request):
             raise serializers.ValidationError(
                 {"detail": [f"{' or '.join(owner.fields)} must be you."]}
             )
 
 
 def _owner_paths_written(model, validated_data, instance, request, using=None):
-    """The ``Owner``-over-a-``__``-path children of an ``Either`` this write
-    must satisfy on their own: every one on create, and on update those whose
-    path starts at a relation the write changes. Another branch's visibility
+    """The ``Owner`` children of an ``Either`` judged on the saved row (over a
+    ``__`` path, or of several columns) this write must satisfy on their own:
+    every one on create, and on update those whose path starts at a relation
+    the write changes. Another branch's visibility
     mustn't let a writer put a row on someone else's parent, or move one off
     it: on update the row must satisfy the Owner before the write too."""
-    from .predicates import Either, Owner, _current_pk, get_predicates, predicates_q
+    from .predicates import Either, Owner, _current_pk, get_predicates
 
     def nested(predicates, inside_either=False):
         for p in predicates:
             if isinstance(p, Either):
                 yield from nested(p.predicates, True)
             elif inside_either and isinstance(p, Owner):
-                if any("__" in f for f in p.fields):
+                if p.verify_after_write:  # a '__' path, or several columns
                     yield p
 
     def changed(hop):
@@ -827,7 +853,7 @@ def _owner_paths_written(model, validated_data, instance, request, using=None):
     if instance is not None:
         row = model._base_manager.using(using).filter(pk=instance.pk)
         for owner in owners:
-            if not row.filter(predicates_q([owner], request)).exists():
+            if not _row_matches(row, [owner], request):
                 raise serializers.ValidationError(
                     {"detail": ["Cannot move this row: it belongs to another user."]}
                 )
@@ -842,19 +868,21 @@ def _delete_errors(model, instance, request):
     ``Either`` must hold for the row (a top-level one already does, or the
     row wouldn't be visible). ``Members``, ``Group`` and ``Conditional`` add
     none."""
-    from .predicates import Custom, Either, Owner, get_predicates, predicates_q
+    from .predicates import Custom, Either, Owner, get_predicates
 
     if request is None:
         return []
     errors = []
-    row = model._base_manager.filter(pk=instance.pk)
+    # The database the delete goes to, not a router's read replica.
+    using = router.db_for_write(model, instance=instance)
+    row = model._base_manager.using(using).filter(pk=instance.pk)
 
     def walk(predicates, inside_either):
         for p in predicates:
             if isinstance(p, Either):
                 walk(p.predicates, True)
             elif isinstance(p, Owner) and inside_either:
-                if not row.filter(predicates_q([p], request)).exists():
+                if not _row_matches(row, [p], request):
                     errors.append("Cannot delete this row: it belongs to another user.")
             elif isinstance(p, Custom):
                 errors.extend(p.validate_write({}, instance, request))
@@ -949,10 +977,11 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         host, in the caller's tenant. Without a request (programmatic use)
         there is no caller to scope to. A dropdown option is labelled with the
         value the field renders, not ``str(row)``, which can show columns of
-        the target the caller can't read. A schema generator's view (its
-        ``swagger_fake_view``) reads the fields' types only: no rows to
-        scope, and its caller may be a list of roles with no rows of its own
-        (``RoleOnlyIdentity``)."""
+        the target the caller can't read, and the options come in pk order
+        (the target's own order can be on such a column). A schema
+        generator's view (its ``swagger_fake_view``) reads the fields' types
+        only: no rows to scope, and its caller may be a list of roles with no
+        rows of its own (``RoleOnlyIdentity``)."""
         fields = super().get_fields()
         if self.instance is not None:
             pk_name = self.Meta.model._meta.pk.name
@@ -966,11 +995,11 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                 if isinstance(relation, RelatedField) and relation.queryset is not None:
                     relation.queryset = self._referenceable(
                         relation.queryset, request, name
-                    )
+                    ).order_by("pk")
                     relation.display_value = relation.to_representation
         return fields
 
-    def _referenceable(self, queryset, request, name=None):
+    def _referenceable(self, queryset, request, name=None, row_by_row=False):
         """``queryset`` narrowed to the rows the caller may reference: the
         same rows the write check (_check_fk_injection_writes) accepts. For
         ``name``, the first hop of a chained ``tenant_field``
@@ -990,7 +1019,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                 return queryset.none()
             rest = tenant_field.split("__", 1)[1]
             queryset = queryset.filter(**{rest: tenant_pk})
-        return _co_tenant_queryset(self.Meta.model, queryset, request)
+        return _co_tenant_queryset(self.Meta.model, queryset, request, row_by_row)
 
     def build_relational_field(self, field_name, relation_info):
         """A reverse relation is read-only: it renders from the scoped query
@@ -1546,10 +1575,9 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         for field in instance._meta.many_to_many:
             if field.name not in validated_data:
                 continue
-            visible = self._referenceable(field.related_model._default_manager, request)
-            hidden = list(
-                getattr(instance, field.name).exclude(pk__in=visible.values("pk"))
-            )
+            links = getattr(instance, field.name).all()
+            visible = self._referenceable(links, request, row_by_row=True)
+            hidden = list(links.exclude(pk__in=visible.values("pk")))
             if hidden:
                 provided = list(validated_data[field.name])
                 validated_data = {**validated_data, field.name: provided + hidden}

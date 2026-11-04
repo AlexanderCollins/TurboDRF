@@ -1543,3 +1543,15 @@ class PlatformTicket(TurboDRFMixin, models.Model):
                 ],
             },
         }
+
+
+class LedgerInvoice(models.Model):
+    """Plain; served by ``turbodrf.register()`` in
+    tests/integration/test_audit_third.py. Tenant-scoped by ``brokerage``,
+    with an FK to ScopeLedger, the plain hop of ScopeEntry's tenant path."""
+
+    memo = models.CharField(max_length=100)
+    brokerage = models.ForeignKey(Brokerage, on_delete=models.CASCADE, related_name="+")
+    ledger = models.ForeignKey(
+        ScopeLedger, on_delete=models.CASCADE, null=True, blank=True, related_name="+"
+    )

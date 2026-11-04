@@ -385,7 +385,9 @@ no rows across a reverse / M2M relation, at that hop or an earlier one)
 is kept: each step is `<prefix>__isnull=True OR <the step's scope>`
 when the relation can be empty. An empty relation joins nothing, so it
 can't reveal a target row; a relation pointing at an out-of-scope
-target is still excluded. The same scope decides whether a nested FK
+target is still excluded. That difference is why `__isnull` filters the
+model's own fields only: through a relation, `isnull=true` would match the
+empty relation and not the out-of-scope one. The same scope decides whether a nested FK
 value renders (the value is `null` where the scope fails; the row stays),
 and is applied inside search over `__`-path `searchable_fields`.
 
@@ -463,17 +465,19 @@ an operator's staff. What keeps it contained (details in
   includes an owner column can answer "already exists" about a row the caller
   can't see, within their tenant.
 - **Rules are per model.** A multi-table child or a proxy doesn't inherit the
-  field rules of its parent: give the inherited fields their rules on the
-  child too. A row's rules are checked when it's written, not when a row its
-  `Owner` path or `Conditional` runs through is edited.
+  field rules of its parent, so it must declare its own `turbodrf()` (the
+  router refuses one that inherits it): give the inherited fields their rules
+  on the child too. A row's rules are checked when it's written, not when a
+  row its `Owner` path or `Conditional` runs through is edited.
 - **Database cascades** (`on_delete=CASCADE`, `SET_NULL`) change rows the
   deleter can't see, as Django does them.
 - **Request size** is your web server's to limit: DRF doesn't apply
   `DATA_UPLOAD_MAX_MEMORY_SIZE` to JSON bodies.
 - **`TURBODRF_TENANT_USER_FIELD` should be a column** (a foreign key). A
-  property can't narrow a write form's user choices to the caller's tenant,
-  so an error can then differ between "another tenant's user" and "no such
-  user".
+  property can't narrow user choices to the caller's tenant in SQL: a
+  browsable-API form then offers none, an error can differ between "another
+  tenant's user" and "no such user", and a filter naming another tenant's
+  user costs one query more than one naming nobody.
 - **Bypassed permission modes** (`TURBODRF_DISABLE_PERMISSIONS`,
   `TURBODRF_USE_DEFAULT_PERMISSIONS`) have no field rules, so per-model
   `sensitive_fields` don't apply.

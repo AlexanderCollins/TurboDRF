@@ -565,6 +565,16 @@ class TurboDRFViewSet(*_viewset_bases):
             if cls is TurboDRFPagination:
                 cls = configured_pagination_class()
             self._paginator = cls() if cls is not None else None
+            ordering = getattr(self._paginator, "ordering", None)
+            if ordering:
+                # A cursor's links carry its ordering column's values: only a
+                # column the caller may order by, as _default_ordering.
+                from .filter_backends import readable_ordering
+
+                terms = [ordering] if isinstance(ordering, str) else list(ordering)
+                self._paginator.ordering = readable_ordering(
+                    self.model, terms, set(self.ordering_fields)
+                )
         return self._paginator
 
     filter_backends = [
@@ -716,10 +726,13 @@ class TurboDRFViewSet(*_viewset_bases):
     def _check_lookup_readable(self, request):
         """A detail URL by a ``lookup_field`` other than the pk is a match on
         that column's value: a caller who can't read the column gets a 404,
-        or the URL would confirm guesses of it."""
+        or the URL would confirm guesses of it. A value with a NUL is a 404
+        too (on PostgreSQL, a database error)."""
         from rest_framework.exceptions import NotFound
 
         lookup = self.lookup_field
+        if "\x00" in str(self.kwargs.get(self.lookup_url_kwarg or lookup, "")):
+            raise NotFound()
         if (
             lookup in ("pk", self.model._meta.pk.name)
             or (self.lookup_url_kwarg or lookup) not in self.kwargs

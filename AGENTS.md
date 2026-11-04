@@ -83,14 +83,21 @@ For a model you can't edit (`auth.User`, a third-party app's), or to keep the
 API config out of `models.py`, skip the mixin and call
 `turbodrf.register(Model, {...same dict...})` from an `AppConfig.ready()`.
 
+A proxy or multi-table child of a TurboDRF model declares its own
+`turbodrf()` (`{'enabled': False, ...}` for no route), and its fields need
+their own rules in `TURBODRF_ROLES`: rules are per model. The router refuses
+one that inherits its parent's.
+
 ### `fields`
 
 Always set `fields` to an explicit list (or a `{'list': [...], 'detail':
 [...]}` dict). It isn't required, but it defaults to `'__all__'`, which
 exposes every column, including ones added later; `manage.py check` warns
 (`turbodrf.W004`) for each model left on it. The primary key renders
-only if listed. A name that doesn't exist on the model, or one ending on a
-reverse one-to-one, raises at startup.
+only if listed. A name that doesn't exist on the model, a generic FK, a
+nested path ending on an M2M or reverse relation, a path across an M2M whose
+`through` model has row rules (use the through model's reverse FK), or one
+ending on a reverse one-to-one, raises at startup.
 
 An unknown `turbodrf()` key (a typo like `'owner_feild'`) raises
 `ImproperlyConfigured` at startup, listing the valid keys. `sensitive_fields`

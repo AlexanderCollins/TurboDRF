@@ -316,6 +316,12 @@ queryset. A chained `tenant_field` isn't auto-filled; instead a create, or an
 update that changes the first hop (`project` above), must point that hop at a
 row in the caller's tenant. There's no way to compose this away.
 
+A model the path runs through holds tenant data too. A TurboDRF one needs a
+`tenant_field` of its own (the router refuses a shared one). A plain one
+(`Project` without the mixin) is scoped by the rest of the path,
+`workspace`, wherever the API reaches it: another model's FK to it takes and
+renders only the caller's tenant's rows.
+
 **Layer 2 — discretionary within-tenant predicates:**
 
 Stack predicates with AND. Use `Either(...)` for OR. These operate ONLY

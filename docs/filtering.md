@@ -51,12 +51,14 @@ GET /api/books/?author__name__istartswith=smith    # Related field: 'author__nam
 - A nested filter needs its own path in `fields` (list or detail). Configuring `author__name` makes `?author__name=` filterable, not every column of the author.
 - Filters on any other field are ignored (and logged), so a hidden column can't be probed through filters.
 - A value the field can't hold is a 400 (`?price__gte=abc`). An empty value (`?price=`) is no filter.
-- `__in` takes comma-separated values, `__range` exactly two (`?price__range=10,50`), `__isnull` true or false.
+- `__in` takes comma-separated values, `__range` exactly two (`?price__range=10,50`), `__isnull` true or false. `__isnull` filters the model's own fields only (an FK included): through a relation (`?author__name__isnull=`) it's ignored, since it would tell a related row the caller can't see from none.
+- A `__year` outside 1–9999, or a value with a NUL character, is a 400.
 - `__regex` / `__iregex` lookups aren't accepted.
 - An M2M filters by one target pk (`?tags=3`); `exact` is its only lookup. `?tags__in=`, `?tags__isnull=` and `?tags_or=` are ignored. A filter across an M2M or reverse relation (`?tags__name=`) matches each row once.
 - A related-field filter is permission-checked at every hop (a reverse relation by the related model's FK, see [Security](security.md#reverse-relations)) and only matches related rows the caller can see through that model's own endpoint. A related field named like a lookup (`folder__date`, where `date` is a field of the folder) is treated as that field.
 - An FK or M2M filter naming a row the caller can't see returns an empty `200`, exactly as a pk that doesn't exist does. When another filter in the request is invalid, the 400 lists only that filter's error.
-- A filter value longer than `TURBODRF_MAX_FILTER_VALUE_LENGTH` (default 200), or an `_or` filter with more than 20 values, returns nothing.
+- A filter value longer than `TURBODRF_MAX_FILTER_VALUE_LENGTH` (default 200), text filters (`__contains`, `__icontains`, ...) longer than that together, an `_or` filter with more than 20 values, or a parameter repeated more than 20 times, returns nothing.
+- JSON containment (`?data__contains=`) is ignored on a database without it (SQLite).
 
 ### OR filtering
 
@@ -121,4 +123,6 @@ To use your own pagination class, and so your API's own response envelope,
 set `TURBODRF_PAGINATION_CLASS` to it (a dotted path or the class). A
 `pagination_class` set on a `TurboDRFViewSet` subclass or a custom action is
 kept. Give your class a `max_page_size`: without one a client can ask for
-every row in one page.
+every row in one page. A cursor class (`CursorPagination`) orders by its
+`ordering` only for a caller who may order by that column, since its links
+carry the column's values; anyone else's pages go in pk order.
