@@ -17,7 +17,7 @@ import difflib
 from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
 
-from .mixins import config_label
+from .mixins import config_label, is_turbodrf_model
 
 
 class AmbiguousTenantPath(ImproperlyConfigured):
@@ -315,13 +315,36 @@ def _register_tenancy(models=None, configs=None):
             f"attribute that returns the tenant (e.g. 'workspace')."
         )
 
+    hops = {}
     for model, (tenant_field, _predicates, _autodetected) in resolved.items():
         _require_scoped_hops(model, tenant_field, resolved)
+        for hop, rest in _plain_hops(model, tenant_field, resolved):
+            if hops.setdefault(hop, rest) != rest:
+                raise ImproperlyConfigured(
+                    f"Two tenant_field paths run through {hop.__name__} to "
+                    f"its tenant differently ({hops[hop]!r}, {rest!r}). Give "
+                    f"it a tenant_field of its own (turbodrf.register())."
+                )
 
+    for hop, rest in hops.items():
+        register_tenant_field(hop, rest)
     for model, (tenant_field, predicates, _autodetected) in resolved.items():
         register_tenant_field(model, tenant_field)
         register_predicates(model, predicates)
     return resolved
+
+
+def _plain_hops(model, tenant_field, resolved):
+    """The models a chained ``tenant_field`` runs through that aren't TurboDRF
+    models, each with the rest of the path to the tenant. Their rows are
+    tenant data: they're scoped by that path wherever the API reaches them
+    (another FK naming one, a nested field), as a ``tenant_field`` scopes."""
+    parts = (tenant_field or "").split("__")
+    current = model
+    for i, hop in enumerate(parts[:-1]):
+        current = current._meta.get_field(hop).related_model
+        if current not in resolved and not is_turbodrf_model(current):
+            yield current, "__".join(parts[i + 1 :])
 
 
 def _require_scoped_hops(model, tenant_field, resolved):

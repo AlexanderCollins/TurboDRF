@@ -109,6 +109,8 @@ FK fields are flattened in responses (`author__name` becomes `author_name`), and
 
 An M2M listed on its own (`'tags'`) renders the pks of the targets the caller can see. A reverse relation (`'items'`, `'items__label'`) renders like an M2M, scoped the same way, and is read-only. It's the related model's FK read from the other side, so the caller needs that FK's read grant, or model-level read on the related model when the FK has no rule (see [Security](security.md#reverse-relations)). Nested and M2M values are formatted by the same DRF field a top-level field of that type uses (a Decimal renders as a string by default, `DATETIME_FORMAT` applies, files render as absolute URLs). A path ending on an FK renders the value the parent stores: the related pk, or the `to_field` value.
 
+An M2M whose `through` model has row rules of its own (a membership with a `Conditional`) can't be in a path: the M2M reads the links without those rules, so the router refuses it. Go through the through model's rows instead (`memberships__user`), which keeps them. A nested path can't end on an M2M or reverse relation (`author__books`), and a generic FK can't be listed.
+
 A nested value renders only when the caller can see the related row through that model's own endpoint; otherwise it's `null`, and M2M targets they can't see are left out. See [Security](security.md#nested-fields-across-scoped-relations).
 
 Maximum nesting depth is 3 by default (`a__b__c__d`). Change with `TURBODRF_MAX_NESTING_DEPTH` in settings. Deeper fields are skipped with a logged warning.
@@ -353,6 +355,8 @@ class Invite(models.Model, TurboDRFMixin):
 ```
 
 This exposes `POST /api/invites/{pk}/resend/`. Because the handler calls `self.get_object()`, a caller can only resend an invite they can already see -- cross-tenant PKs 404 exactly like a normal detail GET.
+
+The scoping covers which rows an action reaches, not what it writes. An action that saves values from the request should write them through `self.get_serializer(obj, data=request.data, partial=True)` (`is_valid(raise_exception=True)`, then `save()`), which applies the field write rules and the row rules' write checks; `obj.save()` with values of its own skips them.
 
 A collection action looks the same with `detail=False` and no `pk`:
 

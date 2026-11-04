@@ -144,7 +144,9 @@ class User(AbstractUser):
         return self.user_roles
 ```
 
-A getter that can't be imported raises at startup.
+A getter that can't be imported raises at startup. Return a list of the
+names the user holds: a mapping (`{'admin': False}`) raises, since every key
+would read as held.
 
 Authenticated users with no roles get 403.
 

@@ -270,8 +270,9 @@ def validate_property_config(model):
 
 
 def _readable_columns(model, snapshot_for, bypassed):
-    """Concrete field names of ``model`` the caller may read."""
-    from .validation import is_field_path_sensitive
+    """Concrete field names of ``model`` the caller may read (an FK with
+    ``to_field`` holds the target's column: it needs that column's read too)."""
+    from .validation import fk_value_readable, is_field_path_sensitive
 
     names = [
         f.name
@@ -281,7 +282,12 @@ def _readable_columns(model, snapshot_for, bypassed):
     if bypassed:
         return set(names)
     snapshot = snapshot_for(model)
-    return {name for name in names if snapshot.can_read_field(name)}
+    return {
+        name
+        for name in names
+        if snapshot.can_read_field(name)
+        and fk_value_readable(model, name, snapshot_for)
+    }
 
 
 def _hop_readable(model, field, snapshot_for, bypassed):
@@ -344,11 +350,16 @@ def _hop_queryset(field, target, request, columns):
     ordering = qs.query.order_by or (
         target._meta.ordering if qs.query.default_ordering else ()
     )
-    if not single and ordering:
-        # A to-many hop's rows come in their model's order only where it's
-        # on columns the property may read: the order would leak the rest.
+    if not single:
+        # The default manager chooses a to-many hop's rows; they're loaded
+        # through the base manager, without the default manager's
+        # select_related, prefetch_related and annotations, which would bring
+        # in related rows and values outside the sandbox. They come in their
+        # model's order only where it's on columns the property may read: the
+        # order would leak the rest.
         from .filter_backends import readable_ordering
 
+        qs = target._base_manager.filter(pk__in=qs.order_by().values("pk"))
         qs = qs.order_by(*readable_ordering(target, ordering, set(columns)))
     return qs.only(target._meta.pk.name, *columns)
 

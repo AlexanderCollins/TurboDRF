@@ -535,7 +535,7 @@ class TestFullCleanPut(_Base):
             ]
         }
         row = ParityAllTypes.objects.create(char="r")
-        ParityAllTypes.objects.filter(pk=row.pk).update(status="hidden-legacy-v")
+        ParityAllTypes.objects.filter(pk=row.pk).update(status="legacy-v")
         _patch(self, ParityAllTypes, "sensitive_fields", ["status"], create=True)
         _patch_config(
             self, ParityAllTypes, fields=["id", "char", "status"], full_clean=True
@@ -545,7 +545,7 @@ class TestFullCleanPut(_Base):
             put = self.client.put(
                 f"/api/parityalltypess/{row.pk}/", {"char": "x"}, format="json"
             )
-        self.assertNotIn("hidden-legacy-v", put.content.decode())
+        self.assertNotIn("legacy-v", put.content.decode())
         json.loads(put.content)
 
 
