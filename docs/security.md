@@ -477,11 +477,12 @@ an operator's staff. What keeps it contained (details in
 - **Uniqueness is checked before the row rules.** A `UniqueConstraint` that
   includes an owner column can answer "already exists" about a row the caller
   can't see, within their tenant.
-- **Rules are per model.** A multi-table child or a proxy doesn't inherit the
-  field rules of its parent, so it must declare its own `turbodrf()` (the
-  router refuses one that inherits it): give the inherited fields their rules
-  on the child too. A row's rules are checked when it's written, not when a
-  row its `Owner` path or `Conditional` runs through is edited.
+- **Model-level permissions are per model.** A multi-table child or a proxy
+  declares its own `turbodrf()` (the router refuses one that inherits it) and
+  needs its own `.read` / `.create` / ... grants. Its parent's field rules
+  hold on it too: the columns are the parent's. A row's rules are checked
+  when it's written, not when a row its `Owner` path or `Conditional` runs
+  through is edited.
 - **Database cascades** (`on_delete=CASCADE`, `SET_NULL`) change rows the
   deleter can't see, as Django does them.
 - **Request size** is your web server's to limit: DRF doesn't apply

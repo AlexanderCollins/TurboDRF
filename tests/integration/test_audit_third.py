@@ -825,3 +825,42 @@ class TestFilterValues(_Base):
         self.assertEqual(len(self._rows(self.client.get(f"/api/deals/?{many}"))), 1)
         more = "&".join(f"brokerage={self.A.pk}" for _ in range(21))
         self.assertEqual(self._rows(self.client.get(f"/api/deals/?{more}")), [])
+
+
+class TestInheritedFieldRules(SimpleTestCase):
+    """A proxy or multi-table child serves its parent's columns: the parent's
+    field rules hold there too (a proxy declaring its own turbodrf(), e.g.
+    super().turbodrf() plus public_access, served them with none). Its
+    model-level permissions stay its own."""
+
+    def test_proxy_and_child(self):
+        from types import SimpleNamespace
+
+        from turbodrf.backends import build_permission_snapshot
+
+        roles = {
+            "viewer": ["test_app.samplemodel.read", "test_app.archivedsample.read"],
+            "admin": ["test_app.samplemodel.price.read"],
+        }
+        with isolate_apps("tests.test_app"):
+
+            class ArchivedSample(SampleModel):
+                class Meta:
+                    proxy = True
+                    app_label = "test_app"
+
+            class GoldSample(SampleModel):
+                tier = dj_models.CharField(max_length=5)
+
+                class Meta:
+                    app_label = "test_app"
+
+            user = SimpleNamespace(is_authenticated=True, pk=1, roles=["viewer"])
+            with override_settings(TURBODRF_ROLES=roles):
+                proxy = build_permission_snapshot(user, ArchivedSample, False)
+                child = build_permission_snapshot(user, GoldSample, False)
+        self.assertTrue(proxy.can_perform_action("read"))
+        self.assertIn("title", proxy.readable_fields)
+        self.assertNotIn("price", proxy.readable_fields)  # samplemodel's rule
+        self.assertFalse(child.can_perform_action("read"))  # its own strings
+        self.assertIn("price", child.fields_with_read_rules)

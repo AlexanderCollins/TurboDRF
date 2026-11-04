@@ -181,8 +181,7 @@ def _validate_booleans(config, where):
 def _validate_own_config(model):
     """A proxy or multi-table child of a TurboDRF model has its own config:
     an inherited ``turbodrf()`` would serve it at its own endpoint, with the
-    parent's ``public_access`` and none of the parent's field rules (rules
-    are per model)."""
+    parent's ``public_access``, without anyone choosing to."""
     if model in _registered:
         return
     owner = next((c for c in model.__mro__ if "turbodrf" in vars(c)), None)
@@ -191,8 +190,9 @@ def _validate_own_config(model):
         return
     raise ImproperlyConfigured(
         f"{model.__name__} inherits turbodrf() from {owner.__name__}. Give it "
-        f"its own ('enabled': False for no route) and give its fields their "
-        f"rules in TURBODRF_ROLES: rules are per model."
+        f"its own ('enabled': False for no route), and its own model-level "
+        f"grants in TURBODRF_ROLES (field rules carry over from "
+        f"{owner.__name__})."
     )
 
 
