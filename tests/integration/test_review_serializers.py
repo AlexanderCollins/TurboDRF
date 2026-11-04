@@ -4,7 +4,6 @@ Each class is a finding a review reproduced on 0.6.1, asserted fixed.
 """
 
 import logging
-import re
 from types import SimpleNamespace
 from unittest import mock
 
@@ -299,20 +298,14 @@ class TestBypassedModeScoping(_Base):
         super().setUp()
         self.client.force_authenticate(self.under_a)
 
-    def test_browsable_dropdowns(self):
+    def test_browsable_page_offers_no_choices(self):
+        """The browsable API has the raw-data form only: no related field's
+        choices are listed (their scoping: test_fk_to_the_tenant_model)."""
         resp = self.client.get(COMMENTS, HTTP_ACCEPT="text/html")
         self.assertEqual(resp.status_code, 200)
         body = resp.content.decode()
-        for name in ("deal", "linked_deals"):
-            with self.subTest(name=name):
-                select = re.search(
-                    rf'<select[^>]*name="{name}"[^>]*>(.*?)</select>', body, re.S
-                )
-                offered = set(re.findall(r'<option value="([^"]*)"', select.group(1)))
-                self.assertIn(str(self.deal_a.pk), offered)
-                self.assertNotIn(str(self.deal_b.pk), offered)
-                self.assertNotIn(str(self.deal_a2.pk), offered)
-        # Options are labelled by the value the field renders, not str(row).
+        self.assertNotIn('name="deal"', body)
+        self.assertNotIn('name="linked_deals"', body)
         self.assertNotIn("B secret deal", body)
         self.assertNotIn("A2 private deal", body)
 

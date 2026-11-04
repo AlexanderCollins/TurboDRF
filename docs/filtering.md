@@ -115,9 +115,9 @@ Response format:
 
 Default page size: 20. Max: 100.
 
-The browsable API shows no filter form: its choice lists would name rows of
-the related models (another tenant's users included). Filters work the same
-from the URL.
+The browsable API shows no filter form, and only the raw-data (JSON) form
+for writes: their choice lists would name rows of the related models.
+Filters work the same from the URL.
 
 To use your own pagination class, and so your API's own response envelope,
 set `TURBODRF_PAGINATION_CLASS` to it (a dotted path or the class). A

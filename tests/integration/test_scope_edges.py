@@ -222,7 +222,9 @@ class TestBrowsableDropdownLabels(TestCase):
         page = client.get(f"/api/samplemodels/{row.pk}/", HTTP_ACCEPT="text/html")
         self.assertEqual(page.status_code, 200)
         html = page.content.decode()
-        self.assertIn(f'<option value="{related.pk}"', html)
+        # The raw-data form only: no related field's choices.
+        self.assertNotIn(f'<option value="{related.pk}"', html)
+        self.assertNotIn('name="related"', html)
         self.assertNotIn("SECRET_NAME_XYZ", html)
 
 

@@ -203,8 +203,9 @@ class TestGate(_PlatformBase):
         self.assertEqual(self.client_for(admin).get("/console-api/").status_code, 404)
 
     def test_browsable_api_renders_inside_the_platform_scope(self):
-        """The HTML renderer calls back into the viewset (forms) after the
-        view returns: it must still see platform roles and the gate."""
+        """The HTML renderer calls back into the viewset (the raw-data form)
+        after the view returns: it must still see platform roles and the
+        gate."""
         admin = self.user("admin_html", platform_roles=["admin"])
         response = self.client_for(admin).get(
             f"/console-api/accounts/{self.globex_account.pk}/", HTTP_ACCEPT="text/html"
@@ -212,7 +213,9 @@ class TestGate(_PlatformBase):
         self.assertEqual(response.status_code, 200)
         content = response.content.decode()
         self.assertIn("pays late", content)
-        self.assertIn('name="staff_notes"', content)  # the PUT form, admin may write
+        # The PUT raw-data form: admin may write.
+        self.assertIn("&quot;staff_notes&quot;", content)
+        self.assertNotIn('name="staff_notes"', content)  # no HTML form
 
 
 # ---------------------------------------------------------------------------

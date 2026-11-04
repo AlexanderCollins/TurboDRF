@@ -773,6 +773,75 @@ def _platform_value_tenant(target, value, tenant_model, tenant_user_field):
     return None
 
 
+def _verify_references_in_tenant(model, written, request):
+    """After a write on the tenant scope, inside its transaction: every row
+    the write names through an FK or M2M (``written``: field name -> value,
+    or values) is in the caller's tenant, or in none. A backstop for the
+    checks before the write (``_check_fk_injection_writes``, on scoped
+    querysets): judged from the rows' tenant columns, as the platform scope
+    judges them, so a gap in those checks can't alone commit a reference to
+    another tenant's row."""
+    from django.conf import settings as django_settings
+
+    from .predicates import get_tenant_field
+    from .scope import is_platform
+
+    tenant_pk = _caller_tenant_pk(request)
+    if is_platform() or tenant_pk is None:
+        return
+    tenant_model = _tenant_model(model, get_tenant_field(model) or "")
+    tenant_user_field = getattr(django_settings, "TURBODRF_TENANT_USER_FIELD", None)
+    for name, value in written.items():
+        field = model._meta.get_field(name)
+        pks = {_related_pk(v) for v in (value if field.many_to_many else [value])}
+        pks.discard(None)
+        if pks and _outside_tenant(
+            field.related_model, pks, tenant_pk, tenant_model, tenant_user_field
+        ):
+            logger.error(
+                "turbodrf: a write to %s.%s named another tenant's row, past the "
+                "checks before the write; refused.",
+                model.__name__,
+                name,
+            )
+            raise serializers.ValidationError(
+                {name: [f"Invalid {name}: not found or not accessible."]}
+            )
+
+
+def _relation_values(model, validated_data):
+    """``validated_data``'s FK and M2M values, by field name."""
+    relations = {f.name for f in model._meta.fields if f.many_to_one or f.one_to_one}
+    relations.update(f.name for f in model._meta.many_to_many)
+    return {name: value for name, value in validated_data.items() if name in relations}
+
+
+def _outside_tenant(target, pks, tenant_pk, tenant_model, tenant_user_field):
+    """Is any of ``pks`` (rows of ``target``) in a tenant other than
+    ``tenant_pk``? A row's tenant as ``_platform_value_tenant`` reads it; one
+    in no tenant isn't."""
+    from .predicates import registered_tenant_field, user_tenant_value
+
+    if _same_model(target, tenant_model):
+        return any(str(pk) != str(tenant_pk) for pk in pks)
+    path = registered_tenant_field(target)
+    if not path and tenant_user_field and hasattr(target, tenant_user_field):
+        try:
+            target._meta.get_field(tenant_user_field)
+            path = tenant_user_field
+        except FieldDoesNotExist:  # a property: row by row
+            return any(
+                _related_pk(user_tenant_value(row)) not in (None, tenant_pk)
+                for row in target._base_manager.filter(pk__in=pks)
+            )
+    if not path:
+        return False
+    rows = target._base_manager.filter(pk__in=pks)
+    return (
+        rows.exclude(**{f"{path}__isnull": True}).exclude(**{path: tenant_pk}).exists()
+    )
+
+
 def _role_filters_writes(request):
     """True when the caller's role snapshot decides which provided fields are
     written — not when permissions are bypassed (disabled / Django default
@@ -1608,6 +1677,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         validated_data = _apply_predicate_writes(
             model, validated_data, instance, request
         )
+        written = _relation_values(model, validated_data)  # not the kept links
         validated_data = self._keep_hidden_links(instance, validated_data, request)
         db = router.db_for_write(model, instance=instance)
         owners = _owner_paths_written(model, validated_data, instance, request, db)
@@ -1615,6 +1685,7 @@ class TurboDRFSerializer(serializers.ModelSerializer):
         with transaction.atomic(using=db):
             instance = super().update(instance, validated_data)
             _verify_written_row(model, instance, request, owners, db)
+            _verify_references_in_tenant(model, written, request)
         self._forget_read_state(instance)
         return instance
 
@@ -1641,6 +1712,17 @@ class TurboDRFSerializer(serializers.ModelSerializer):
                 _require_unwritable_columns(model, validated_data)
                 raise
             _verify_written_row(model, instance, request, owners, db)
+            # Every FK the row holds, defaults included (a to_field FK's
+            # column holds the target's value, not its pk: its row).
+            written = {
+                f.name: getattr(
+                    instance, f.attname if f.target_field.primary_key else f.name
+                )
+                for f in model._meta.fields
+                if f.many_to_one or f.one_to_one
+            }
+            written.update(_relation_values(model, validated_data))
+            _verify_references_in_tenant(model, written, request)
         return instance
 
 

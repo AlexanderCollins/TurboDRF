@@ -135,6 +135,19 @@ A 404 never names the model:
 
 If a permission check fails due to an error (database issue, malformed data), access is denied. TurboDRF never grants access on exception.
 
+Some rules are held by two checks, so a bug in one isn't enough:
+
+- **Writes across tenants.** Before a write commits, every row it names
+  through an FK or M2M is checked against the caller's tenant from that row's
+  own tenant column, apart from the checks before the write. A refusal there
+  is logged at ERROR (`turbodrf.serializers`): it means a first check missed.
+- **Properties.** A property runs on a row holding only the columns the
+  caller may read, with every query blocked; anything the row's construction
+  stored (a `post_init` handler's copy of a column, a change tracker's
+  values) is dropped first.
+- **The browsable API** renders the raw-data (JSON) form only, never a form
+  listing a related field's rows.
+
 ## Row-level access control (predicates)
 
 TurboDRF enforces row-level access through *predicates* declared per model.
@@ -474,10 +487,9 @@ an operator's staff. What keeps it contained (details in
 - **Request size** is your web server's to limit: DRF doesn't apply
   `DATA_UPLOAD_MAX_MEMORY_SIZE` to JSON bodies.
 - **`TURBODRF_TENANT_USER_FIELD` should be a column** (a foreign key). A
-  property can't narrow user choices to the caller's tenant in SQL: a
-  browsable-API form then offers none, an error can differ between "another
-  tenant's user" and "no such user", and a filter naming another tenant's
-  user costs one query more than one naming nobody.
+  property can't narrow user choices to the caller's tenant in SQL: an error
+  can differ between "another tenant's user" and "no such user", and a filter
+  naming another tenant's user costs one query more than one naming nobody.
 - **Bypassed permission modes** (`TURBODRF_DISABLE_PERMISSIONS`,
   `TURBODRF_USE_DEFAULT_PERMISSIONS`) have no field rules, so per-model
   `sensitive_fields` don't apply.

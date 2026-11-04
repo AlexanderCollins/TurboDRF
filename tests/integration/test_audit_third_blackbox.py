@@ -9,7 +9,6 @@ tests/platform_urls.py with DRF's APIClient.
 - ``TestHeld*`` classes pin attack classes that held, so a regression shows.
 """
 
-import re
 from unittest import mock
 from urllib.parse import quote
 
@@ -156,31 +155,21 @@ class TestFindingFormDropdownOrder(World):
         self.addCleanup(patcher.stop)
         self._as(self.anaA)
 
-    def _dropdown(self, url):
-        html = self.client.get(url, HTTP_ACCEPT="text/html").content.decode()
-        select = re.search(r'<select[^>]*name="holding".*?</select>', html, re.S)
-        self.assertIsNotNone(select, "no holding dropdown rendered")
-        return re.findall(r'<option value="(\d+)"', select.group(0))
-
     def test_precondition_the_column_is_hidden_and_not_orderable(self):
         row = self.client.get(f"/api/holdings/{self.ids[0]}/").json()
         self.assertNotIn("name", row)
         listed = self.client.get("/api/holdings/?ordering=name").json()["data"]
         self.assertEqual([r["id"] for r in listed], sorted(self.ids))
 
-    def test_create_form_dropdown_does_not_follow_hidden_column(self):
-        options = self._dropdown("/api/holdingevents/?format=api")
-        self.assertEqual(sorted(options, key=int), [str(pk) for pk in self.ids])
-        self.assertNotEqual(
-            options,
-            self.by_name,
-            "the dropdown lists holdings in the order of Holding.name, a "
-            "column the analyst can't read",
-        )
-
-    def test_update_form_dropdown_does_not_follow_hidden_column(self):
-        options = self._dropdown(f"/api/holdingevents/{self.heA.pk}/?format=api")
-        self.assertNotEqual(options, self.by_name)
+    def test_the_forms_list_no_holdings(self):
+        """The fix: the browsable API has the raw-data form only, so no
+        dropdown lists the holdings at all (their order included)."""
+        for url in (
+            "/api/holdingevents/?format=api",
+            f"/api/holdingevents/{self.heA.pk}/?format=api",
+        ):
+            html = self.client.get(url, HTTP_ACCEPT="text/html").content.decode()
+            self.assertNotIn('name="holding"', html, url)
 
 
 # ===========================================================================

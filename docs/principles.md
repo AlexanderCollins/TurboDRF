@@ -44,6 +44,12 @@ what a caller sees inside their tenant. Every model must make this decision
 (`tenant_field`, a restricting `visibility`, or `'tenancy': 'shared'`), or
 the app doesn't start.
 
+Writes hold it twice. Before a write, its FK and M2M values are checked
+against the rows the caller may reference, through the scoped querysets.
+Then, before the write commits, every row it named is checked again from the
+rows' own tenant columns, by separate code: a gap in the first check can't
+alone put a reference to another tenant's row in the database.
+
 ### 4. The predicate algebra: reads are OR, writes are AND
 
 Row rules are a small logic:
@@ -155,7 +161,11 @@ generated endpoint:
   generates random rules and data and checks that the faster query shapes
   TurboDRF builds match the rows Django's own reading of each rule does.
 - **Attack tests** (`tests/integration/test_security_*.py`,
-  `test_audit_084.py`, `test_audit_085.py` and others) each send a request that broke an
-  invariant in an earlier release, and assert that it no longer does.
+  `test_audit_084.py`, `test_audit_085.py`, `test_audit_third*.py` and
+  others) each send a request that broke an invariant in an earlier release,
+  and assert that it no longer does.
+- **Backstop tests** (`tests/integration/test_backstops.py`) switch off a
+  first check, as a bug in it would, and assert that the backstop behind it
+  still refuses the request.
 - **`manage.py turbodrf_explain`** shows how the rules apply to one user, row
   and field, using the same code paths as a request.

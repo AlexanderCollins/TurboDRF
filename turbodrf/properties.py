@@ -7,8 +7,9 @@ the caller has no read rule for, any query it cares to run. So every property
 is computed on a sandbox copy of the row:
 
 - The row is loaded with only the columns the caller may read. Every other
-  column is deferred, and loading it is a query. A column loaded anyway while
-  the row is built (by a ``post_init`` handler, say) is dropped again.
+  column is deferred, and loading it is a query. Anything else on the row
+  once it's built (a column a ``post_init`` handler loaded, a value
+  ``__init__`` derived from one) is dropped again.
 - The relations the model names in ``property_relations`` are loaded first,
   each hop within the caller's scope (the target's own ``tenant_field`` and
   predicates, as for a nested ``__`` field) and with only the target columns
@@ -365,15 +366,15 @@ def _hop_queryset(field, target, request, columns):
 
 
 def _strip(rows, model, columns):
-    """Drop from ``rows`` every column but the pk and ``columns``: a
-    ``post_init`` handler or ``__init__`` can load a deferred column while a
-    row is built."""
-    keep = {model._meta.pk.attname}
+    """Leave on each of ``rows`` only the pk, ``columns``, its state and its
+    scoped relation caches. Building a row runs code (``__init__``, a
+    ``post_init`` handler, a change tracker) that can load a deferred column,
+    or a value derived from one, under any attribute name."""
+    keep = {model._meta.pk.attname, "_state", "_prefetched_objects_cache"}
     keep.update(model._meta.get_field(name).attname for name in columns)
-    drop = [f.attname for f in model._meta.concrete_fields if f.attname not in keep]
     for row in rows:
-        for attname in drop:
-            row.__dict__.pop(attname, None)
+        for key in [key for key in row.__dict__ if key not in keep]:
+            del row.__dict__[key]
 
 
 def _loaded_rows(instances, lookup):
