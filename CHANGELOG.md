@@ -8,8 +8,11 @@ plumbing and of the supply chain. Seven more then attacked the result: the
 read path, filters, writes, roles, the HTTP surface, a black-box pentest and
 the supply chain again. Each fix has a test that sends the attack that worked
 (`tests/integration/test_audit_085.py`, `test_audit_third.py`,
-`test_audit_third_blackbox.py`), and the fuzzer stays in the suite
-(`tests/conformance/test_rewrite_equivalence.py`).
+`test_audit_third_blackbox.py`), and four fuzzers stay in the suite
+(`tests/conformance/`): the query-rewrite fuzzer, a write-rule fuzzer that
+checks every write decision against a spec written from the docs, and
+read and write noninterference fuzzers (a response mustn't change when only
+data the caller can't see does).
 
 ### Security: reads
 
@@ -36,6 +39,11 @@ the supply chain again. Each fix has a test that sends the attack that worked
   correlated the negated subquery to the wrong JOIN. Each negated lookup is
   now its own subquery, which is what Django means by it, so the rule never
   reaches that code. Found by the new differential fuzzer.
+- Two predicates over the same M2M or reverse relation shared its JOIN:
+  `[Members('members'), Custom(~Q(members__username='x'))]` read as "the
+  member who is me isn't x" and showed members the rows the `Custom` hides
+  (and the post-write check passed a write into them). Each predicate is
+  now a condition of its own. Found by the write-rule fuzzer.
 - A rule with no condition in it (`Q(Q())`) no longer narrows a filter
   through its model to rows with no related row, and as an `Either` branch it
   lifts the `Either` (Django dropped it from the OR).
@@ -151,9 +159,11 @@ to break them (`tests/integration/test_backstops.py` switches the first off):
 - The publish workflow builds without permission to upload, refuses a
   release that isn't on `main`, and uploads from a separate job. The coverage
   badge's token is out of the test job.
-- Dependabot watches the website's npm packages. The Django and DRF floors
-  move past known CVEs (`Django>=4.2.26,!=5.0.*,!=5.1.*`,
-  `djangorestframework>=3.15.2`).
+- Dependabot watches the website's npm packages. The lowest supported
+  versions are now `Django>=4.2.30,!=5.0.*,!=5.1.*` and
+  `djangorestframework>=3.17.2`. They're minimums, not security pins: 4.2 gets
+  no security fixes after April 2026, and DRF 3.18.2 fixes advisories older
+  versions have, so pin the latest patches in your project.
 - The `allauth` extra needs django-allauth 65.14.1 or later (three
   advisories).
 - Tested on Django 6.1 too.

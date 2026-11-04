@@ -217,7 +217,7 @@ def _scope_on_joined_row(target, request, prefix):
     from .predicates import get_predicates, get_tenant_field, predicates_q, tenant_q
     from .views import _leaves, _q_spans_multivalued, prefixed, without_to_many_joins
 
-    predicate_q = predicates_q(get_predicates(target), request)
+    predicate_q = predicates_q(get_predicates(target), request, target)
     if predicate_q and _q_spans_multivalued(target, predicate_q):
         predicate_q = without_to_many_joins(target, predicate_q)
         if predicate_q is None or _q_spans_multivalued(target, predicate_q):
@@ -262,7 +262,8 @@ def scoped_target_queryset(target_model, request, base_manager=False):
         target_model._base_manager if base_manager else target_model._default_manager
     )
     scope = Authorization(
-        tenant_q(tenant_field, request), predicates_q(predicates, request)
+        tenant_q(tenant_field, request),
+        predicates_q(predicates, request, target_model),
     )
     return scope.scope(manager.all())
 

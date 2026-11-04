@@ -94,9 +94,16 @@ def tenant_q(tenant_field, request):
     return Q(**{tenant_field: tenant})
 
 
-def predicates_q(predicates, request):
+def predicates_q(predicates, request, model=None):
     """The AND of ``predicates``' read rules for the caller. ``Q()`` without
-    predicates; no rows without a request (fail closed)."""
+    predicates; no rows without a request (fail closed).
+
+    Each predicate is a condition of its own. ANDed into one ``Q``, two
+    predicates' lookups through the same M2M or reverse relation would share
+    its JOIN (``Members('members')`` and ``~Q(members__username='x')`` would
+    mean "the member who is me isn't x"). With ``model``, when more than one
+    predicate crosses such a relation, each of those is made into a condition
+    that joins nothing (``views.independent_q``) before they're ANDed."""
     if not predicates:
         return Q()
     if request is None:
@@ -104,9 +111,15 @@ def predicates_q(predicates, request):
     from .backends import get_user_roles
 
     roles = set(get_user_roles(getattr(request, "user", None)))
+    parts = [pred.q(request, roles) for pred in predicates]
+    if model is not None:
+        from .views import _q_spans_multivalued, independent_q
+
+        if sum(1 for part in parts if _q_spans_multivalued(model, part)) > 1:
+            parts = [independent_q(model, part) for part in parts]
     q = Q()
-    for pred in predicates:
-        q &= pred.q(request, roles)
+    for part in parts:
+        q &= part
     return q
 
 
