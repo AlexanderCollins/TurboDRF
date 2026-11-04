@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "turbodrf"
-version = "0.8.4"
+version = "0.8.5"
 description = "Turn Django models into a secure REST API: CRUD endpoints, field-level permissions and multi-tenant row scoping"
 readme = "README.md"
 authors = [
@@ -28,11 +28,16 @@ classifiers = [
     "Framework :: Django :: 4.2",
     "Framework :: Django :: 5.2",
     "Framework :: Django :: 6.0",
+    "Framework :: Django :: 6.1",
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "Django>=4.2",
-    "djangorestframework>=3.14.0",
+    # The lowest versions supported, not a security pin: pin the latest patch
+    # in your project. Django 4.2 has had no security release since 4.2.30
+    # (April 2026); DRF 3.18.2 fixes advisories older versions have. 5.0 and
+    # 5.1 are end-of-life.
+    "Django>=4.2.30,!=5.0.*,!=5.1.*",
+    "djangorestframework>=3.17.2",
     "drf-yasg>=1.21.0",
     "django-filter>=23.0",
 ]
@@ -65,7 +70,7 @@ docs = [
     "sphinx-rtd-theme>=1.0",
 ]
 allauth = [
-    "django-allauth>=0.57.0",
+    "django-allauth>=65.14.1",
 ]
 
 [project.urls]

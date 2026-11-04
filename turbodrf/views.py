@@ -72,12 +72,14 @@ class Authorization:
             predicate_q = self.predicate_q
             if predicate_q and _q_spans_multivalued(model, predicate_q):
                 flat = without_to_many_joins(model, predicate_q)
-                if flat is None:
-                    queryset = queryset.filter(
-                        pk__in=queryset.filter(predicate_q).values("pk")
-                    )
-                else:
+                if flat is not None and not _q_spans_multivalued(model, flat):
                     queryset = queryset.filter(flat)
+                else:
+                    # What's left still JOINs a to-many relation: match by pk.
+                    rest = predicate_q if flat is None else flat
+                    queryset = queryset.filter(
+                        pk__in=queryset.filter(rest).values("pk")
+                    )
             else:
                 queryset = queryset.filter(predicate_q)
         return queryset
@@ -113,6 +115,20 @@ def _expression_inside(value):
 class RowsMatching(Subquery):
     """An ``__in`` value: the pks of the rows one lookup matches, built from a
     plain lookup and value, so it refers to nothing outside itself."""
+
+
+def independent_q(model, q):
+    """``q`` as a condition that joins no M2M or reverse relation, so ANDed
+    with another it shares no JOIN: its to-many lookups made subqueries
+    (``without_to_many_joins``), else ``pk__in`` the rows it matches."""
+    from django.db.models import Q
+
+    if not _q_spans_multivalued(model, q):
+        return q
+    flat = without_to_many_joins(model, q)
+    if flat is not None and not _q_spans_multivalued(model, flat):
+        return flat
+    return Q(pk__in=RowsMatching(model._base_manager.filter(q).order_by().values("pk")))
 
 
 def _q_spans_multivalued(model, q):
@@ -200,25 +216,48 @@ def _rebuilt(q, rewrite):
 
 
 def without_to_many_joins(model, q):
-    """``q`` with each lookup that crosses an M2M or reverse relation replaced
-    by ``pk__in`` the rows it matches (``RowsMatching``). The rows are the
-    same, but the outer query has no to-many JOIN: nothing repeats, and no
-    ``pk__in`` wrap of the whole predicate (an OR across a JOIN, which
-    defeats indexes) is needed.
+    """``q`` with its lookups across M2M or reverse relations replaced by
+    ``pk__in`` the rows each matches (``RowsMatching``), where that keeps
+    ``q``'s meaning. The outer query then has no to-many JOIN for them:
+    nothing repeats, and no ``pk__in`` wrap of the whole predicate (an OR
+    across a JOIN, which defeats indexes) is needed.
 
-    ``None`` when that could change which rows ``q`` matches: two lookups
-    through the same relation share one JOIN in a ``filter()`` (one related
-    row must match both), an XOR's meaning depends on its operands staying
-    together, and an expression can't be inspected (one inside a list
-    included). Only a plain ``F()`` on a single-valued path, or a
-    ``RowsMatching``, is kept."""
-    from django.db.models import F
+    - A lookup under a NOT: Django matches each one on its own, in a subquery
+      of its own (as ``exclude()`` does), so this is the same rows. It also
+      keeps Django's subquery from reusing another JOIN to the same table by
+      mistake (its ``split_exclude`` alias reuse returned rows a rule hid).
+    - Any other lookup only when no other lookup runs through its relation:
+      in one ``filter()`` they'd share a JOIN, one related row matching both.
 
-    leaves = _leaves(q)
-    if leaves is None:
+    Lookups it can't rewrite are left as they are: the caller checks the
+    result with ``_q_spans_multivalued``. ``None`` when ``q`` holds an XOR (its
+    meaning changes when its operands move apart) or an expression it can't
+    inspect (one inside a list included); only a plain ``F()`` on a
+    single-valued path, or a ``RowsMatching``, is kept."""
+    from collections import Counter
+
+    from django.db.models import F, Q
+
+    entries = []  # ((lookup, value), under a NOT)
+
+    def walk(node, negated):
+        if node.connector == "XOR":
+            return False
+        negated = negated or node.negated
+        for child in node.children:
+            if isinstance(child, Q):
+                if not walk(child, negated):
+                    return False
+            elif isinstance(child, tuple) and isinstance(child[0], str):
+                entries.append((child, negated))
+            else:
+                return False
+        return True
+
+    if not walk(q, False):
         return None
-    seen = set()
-    for lookup, value in leaves:
+    positive, negative = Counter(), set()
+    for (lookup, value), negated in entries:
         prefix = _to_many_prefix(model, lookup)
         if type(value) is F:
             if prefix or _to_many_prefix(model, value.name):
@@ -228,18 +267,32 @@ def without_to_many_joins(model, q):
         ):
             return None
         if prefix:
-            if prefix in seen:
-                return None
-            seen.add(prefix)
+            if negated:
+                negative.add(prefix)
+            else:
+                positive[prefix] += 1
 
-    def rewrite(child):
+    def rewrite(child, negated):
         lookup, value = child
-        if not _to_many_prefix(model, lookup):
+        prefix = _to_many_prefix(model, lookup)
+        if not prefix:
             return child
+        if negated and positive[prefix]:
+            return child  # tied to a positive lookup's JOIN: left to Django
+        if not negated and (positive[prefix] > 1 or prefix in negative):
+            return child  # shares a JOIN with another lookup
         rows = model._base_manager.filter(**{lookup: value}).order_by()
         return ("pk__in", RowsMatching(rows.values("pk")))
 
-    return _rebuilt(q, rewrite)
+    def rebuild(node, negated):
+        negated = negated or node.negated
+        children = [
+            rebuild(child, negated) if isinstance(child, Q) else rewrite(child, negated)
+            for child in node.children
+        ]
+        return Q(*children, _connector=node.connector, _negated=node.negated)
+
+    return rebuild(q, False)
 
 
 def prefixed(q, prefix):
@@ -526,6 +579,16 @@ class TurboDRFViewSet(*_viewset_bases):
             if cls is TurboDRFPagination:
                 cls = configured_pagination_class()
             self._paginator = cls() if cls is not None else None
+            ordering = getattr(self._paginator, "ordering", None)
+            if ordering:
+                # A cursor's links carry its ordering column's values: only a
+                # column the caller may order by, as _default_ordering.
+                from .filter_backends import readable_ordering
+
+                terms = [ordering] if isinstance(ordering, str) else list(ordering)
+                self._paginator.ordering = readable_ordering(
+                    self.model, terms, set(self.ordering_fields)
+                )
         return self._paginator
 
     filter_backends = [
@@ -537,7 +600,9 @@ class TurboDRFViewSet(*_viewset_bases):
 
     def get_renderers(self):
         """Resolve renderers per request, upgrading stock JSONRenderer to the
-        fast msgspec/orjson-backed TurboDRFRenderer when available.
+        fast msgspec/orjson-backed TurboDRFRenderer when available, and the
+        stock BrowsableAPIRenderer to one with the raw-data form only
+        (``TurboDRFBrowsableAPIRenderer``).
 
         Unlike a class-level ``renderer_classes`` override, this respects the
         project's ``DEFAULT_RENDERER_CLASSES`` — e.g. a production config that
@@ -545,14 +610,20 @@ class TurboDRFViewSet(*_viewset_bases):
         JSONRenderer subclass is left untouched (only the exact stock class
         is swapped).
         """
-        from .renderers import FAST_JSON_AVAILABLE, TurboDRFRenderer
+        from rest_framework.renderers import BrowsableAPIRenderer, JSONRenderer
 
-        renderers = super().get_renderers()
-        if not FAST_JSON_AVAILABLE:
-            return renderers
-        from rest_framework.renderers import JSONRenderer
+        from .renderers import (
+            FAST_JSON_AVAILABLE,
+            TurboDRFBrowsableAPIRenderer,
+            TurboDRFRenderer,
+        )
 
-        return [TurboDRFRenderer() if type(r) is JSONRenderer else r for r in renderers]
+        swaps = {BrowsableAPIRenderer: TurboDRFBrowsableAPIRenderer}
+        if FAST_JSON_AVAILABLE:
+            swaps[JSONRenderer] = TurboDRFRenderer
+        return [
+            swaps[type(r)]() if type(r) in swaps else r for r in super().get_renderers()
+        ]
 
     # Set custom swagger schema class for better OpenAPI documentation
     # This prevents custom actions from incorrectly showing all model fields
@@ -658,6 +729,9 @@ class TurboDRFViewSet(*_viewset_bases):
         elif isinstance(exc, (TooManyFieldsSent, RequestDataTooBig)):
             # Raised while DRF reads the request; a 400, not a 500.
             exc = exceptions.ParseError("Request has too many fields or is too big.")
+        elif isinstance(exc, RecursionError):
+            # A JSON body nested thousands deep, raised while DRF parses it.
+            exc = exceptions.ParseError("Request body is nested too deeply.")
         return super().handle_exception(exc)
 
     def initial(self, request, *args, **kwargs):
@@ -669,6 +743,39 @@ class TurboDRFViewSet(*_viewset_bases):
             from rest_framework.exceptions import MethodNotAllowed
 
             raise MethodNotAllowed(request.method)
+        self._check_lookup_readable(request)
+
+    def _check_lookup_readable(self, request):
+        """A detail URL by a ``lookup_field`` other than the pk is a match on
+        that column's value: a caller who can't read the column gets a 404,
+        or the URL would confirm guesses of it. A value with a NUL is a 404
+        too (on PostgreSQL, a database error)."""
+        from rest_framework.exceptions import NotFound
+
+        lookup = self.lookup_field
+        if "\x00" in str(self.kwargs.get(self.lookup_url_kwarg or lookup, "")):
+            raise NotFound()
+        if (
+            lookup in ("pk", self.model._meta.pk.name)
+            or (self.lookup_url_kwarg or lookup) not in self.kwargs
+            or permissions_bypassed()
+        ):
+            return
+        snapshot = self._caller_snapshot(request)
+        if snapshot.has_read_rule(lookup) and not snapshot.can_read_field(lookup):
+            raise NotFound()
+
+    def perform_destroy(self, instance):
+        """A delete passes the write checks a write would (see
+        ``serializers._delete_errors``)."""
+        from rest_framework.exceptions import PermissionDenied
+
+        from .serializers import _delete_errors
+
+        errors = _delete_errors(self.model, instance, self.request)
+        if errors:
+            raise PermissionDenied(errors[0])
+        super().perform_destroy(instance)
 
     def get_permissions(self):
         """Resolve permission instances per request from current settings.
@@ -713,7 +820,7 @@ class TurboDRFViewSet(*_viewset_bases):
         can't escape it."""
         from .predicates import predicates_q
 
-        return predicates_q(self._predicates, request)
+        return predicates_q(self._predicates, request, self.model)
 
     def _get_tenant_q(self, request):
         """The mandatory tenant boundary: applied to every queryset, not
@@ -1253,9 +1360,23 @@ class TurboDRFViewSet(*_viewset_bases):
         if not request:
             return None
 
+        from .backends import build_permission_snapshot
+        from .validation import fk_value_readable
+
         snapshot = self._caller_snapshot(request)
         readable = set(snapshot.readable_fields) if snapshot else set()
-        return readable & self._configured_base_fields()
+        user = getattr(request, "user", None)
+        return {
+            name
+            for name in readable & self._configured_base_fields()
+            if fk_value_readable(
+                self.model,
+                name,
+                lambda m: (
+                    snapshot if m is self.model else build_permission_snapshot(user, m)
+                ),
+            )
+        }
 
     def _caller_snapshot(self, request):
         """The caller's permission snapshot (anonymous when the request has no

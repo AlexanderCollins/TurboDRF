@@ -16,7 +16,7 @@ actions where the exact rendering matters.
 
 import decimal
 
-from rest_framework.renderers import BaseRenderer
+from rest_framework.renderers import BaseRenderer, BrowsableAPIRenderer
 from rest_framework.utils.encoders import JSONEncoder as _DRFJSONEncoder
 
 _encoder = None
@@ -127,3 +127,15 @@ else:
 
 FAST_JSON_AVAILABLE = _lib_name in ("msgspec", "orjson")
 FAST_JSON_LIB = _lib_name
+
+
+class TurboDRFBrowsableAPIRenderer(BrowsableAPIRenderer):
+    """DRF's browsable API with the raw-data form only. Its HTML forms list
+    each related field's choices, rows of other models, as options: the raw
+    form is JSON the caller types (and, for an update, the row as the caller
+    reads it)."""
+
+    def get_rendered_html_form(self, data, view, method, request):
+        if method in ("DELETE", "OPTIONS"):  # a button, not a form
+            return super().get_rendered_html_form(data, view, method, request)
+        return None

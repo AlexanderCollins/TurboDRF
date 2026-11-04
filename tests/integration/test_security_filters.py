@@ -1716,8 +1716,12 @@ class TestRecursionAndMemory(_BaseFixture):
                 for i in range(50)
             ]
         )
+        # SQLite stores past max_length; PostgreSQL doesn't.
+        from django.db import connection
+
+        long = 50_000 if connection.vendor == "sqlite" else 190
         Deal.objects.create(
-            title="LONG_" + "x" * 50_000,
+            title="LONG_" + "x" * long,
             brokerage=self.brokerage_attacker,
             assigned_broker=self.attacker,
         )

@@ -215,15 +215,20 @@ def _scope_on_joined_row(target, request, prefix):
     from django.db.models import Q
 
     from .predicates import get_predicates, get_tenant_field, predicates_q, tenant_q
-    from .views import _q_spans_multivalued, prefixed, without_to_many_joins
+    from .views import _leaves, _q_spans_multivalued, prefixed, without_to_many_joins
 
-    predicate_q = predicates_q(get_predicates(target), request)
+    predicate_q = predicates_q(get_predicates(target), request, target)
     if predicate_q and _q_spans_multivalued(target, predicate_q):
         predicate_q = without_to_many_joins(target, predicate_q)
-        if predicate_q is None:
+        if predicate_q is None or _q_spans_multivalued(target, predicate_q):
             return None
     scope = tenant_q(get_tenant_field(target), request) & predicate_q
-    return prefixed(scope, prefix) if scope else Q()
+    if _leaves(scope) == []:
+        # No condition (Q(), or one that only nests empty ones): moved into
+        # the caller's `isnull | scope`, Django would drop it from the OR.
+        # (None, for an XOR, isn't empty: prefixed() refuses it.)
+        return Q()
+    return prefixed(scope, prefix)
 
 
 def _relation_may_be_empty(field):
@@ -257,7 +262,8 @@ def scoped_target_queryset(target_model, request, base_manager=False):
         target_model._base_manager if base_manager else target_model._default_manager
     )
     scope = Authorization(
-        tenant_q(tenant_field, request), predicates_q(predicates, request)
+        tenant_q(tenant_field, request),
+        predicates_q(predicates, request, target_model),
     )
     return scope.scope(manager.all())
 
@@ -315,6 +321,23 @@ def _reverse_side_readable(model, name, snapshot_for):
     return _field_readable(snapshot_for(field.related_model), field.remote_field.name)
 
 
+def fk_value_readable(model, name, snapshot_for):
+    """For an FK with ``to_field``, may the caller read the target column its
+    value is? True for any other field."""
+    try:
+        field = model._meta.get_field(name)
+    except FieldDoesNotExist:
+        return True
+    if not (field.concrete and (field.many_to_one or field.one_to_one)):
+        return True
+    target = field.target_field
+    if target.primary_key:
+        return True
+    return not is_field_path_sensitive(target.name) and _field_readable(
+        snapshot_for(field.related_model), target.name
+    )
+
+
 def _path_readable(model, field_path, snapshot_for):
     """``check_nested_field_permissions`` with the snapshot of each model on
     the path from ``snapshot_for(model)``, so a caller checking many paths can
@@ -332,8 +355,11 @@ def _path_readable(model, field_path, snapshot_for):
             logger.debug(f"Permission denied: {current_model.__name__}.{part}")
             return False
         # A reverse relation is the related model's FK / M2M read from the
-        # other side: which rows point at this one is that field's value.
-        if not _reverse_side_readable(current_model, part, snapshot_for):
+        # other side: which rows point at this one is that field's value. An
+        # FK with to_field shows the target's column as its value.
+        if not _reverse_side_readable(
+            current_model, part, snapshot_for
+        ) or not fk_value_readable(current_model, part, snapshot_for):
             logger.debug(
                 f"Permission denied: {current_model.__name__}.{part} "
                 f"(the related model's field isn't readable)"

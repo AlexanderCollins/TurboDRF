@@ -41,11 +41,16 @@ on:
 - an unknown key in any model's config, enabled or not, such as a misspelt
   `'owner_feild'` (the error lists the valid keys; `sensitive_fields` is a
   class attribute on the model, not a key);
+- `enabled`, `public_access`, `read_only` or `full_clean` set to anything but
+  `True` or `False` (the string `'false'` would read as true);
+- a `sensitive_fields` entry that isn't a field of the model, by its name
+  (`'owner'`, not `'owner_id'`);
 - on an enabled model, a `fields` entry that isn't a model field, a
-  `@property` or a `__` path through relations, or one that ends on a reverse
-  one-to-one (list a field of the related model instead, e.g.
+  `@property` or a `__` path of relations ending on a field, or one that ends
+  on a reverse one-to-one (list a field of the related model instead, e.g.
   `'profile__bio'`);
-- a `lookup_field` that isn't a unique column of the model;
+- a `lookup_field` that isn't a unique column of the model, or is a
+  sensitive one;
 - a [`searchable_fields`](#searchable-fields) entry that can't be searched;
 - two models routed to the same `endpoint` (the error suggests an
   app-prefixed one, such as `'shop/books'`).
@@ -91,7 +96,7 @@ Access related model fields with `__` notation:
 ]
 ```
 
-FK fields are flattened in responses (`author__name` becomes `author_name`), and the FK itself renders as its raw id. M2M fields are arrays of objects keyed by the path below the M2M (`tags__group__name` gives `{"group__name": ...}`), in the target's `Meta.ordering` when the array shows those columns and the caller can read them (else by primary key):
+FK fields are flattened in responses (`author__name` becomes `author_name`), and the FK itself renders as its raw id. Listing a nested path puts its FK (`author`) in the API even if `fields` doesn't list it: rendered, and accepted on writes by a role that may write it (checked like any FK value). M2M fields are arrays of objects keyed by the path below the M2M (`tags__group__name` gives `{"group__name": ...}`), in the target's `Meta.ordering` when the array shows those columns and the caller can read them (else by primary key):
 
 ```json
 {
@@ -103,6 +108,8 @@ FK fields are flattened in responses (`author__name` becomes `author_name`), and
 ```
 
 An M2M listed on its own (`'tags'`) renders the pks of the targets the caller can see. A reverse relation (`'items'`, `'items__label'`) renders like an M2M, scoped the same way, and is read-only. It's the related model's FK read from the other side, so the caller needs that FK's read grant, or model-level read on the related model when the FK has no rule (see [Security](security.md#reverse-relations)). Nested and M2M values are formatted by the same DRF field a top-level field of that type uses (a Decimal renders as a string by default, `DATETIME_FORMAT` applies, files render as absolute URLs). A path ending on an FK renders the value the parent stores: the related pk, or the `to_field` value.
+
+An M2M whose `through` model has row rules of its own (a membership with a `Conditional`) can't be in a path: the M2M reads the links without those rules, so the router refuses it. Go through the through model's rows instead (`memberships__user`), which keeps them. A nested path can't end on an M2M or reverse relation (`author__books`), and a generic FK can't be listed.
 
 A nested value renders only when the caller can see the related row through that model's own endpoint; otherwise it's `null`, and M2M targets they can't see are left out. See [Security](security.md#nested-fields-across-scoped-relations).
 
@@ -142,13 +149,13 @@ class Book(models.Model, TurboDRFMixin):
 
 `display_title` appears in every response alongside the real fields.
 
-A property is readable by any role that can read the model (it can't carry its own field-level rule), and sensitive-named properties are dropped.
+A property is readable by any role that can read the model (it can't carry its own field-level rule), and sensitive-named properties are dropped. Only a model's own properties can be listed: a property of a related model (`'author__display_name'`) would run on the whole related row, outside the sandbox below, so it's refused at startup. List it in the related model's own `fields`, or list the column it reads.
 
 ### The property sandbox
 
 A property is computed on a **sandbox** copy of the row:
 
-- Only the columns the caller may read are loaded. Reading any other column (a field a role has no read rule for, a `sensitive_fields` entry, `password`) would need a query, so it fails. A column a model hook loads while the row is built (a `post_init` handler, `__init__`) is dropped again before the property runs.
+- Only the columns the caller may read are loaded. Reading any other column (a field a role has no read rule for, a `sensitive_fields` entry, `password`) would need a query, so it fails. A column a model hook loads while the row is built (a `post_init` handler, `__init__`) is dropped again before the property runs; a value the hook copies elsewhere on the instance isn't, so don't copy hidden columns in model hooks.
 - Related objects are available only if the model declares them in `property_relations`. Each hop is loaded within the caller's scope (the target's own `tenant_field` and predicates, as for `author__name`) and with only the columns the caller may read on that model. A FK whose target is out of scope reads as `None`; out-of-scope rows are missing from a reverse or M2M relation. A hop is loaded only if the caller can read the relation, has model-level read on its target model, and can read the column it joins on; otherwise a property that follows it fails.
 - The property can't query the database. `Book.objects.count()`, `self.tags.filter(...)` and `self.tags.values_list(...)` all fail; `self.tags.all()` on a declared relation works.
 - The result becomes plain data (dicts, lists, scalars) before the sandbox closes. A property that returns a model instance, a manager or a queryset fails: return the values instead (`[t.name for t in self.tags.all()]`).
@@ -348,6 +355,8 @@ class Invite(models.Model, TurboDRFMixin):
 ```
 
 This exposes `POST /api/invites/{pk}/resend/`. Because the handler calls `self.get_object()`, a caller can only resend an invite they can already see -- cross-tenant PKs 404 exactly like a normal detail GET.
+
+The scoping covers which rows an action reaches, not what it writes. An action that saves values from the request should write them through `self.get_serializer(obj, data=request.data, partial=True)` (`is_valid(raise_exception=True)`, then `save()`), which applies the field write rules and the row rules' write checks; `obj.save()` with values of its own skips them.
 
 A collection action looks the same with `detail=False` and no `pk`:
 

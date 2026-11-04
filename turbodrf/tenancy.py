@@ -17,7 +17,7 @@ import difflib
 from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
 
-from .mixins import config_label
+from .mixins import config_label, is_turbodrf_model
 
 
 class AmbiguousTenantPath(ImproperlyConfigured):
@@ -315,10 +315,56 @@ def _register_tenancy(models=None, configs=None):
             f"attribute that returns the tenant (e.g. 'workspace')."
         )
 
+    hops = {}
+    for model, (tenant_field, _predicates, _autodetected) in resolved.items():
+        _require_scoped_hops(model, tenant_field, resolved)
+        for hop, rest in _plain_hops(model, tenant_field, resolved):
+            if hops.setdefault(hop, rest) != rest:
+                raise ImproperlyConfigured(
+                    f"Two tenant_field paths run through {hop.__name__} to "
+                    f"its tenant differently ({hops[hop]!r}, {rest!r}). Give "
+                    f"it a tenant_field of its own (turbodrf.register())."
+                )
+
+    for hop, rest in hops.items():
+        register_tenant_field(hop, rest)
     for model, (tenant_field, predicates, _autodetected) in resolved.items():
         register_tenant_field(model, tenant_field)
         register_predicates(model, predicates)
     return resolved
+
+
+def _plain_hops(model, tenant_field, resolved):
+    """The models a chained ``tenant_field`` runs through that aren't TurboDRF
+    models, each with the rest of the path to the tenant. Their rows are
+    tenant data: they're scoped by that path wherever the API reaches them
+    (another FK naming one, a nested field), as a ``tenant_field`` scopes."""
+    parts = (tenant_field or "").split("__")
+    current = model
+    for i, hop in enumerate(parts[:-1]):
+        current = current._meta.get_field(hop).related_model
+        if current not in resolved and not is_turbodrf_model(current):
+            yield current, "__".join(parts[i + 1 :])
+
+
+def _require_scoped_hops(model, tenant_field, resolved):
+    """A ``tenant_field`` path may only run through TurboDRF models that have a
+    ``tenant_field`` of their own. Through a shared one, any tenant could move
+    that model's rows (its tenant FK is unchecked) and every row reached
+    through them would move with it."""
+    if not tenant_field or "__" not in tenant_field:
+        return
+    current = model
+    for hop in tenant_field.split("__")[:-1]:
+        current = current._meta.get_field(hop).related_model
+        if current in resolved and resolved[current][0] is None:
+            raise ImproperlyConfigured(
+                f"{config_label(model)} declares tenant_field {tenant_field!r}, "
+                f"which runs through {current.__name__}: a TurboDRF model with no "
+                f"tenant_field of its own, whose rows any tenant could move "
+                f"(taking these with them). Give {current.__name__} a "
+                f"tenant_field."
+            )
 
 
 def _model_is_tenant(model, tenant_model_setting):
@@ -350,6 +396,24 @@ def _validate_user_relation(model, path, what):
     return field
 
 
+def _require_field_names(model, path, what):
+    """Each hop of ``path`` must be a field's name, not its column name
+    (``owner_id``): written data is keyed by name, so a write check on a
+    column name never sees the value."""
+    current = model
+    for part in path.split("__"):
+        try:
+            field = current._meta.get_field(part)
+        except FieldDoesNotExist:
+            return  # validated (and refused) by the caller
+        if field.name != part:
+            raise ImproperlyConfigured(
+                f"{config_label(model)} declares {what}, which names the column "
+                f"{part!r}: use the field's name, {field.name!r}."
+            )
+        current = getattr(field, "related_model", None) or current
+
+
 def _validate_predicate_paths(model, predicate):
     """Best-effort path validation for known predicate types.
 
@@ -367,6 +431,7 @@ def _validate_predicate_paths(model, predicate):
 
     if isinstance(predicate, Owner):
         for f in predicate.fields:
+            _require_field_names(model, f, f"Owner({f!r})")
             field = _validate_user_relation(model, f, f"Owner({f!r})")
             if not _is_forward_relation(field):
                 raise ImproperlyConfigured(
@@ -377,6 +442,7 @@ def _validate_predicate_paths(model, predicate):
     elif isinstance(predicate, Members):
         validate_field_path(model, predicate.m2m_field)
     elif isinstance(predicate, Group):
+        _require_field_names(model, predicate.field, f"Group({predicate.field!r})")
         validate_field_path(model, predicate.field)
         _validate_user_relation(
             model,

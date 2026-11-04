@@ -92,7 +92,7 @@ class TestCacheKey(TestCase):
         self.assertNotEqual(after, before)
         prefix = "turbodrf_perm"
         cache.delete_many(
-            [f"{prefix}:generation:all", f"{prefix}:generation:{self.user.pk}"]
+            [f"{prefix}:generation:all", f"{prefix}:generation:user:{self.user.pk}"]
         )
         self.assertNotIn(get_cache_key(self.user, SampleModel), {before, after})
 

@@ -316,6 +316,12 @@ queryset. A chained `tenant_field` isn't auto-filled; instead a create, or an
 update that changes the first hop (`project` above), must point that hop at a
 row in the caller's tenant. There's no way to compose this away.
 
+A model the path runs through holds tenant data too. A TurboDRF one needs a
+`tenant_field` of its own (the router refuses a shared one). A plain one
+(`Project` without the mixin) is scoped by the rest of the path,
+`workspace`, wherever the API reaches it: another model's FK to it takes and
+renders only the caller's tenant's rows.
+
 **Layer 2 — discretionary within-tenant predicates:**
 
 Stack predicates with AND. Use `Either(...)` for OR. These operate ONLY
@@ -470,8 +476,12 @@ Other hard-fails:
 - A `tenant_field` that breaks the hop rules in
   [Two-layer model](#two-layer-model), or any `tenant_field` while
   `TURBODRF_TENANT_USER_FIELD` is unset
+- A `tenant_field` that runs through a TurboDRF model with no `tenant_field`
+  of its own (a shared one): any tenant could move that model's rows, and
+  these with them
 - An `Owner` / `owner_field` column that isn't a foreign key or one-to-one
-  to the user model (with did-you-mean suggestions for typos)
+  to the user model (with did-you-mean suggestions for typos), or that names
+  the column (`'owner_id'`) instead of the field (`'owner'`)
 - A `Group(user_via=...)` that doesn't lead to users
 - `bypass_owner_roles` listing roles not in `TURBODRF_ROLES` (typo guard)
 - A `Custom` predicate without a `write_validator`

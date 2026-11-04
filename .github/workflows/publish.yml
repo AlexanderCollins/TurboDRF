@@ -20,6 +20,8 @@ jobs:
             django-version: "5.2"
           - python-version: "3.14"
             django-version: "6.0"
+          - python-version: "3.14"
+            django-version: "6.1"
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
@@ -41,27 +43,37 @@ jobs:
         if: matrix.python-version == '3.12'
         run: make lint
 
-  publish:
+  # Builds the files with no permission to upload them: nothing the build
+  # installs (build, setuptools, twine and their dependencies) runs in a job
+  # that can ask PyPI for an upload token.
+  build:
     needs: test
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
       contents: read
-      id-token: write  # PyPI trusted publishing
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          fetch-depth: 0  # main's history, for the check below
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
         with:
           python-version: "3.12"
 
+      - name: Check the release is a commit on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Release $GITHUB_SHA isn't on main: releases are made from main only."
+            exit 1
+          fi
+
       - name: Check the tag matches the package version
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
-          python - <<'EOF'
+          python - <<'PYEOF'
           import os, re, tomllib
           tag = os.environ["TAG"]
           pyproject = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
@@ -69,14 +81,35 @@ jobs:
           print(f"tag={tag} pyproject={pyproject} __init__={init}")
           if not (tag == f"v{pyproject}" and pyproject == init):
               raise SystemExit("Release tag, pyproject.toml and turbodrf/__init__.py versions differ.")
-          EOF
+          PYEOF
 
       - name: Build and check the package
         run: |
           python -m pip install --upgrade pip
-          pip install build twine
+          pip install "build==1.6.1" "twine==7.0.0"
           python -m build
           twine check --strict dist/*
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # Uploads the built files and nothing else.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write  # PyPI trusted publishing
+
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2

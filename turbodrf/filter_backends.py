@@ -9,7 +9,9 @@ import datetime
 import logging
 
 from django.core.exceptions import FieldError, ValidationError
-from django.db import models
+from django.core.validators import MaxValueValidator, MinValueValidator
+from django.db import connections, models
+from django.db import router as db_router
 from django.db.models import Q
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import exceptions
@@ -35,14 +37,16 @@ _TEXT_LOOKUPS = {
     "iendswith",
 }
 
-# Transforms, and the model field their output is parsed as.
+# Transforms, and the model field their output is parsed as. A year is
+# bounded: Django builds a date from it (out of range is a 500).
+_YEAR = models.IntegerField(validators=[MinValueValidator(1), MaxValueValidator(9999)])
 _TRANSFORMS = {
     "date": models.DateField(),
     "time": models.TimeField(),
+    "year": _YEAR,
     **{
         name: models.IntegerField()
         for name in (
-            "year",
             "month",
             "day",
             "week",
@@ -59,7 +63,7 @@ _TRANSFORMS = {
 def _max_filter_value_length():
     from django.conf import settings
 
-    return getattr(settings, "TURBODRF_MAX_FILTER_VALUE_LENGTH", 1000)
+    return getattr(settings, "TURBODRF_MAX_FILTER_VALUE_LENGTH", 200)
 
 
 class TurboDRFFilterBackend(DjangoFilterBackend):
@@ -72,10 +76,13 @@ class TurboDRFFilterBackend(DjangoFilterBackend):
         filterset = super().get_filterset(request, queryset, view)
         if filterset is None:
             return None
+        from .serializers import _co_tenant_queryset
         from .validation import scoped_target_queryset
 
         scoped_targets = {}
         for flt in filterset.filters.values():
+            if flt.lookup_expr.split("__")[0] == "year":
+                flt.extra.update(min_value=1, max_value=9999)  # as _YEAR
             target_qs = getattr(flt, "queryset", None)
             if target_qs is None or callable(target_qs):
                 continue
@@ -85,6 +92,10 @@ class TurboDRFFilterBackend(DjangoFilterBackend):
             scoped = scoped_targets[target]
             if scoped is not None:
                 flt.queryset = target_qs.filter(pk__in=scoped.values("pk"))
+            # A target without row rules (the user or tenant model): the rows
+            # a write may reference. Another tenant's then fails like a
+            # missing one, in the work done too.
+            flt.queryset = _co_tenant_queryset(queryset.model, flt.queryset, request)
         return filterset
 
     def filter_queryset(self, request, queryset, view):
@@ -114,10 +125,16 @@ class TurboDRFFilterBackend(DjangoFilterBackend):
             raise utils.translate_validation(errors)
         return filterset.qs
 
+    def to_html(self, request, queryset, view):
+        """No filter form in the browsable API: django-filter renders every FK
+        target's ``str()`` as a choice, the tenant model's and the user
+        model's included, which have no row rules to narrow them."""
+        return None
+
 
 class TurboDRFSearchFilter(SearchFilter):
-    """SearchFilter that bounds ``?search=``: at most 20 distinct terms, each
-    at most ``TURBODRF_MAX_FILTER_VALUE_LENGTH`` long (1000 by default). Every
+    """SearchFilter that bounds ``?search=``: at most 20 distinct terms, at
+    most ``TURBODRF_MAX_FILTER_VALUE_LENGTH`` long together (200 by default). Every
     term is matched against every search field, so an unbounded search is a
     DoS: SQLite raises ("LIKE pattern too complex", "Expression tree is too
     large") → 500, Postgres burns terms × fields × length of ILIKE. A search
@@ -144,9 +161,13 @@ class TurboDRFSearchFilter(SearchFilter):
         search_terms = self.get_search_terms(request)
         if not search_fields or not search_terms:
             return queryset
+        # Each term is matched (LIKE) against each field's whole stored text:
+        # its cost grows with the term's length, so the terms' total length is
+        # bounded, not just each one's.
         max_len = _max_filter_value_length()
-        if len(search_terms) > _MAX_SEARCH_TERMS or any(
-            len(term) > max_len for term in search_terms
+        if (
+            len(search_terms) > _MAX_SEARCH_TERMS
+            or sum(len(term) for term in search_terms) > max_len
         ):
             return queryset.none()
 
@@ -274,6 +295,9 @@ def _filter_value(field, lookup, raw):
     takes comma-separated values, ``range`` exactly two, ``isnull`` true or
     false. Raises django's ValidationError for a value the field can't hold.
     """
+    if "\x00" in raw:
+        # As Django's form fields: a NUL is a database error on PostgreSQL.
+        raise ValidationError("Null characters are not allowed.")
     parts = lookup.split("__")
     final = parts[-1] if parts[-1] not in _TRANSFORMS else "exact"
     transforms = [p for p in parts if p in _TRANSFORMS]
@@ -303,6 +327,8 @@ def _parse_value(field, final, raw):
             raise ValidationError("Enter true or false.")
         return value
     value = field.to_python(raw)
+    if field is _YEAR:
+        field.run_validators(value)
     if isinstance(value, datetime.datetime):
         from django.conf import settings
         from django.utils import timezone
@@ -366,10 +392,24 @@ class ORFilterBackend(BaseFilterBackend):
 
         # Bound filter value length. Beyond this, SQLite raises "LIKE
         # pattern too complex" and Postgres burns CPU O(N×len) — both DoS
-        # vectors. 1000 covers normal use (UUIDs, long titles, multi-word
-        # search) and the framework would not run an unbounded
-        # icontains scan in practice.
+        # vectors. 200 covers normal use (UUIDs, titles, multi-word search):
+        # a LIKE's cost is the pattern's length times the stored text's.
         max_filter_value_len = _max_filter_value_length()
+
+        # Text lookups (LIKE) cost their pattern's length each: bounded
+        # together, as search's terms are.
+        text_length = sum(
+            len(value)
+            for key in query_dict.keys()
+            if key.removesuffix("_or").rsplit("__", 1)[-1] in _TEXT_LOOKUPS
+            for value in query_dict.getlist(key)
+        )
+        if text_length > max_filter_value_len or any(
+            len(query_dict.getlist(key)) > _MAX_SEARCH_TERMS for key in query_dict
+        ):
+            # Also a repeated parameter (`?tags=1&tags=2...`), which
+            # django-filter ORs: as many values as an `_or` key takes.
+            return queryset.none()
 
         filters = []  # (param, field path, lookup, [values], is_or)
         accepted = {}  # field path / lookup -> accepted?, once per request
@@ -398,8 +438,9 @@ class ORFilterBackend(BaseFilterBackend):
                         model.__name__,
                     )
                     continue
-            # Reject excessively long filter values (DoS guard).
-            if any(
+            # Reject excessively long filter values, and more OR values than
+            # search takes terms (DoS guard: a deep OR tree is a 500 on SQLite).
+            if len(values) > _MAX_SEARCH_TERMS or any(
                 v is not None and len(str(v)) > max_filter_value_len for v in values
             ):
                 return queryset.none()
@@ -574,9 +615,22 @@ class ORFilterBackend(BaseFilterBackend):
         elif field_path not in valid_fields:
             return None
         last = fields[-1]
-        if last.is_relation and (last.many_to_many or last.one_to_many):
-            # A multi-valued relation's own lookups (`tags__in`, `tags_or`,
-            # `tags__isnull`) would match targets the caller can't see.
+        if last.is_relation and (last.many_to_many or not last.concrete):
+            # An M2M's or reverse relation's own lookups (`tags__in`,
+            # `tags_or`, `tags__isnull`) would match targets the caller
+            # can't see.
+            return None
+        if (
+            isinstance(last, models.JSONField)
+            and lookup.split("__")[-1] in ("contains", "contained_by")
+            and not connections[
+                db_router.db_for_read(model)
+            ].features.supports_json_field_contains
+        ):
+            return None  # JSON containment: a 500 where the database lacks it
+        if lookup.split("__")[-1] == "isnull" and len(fields) > 1:
+            # Through a relation, `isnull=true` tells a related row the
+            # caller can't see from no row.
             return None
 
         # Sensitive fields are NEVER filterable, regardless of permissions.

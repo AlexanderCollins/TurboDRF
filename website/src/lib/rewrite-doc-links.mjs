@@ -7,6 +7,10 @@ import { REPO_URL, docSlug } from './docs-meta.mjs';
 const PAGES = { 'AGENTS.md': '/docs/agents/', 'CHANGELOG.md': '/changelog/' };
 
 function rewrite(url) {
+  // A script URL in a doc would run on turbodrf.com: refuse to build.
+  if (/^\s*(javascript|vbscript|data):/i.test(url)) {
+    throw new Error(`Refusing to publish a ${url.split(':')[0]}: link in the docs: ${url}`);
+  }
   if (/^[a-z]+:|^#|^\//i.test(url)) return url;
   const [path, hash = ''] = url.split('#');
   const anchor = hash ? `#${hash}` : '';

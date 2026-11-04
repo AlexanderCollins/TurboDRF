@@ -3,10 +3,13 @@
 ## Requirements
 
 - Python 3.10+
-- Django 4.2+
-- Django REST Framework 3.14+
+- Django 4.2 (4.2.30 or later), 5.2, 6.0 or 6.1
+- Django REST Framework 3.17.2+
 
-`pyproject.toml` is the source of truth for supported versions.
+`pyproject.toml` is the source of truth for supported versions. These are
+minimums, not security pins: pin the latest patch release of each in your
+project. Django 4.2 gets no security fixes after April 2026, so prefer 5.2
+or later, and DRF 3.18.2 or later.
 
 ## Install
 

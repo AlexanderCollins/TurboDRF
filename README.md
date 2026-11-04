@@ -70,7 +70,7 @@ pip install "turbodrf[openapi3]"   # optional: an OpenAPI 3 schema for typed cli
 pip install "turbodrf[fast]"       # optional: faster JSON rendering (msgspec)
 ```
 
-Django 4.2, 5.2 and 6.0 on Python 3.10–3.14.
+Django 4.2, 5.2, 6.0 and 6.1 on Python 3.10–3.14.
 
 ## Quick start
 

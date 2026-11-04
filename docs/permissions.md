@@ -144,7 +144,9 @@ class User(AbstractUser):
         return self.user_roles
 ```
 
-A getter that can't be imported raises at startup.
+A getter that can't be imported raises at startup. Return a list of the
+names the user holds: a mapping (`{'admin': False}`) raises, since every key
+would read as held.
 
 Authenticated users with no roles get 403.
 
@@ -227,6 +229,10 @@ invalidate_user_permissions(user)             # one user's snapshots
 invalidate_user_permissions(AnonymousUser())  # anonymous callers'
 invalidate_user_permissions()                 # everyone's
 ```
+
+The snapshots live in Django's cache, so with the default `LocMemCache` an
+invalidation reaches only the process that runs it. Use a shared cache
+(Redis, Memcached) in production.
 
 ### Nested field permissions
 
