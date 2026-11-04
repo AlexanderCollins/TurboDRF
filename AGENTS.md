@@ -84,9 +84,9 @@ API config out of `models.py`, skip the mixin and call
 `turbodrf.register(Model, {...same dict...})` from an `AppConfig.ready()`.
 
 A proxy or multi-table child of a TurboDRF model declares its own
-`turbodrf()` (`{'enabled': False, ...}` for no route), and its fields need
-their own rules in `TURBODRF_ROLES`: rules are per model. The router refuses
-one that inherits its parent's.
+`turbodrf()` (`{'enabled': False, ...}` for no route) and gets its own
+model-level grants in `TURBODRF_ROLES`; its parent's field rules apply to it
+as well. The router refuses one that inherits its parent's `turbodrf()`.
 
 ### `fields`
 

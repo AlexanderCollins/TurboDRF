@@ -148,6 +148,10 @@ to break them (`tests/integration/test_backstops.py` switches the first off):
 - A proxy or multi-table child of a TurboDRF model needs its own
   `turbodrf()`. Inherited, it was served at its own endpoint with the
   parent's `public_access` and none of the parent's field rules.
+- A proxy or multi-table child takes its parent's field rules: they're the
+  parent's columns. A proxy with its own config (`super().turbodrf()` plus
+  `public_access`) served the parent's restricted columns, to anonymous
+  callers too. Found by the read noninterference fuzzer in CI.
 - A role source returning a mapping (`{'admin': False}`) is refused: every
   key was held.
 - A generic FK, or a nested path ending on an M2M or reverse relation

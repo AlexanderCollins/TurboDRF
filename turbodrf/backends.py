@@ -328,6 +328,19 @@ def _model_restricted_fields(model) -> Set[str]:
     return set(declared)
 
 
+def _rule_labels(model):
+    """``(app_label, model_name)`` of ``model`` and of every model whose
+    columns it serves (a proxy's concrete model, a multi-table child's
+    parents): a field's rules hold wherever its column is served. Model-level
+    actions stay the model's own."""
+    own = (model._meta.app_label, model._meta.model_name)
+    try:
+        related = [model._meta.concrete_model, *model._meta.get_parent_list()]
+        return {own} | {(m._meta.app_label, m._meta.model_name) for m in related}
+    except (AttributeError, TypeError):  # a mock model
+        return {own}
+
+
 def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
     """
     Build permission snapshot from static TURBODRF_ROLES configuration.
@@ -349,6 +362,7 @@ def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
     snapshot = PermissionSnapshot()
     app_label = model._meta.app_label
     model_name = model._meta.model_name
+    labels = _rule_labels(model)
 
     # Get all permissions for user's roles
     user_permissions = set()
@@ -363,7 +377,7 @@ def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
     for role_name, role_perms in TURBODRF_ROLES.items():
         for perm in role_perms:
             parts = perm.split(".")
-            if len(parts) == 4 and parts[0] == app_label and parts[1] == model_name:
+            if len(parts) == 4 and (parts[0], parts[1]) in labels:
                 field_name = parts[2]
                 perm_type = parts[3]
                 if perm_type == "read":
@@ -382,7 +396,7 @@ def build_permission_snapshot_static(user, model) -> PermissionSnapshot:
     granted = set()
     for perm in user_permissions:
         parts = perm.split(".")
-        if len(parts) == 4 and parts[0] == app_label and parts[1] == model_name:
+        if len(parts) == 4 and (parts[0], parts[1]) in labels:
             granted.add((parts[2], parts[3]))
     _fill_fields(snapshot, model, all_field_read_rules, all_field_write_rules, granted)
     return snapshot
@@ -448,9 +462,16 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
         "id", flat=True
     )
 
-    permissions = RolePermission.objects.filter(
-        role_id__in=role_ids, app_label=app_label, model_name=model_name
-    ).select_related("role")
+    from functools import reduce
+
+    from django.db.models import Q
+
+    labels = reduce(
+        lambda q, label: q | Q(app_label=label[0], model_name=label[1]),
+        _rule_labels(model),
+        Q(pk__in=[]),
+    )
+    permissions = RolePermission.objects.filter(labels, role_id__in=role_ids)
 
     # A field with an explicit rule on ANY role is readable / writable only
     # through that rule — as in static mode. Collecting rules from the user's
@@ -459,7 +480,7 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
     all_field_read_rules = set()
     all_field_write_rules = set()
     for field_name, permission_type in RolePermission.objects.filter(
-        app_label=app_label, model_name=model_name, field_name__isnull=False
+        labels, field_name__isnull=False
     ).values_list("field_name", "permission_type"):
         if permission_type == "read":
             all_field_read_rules.add(field_name)
@@ -471,7 +492,8 @@ def build_permission_snapshot_database(user, model) -> PermissionSnapshot:
     granted = set()
     for perm in permissions:
         if perm.action:
-            snapshot.allowed_actions.add(perm.action)
+            if (perm.app_label, perm.model_name) == (app_label, model_name):
+                snapshot.allowed_actions.add(perm.action)
         elif perm.field_name and perm.permission_type:
             granted.add((perm.field_name, perm.permission_type))
     if _grants_public_read(user, model):
